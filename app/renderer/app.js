@@ -834,7 +834,38 @@ function openHost(h) {
   $('#host-view-meta').textContent = [isDirect(h) ? 'Connected directly' : h.address, h.tailnetUser || h.user, h.busy ? 'A game is running' : ''].filter(Boolean).join(' · ');
   $('#quit-app').classList.toggle('hidden', !h.busy);
   renderApps(h);
+  const key = h.uuid || h.address;
+  connect.volume(key).then((v) => { if (currentHost === h) showVolume('#host-volume', v); });
 }
+
+// ---- Volume boost: a PC's stream played up to 10x louder ---------------------------
+
+let streamVolumeKey = '';
+
+function showVolume(sel, value) {
+  $(sel).value = value;
+  $(`${sel}-value`).textContent = value > 1 ? `${value}×` : 'Off';
+}
+
+function bindVolume(sel, keyOf) {
+  $(sel).addEventListener('input', (e) => {
+    const key = keyOf();
+    if (!key) return;
+    const value = Number(e.target.value);
+    showVolume(sel, value);
+    connect.setVolume(key, value);
+    // the other slider shows the same PC's boost
+    const other = sel === '#host-volume' ? '#stream-volume' : '#host-volume';
+    const otherKey = other === '#host-volume' ? (currentHost && (currentHost.uuid || currentHost.address)) : streamVolumeKey;
+    if (otherKey === key) showVolume(other, value);
+  });
+}
+bindVolume('#host-volume', () => currentHost && (currentHost.uuid || currentHost.address));
+bindVolume('#stream-volume', () => streamVolumeKey);
+connect.onVolume(({ key, value }) => {
+  if (key === streamVolumeKey) showVolume('#stream-volume', value);
+  if (currentHost && (currentHost.uuid || currentHost.address) === key) showVolume('#host-volume', value);
+});
 
 $('#back-to-hosts').addEventListener('click', showHostList);
 $('#refresh-apps').addEventListener('click', (e) => busy(e.target, 'Refreshing…', async () => {
@@ -856,7 +887,11 @@ $('#quit-app').addEventListener('click', (e) => busy(e.target, 'Closing…', asy
 
 connect.onStreamState((state) => {
   $('#stream-overlay').classList.toggle('hidden', !state.active);
-  if (state.active) $('#stream-title').textContent = `${state.app} on ${state.host}`;
+  if (state.active) {
+    $('#stream-title').textContent = `${state.app} on ${state.host}`;
+    streamVolumeKey = state.volumeKey || '';
+    showVolume('#stream-volume', state.volume || 1);
+  }
   if (state.error) toast(state.error);
   if (!state.active) loadHosts();
 });
@@ -913,7 +948,9 @@ function versionBadge(list, mine) {
 }
 
 function friendPcStatus(pc) {
-  if (!pc.online) return { dot: '', text: 'Offline' };
+  if (!pc.online) return pc.account && !pc.everPaired
+    ? { dot: '', text: 'Offline · pairs by itself once it’s on', title: 'Moonshine pairs with a friend’s PC automatically the first time it sees it online. Nobody has to type a PIN.' }
+    : { dot: '', text: 'Offline' };
   if (pc.account && !pc.reachable && !pc.canConnectDirectly) return { dot: 'busy', text: 'Online · can’t reach it from here yet', title: 'Their PC is on, but this PC has no way to reach it: no shared Tailscale or network, and their Moonshine can’t take direct connections right now (both PCs need the latest Moonshine, open and signed in).' };
   const game = pc.game ? ` · ${gameLabel(pc.game)}` : '';
   if (pc.guests > 0) return { dot: 'hosting', text: `Hosting · ${pc.guests} connected${game}` };
@@ -932,9 +969,14 @@ function friendPcRow(pc) {
   // Use the full host from the Connect list, so pairing and the game list work as they do there
   const host = () => hostsCache.find((h) => h.uuid === pc.uuid) || { ...pc, apps: [], tailnetUser: pc.user };
   let button;
-  if (pc.account && (pc.direct || !pc.reachable)) {
+  if (pc.pairing) {
+    // Pairing by itself in the background (main.js autoPairFriends)
+    button = el('button', { className: 'secondary', textContent: 'Pairing…', disabled: true });
+    button.title = 'Pairing with your friend’s PC. Nobody has to do anything.';
+  } else if (pc.account && (pc.direct || !pc.reachable)) {
     // No shared network: connect straight through both routers (opens the connection if needed)
-    button = el('button', { className: pc.paired ? '' : 'secondary', textContent: pc.paired || !pc.reachable ? 'Connect' : 'Request access' });
+    const paired = pc.paired || (!pc.reachable && pc.everPaired);
+    button = el('button', { className: paired ? '' : 'secondary', textContent: paired ? 'Connect' : 'Pair' });
     button.title = 'Connects directly over the internet, no Tailscale or port forwarding needed';
     button.addEventListener('click', () => busy(button, 'Connecting…', async () => {
       const h = await window.moonshine.friends.connect(pc.uuid);
@@ -953,7 +995,8 @@ function friendPcRow(pc) {
       openHost(host());
     });
   } else {
-    button = el('button', { className: 'secondary', textContent: pc.moonshine ? 'Request access' : 'Pair' });
+    button = el('button', { className: 'secondary', textContent: 'Pair' });
+    if (pc.moonshine) button.title = pc.account ? 'Pairing by itself didn’t work. Try again now.' : 'Their Moonshine asks them to accept.';
     button.addEventListener('click', () => pairHost(host()));
   }
   if (pc.moonshine && pc.mine === false && pc.reachable && !pc.direct) {

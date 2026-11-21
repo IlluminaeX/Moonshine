@@ -989,3 +989,17 @@ body.prompt { display: flex; flex-direction: column; background: radial-gradient
 .new-device-perm { margin: 4px 0 12px; }
 .new-device-perm .detail-label { width: auto; }
 .new-device-perm select { width: auto; }
+
+/* Volume boost: on a PC's page and while streaming */
+.host-view-sub { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 6px 0 18px; }
+.host-view-sub .hint { margin: 0; }
+.volume-boost { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.volume-boost input[type=range] { width: 160px; accent-color: var(--accent, #e5193f); }
+.volume-boost output { min-width: 34px; color: var(--text); font-variant-numeric: tabular-nums; }
+#stream-overlay .volume-boost { justify-content: center; margin: 14px 0 0; }
+#stream-overlay .volume-keys { margin: 6px 0 14px; font-size: 12px; text-align: center; }
+
+/* Prompt that closes by itself: a bar runs down along the top */
+.prompt-timer { height: 3px; background: var(--accent, #e5193f); transform-origin: left; }
+.prompt-timer.running { animation: prompt-countdown linear forwards; }
+@keyframes prompt-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }

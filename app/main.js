@@ -458,7 +458,7 @@ ipcMain.handle('app:setDnd', (_e, on) => setDnd(on ? -1 : 0));
 
 // ---- Host: who is watching right now ---------------------------------------------------------
 
-const JOIN_NOTICE_MS = 20 * 1000; // how long a "joined your stream" notice stays up
+const JOIN_NOTICE_MS = 5 * 1000; // how long a "joined your stream" notice stays up
 const REJOIN_QUIET_MS = 60 * 1000; // a device reconnecting within this long isn't news
 const letIn = new Map(); // device uuid -> when this PC's user allowed or invited its stream
 let watching = null; // device uuids streaming from this PC (null until the first look)
@@ -468,16 +468,16 @@ const leftAt = new Map(); // device uuid -> when it stopped streaming
 async function noticeJoin(guest) {
   const key = `joined:${guest.uuid}:${Date.now()}`;
   const who = (store.get('pairedDevices')[guest.uuid] || {}).user;
-  const timer = setTimeout(() => prompts.cancel(key), JOIN_NOTICE_MS);
   const choice = await prompts.ask({
     key,
     title: `${guest.name || 'A device'} joined your stream`,
     details: [who ? `${who.replace(/@.*$/, '')}’s device` : '', 'It was let in without asking, as set for this device.'],
-    accept: 'OK',
+    accept: 'Dismiss',
     decline: 'Kick',
     danger: true,
+    sound: isDnd() ? '' : 'join', // a chime, so it's heard over a game
+    timeoutMs: JOIN_NOTICE_MS, // counted from when it shows, with a bar running down
   });
-  clearTimeout(timer);
   if (!choice.declined) return;
   await apollo.disconnectClient(guest.uuid).catch(() => {});
   // Ask before it streams again, so a kick doesn't just let it straight back in
@@ -964,6 +964,61 @@ function renamePc(uuid, name) {
   }
 }
 
+// ---- Volume boost: a PC's stream played up to 10x louder -------------------------------------
+// The player reads the boost from a small file twice a second, and writes it there when changed with
+// Ctrl+Alt+Shift+Up/Down, so the slider here and the keys there stay in step.
+
+let streamVolumeKey = ''; // which PC the current stream's boost belongs to
+const volumeFile = () => path.join(app.getPath('userData'), 'stream-volume.txt');
+const volumeKey = (host) => host.uuid || host.address;
+const clampVolume = (v) => Math.round(Math.min(10, Math.max(1, Number(v) || 1)) * 100) / 100;
+
+function volumeFor(key) {
+  return clampVolume(store.get('volumeBoost')[key]);
+}
+
+function saveVolume(key, value) {
+  const all = { ...store.get('volumeBoost') };
+  if (value === 1) delete all[key];
+  else all[key] = value;
+  store.set('volumeBoost', all);
+}
+
+function writeVolumeFile(value) {
+  try {
+    fs.writeFileSync(volumeFile(), value.toFixed(2));
+  } catch {
+    // the player keeps the last value it read
+  }
+}
+
+function setVolume(key, value) {
+  const v = clampVolume(value);
+  saveVolume(key, v);
+  if (streamProcess && key === streamVolumeKey) writeVolumeFile(v);
+  return v;
+}
+
+/** While streaming: pick up a boost changed with the player's keys. */
+function watchVolumeFile(on) {
+  fs.unwatchFile(volumeFile());
+  if (!on) return;
+  fs.watchFile(volumeFile(), { interval: 500 }, () => {
+    let v;
+    try {
+      v = clampVolume(parseFloat(fs.readFileSync(volumeFile(), 'utf8')));
+    } catch {
+      return;
+    }
+    if (!streamVolumeKey || v === volumeFor(streamVolumeKey)) return;
+    saveVolume(streamVolumeKey, v);
+    notifyRenderer('stream:volume', { key: streamVolumeKey, value: v });
+  });
+}
+
+ipcMain.handle('connect:volume', (_e, key) => volumeFor(key));
+ipcMain.handle('connect:setVolume', (_e, key, value) => setVolume(key, value));
+
 async function startStream(host, appName) {
   if (streamProcess || streamStarting) return;
   if (tunnels.isTunnelAddress(host.address)) {
@@ -979,11 +1034,14 @@ async function startStream(host, appName) {
     if (streamProcess) return;
   }
   const recent = store.get('recentHosts').filter((h) => h.app && !(h.address === host.address && h.app === appName));
-  store.set('recentHosts', [{ name: host.name, address: host.address, app: appName }, ...recent].slice(0, 5));
+  store.set('recentHosts', [{ name: host.name, address: host.address, uuid: host.uuid || '', app: appName }, ...recent].slice(0, 5));
   refreshTray();
 
   let errorOutput = '';
-  streamProcess = moonlight.stream(host.address, appName, streamSettings.toArgs(), streamSettings.toEnv());
+  streamVolumeKey = volumeKey(host);
+  writeVolumeFile(volumeFor(streamVolumeKey));
+  streamProcess = moonlight.stream(host.address, appName, streamSettings.toArgs(), { ...streamSettings.toEnv(), MOONSHINE_VOLUME_FILE: volumeFile() });
+  watchVolumeFile(true);
   streamAddress = host.address;
   streamApp = appName;
   presenceOnce();
@@ -992,6 +1050,7 @@ async function startStream(host, appName) {
   });
   streamProcess.on('exit', (code) => {
     streamProcess = null;
+    watchVolumeFile(false);
     streamAddress = '';
     streamApp = '';
     presenceOnce();
@@ -1000,7 +1059,7 @@ async function startStream(host, appName) {
     notifyRenderer('stream:state', { active: false, error: code ? (lastLine || 'The stream ended with an error.') : null });
     showWindow();
   });
-  notifyRenderer('stream:state', { active: true, host: host.name, app: appName });
+  notifyRenderer('stream:state', { active: true, host: host.name, app: appName, volumeKey: streamVolumeKey, volume: volumeFor(streamVolumeKey) });
   if (mainWindow) mainWindow.minimize();
 }
 
@@ -1008,7 +1067,7 @@ async function startStream(host, appName) {
  * Pair this PC with a host. The PIN is shown either way. A Moonshine host gets it with the request,
  * so its user only has to accept; on any other host the PIN has to be typed in.
  */
-async function pairWith(host) {
+async function pairWith(host, { quiet = false } = {}) {
   if (tunnels.isTunnelAddress(host.address)) {
     try {
       host = { ...host, address: await tunnels.ensureFor(host.address) };
@@ -1023,7 +1082,7 @@ async function pairWith(host) {
   } catch (err) {
     return { ok: false, reason: ['closed', 'disabled', 'busy'].includes(err.reason) ? err.reason : 'error' };
   }
-  notifyRenderer('pair:state', { pin, host: host.name, moonshine: Boolean(requestId) });
+  if (!quiet) notifyRenderer('pair:state', { pin, host: host.name, moonshine: Boolean(requestId) });
 
   pairProcess = moonlight.pair(host.address, pin);
   const child = pairProcess;
@@ -1070,7 +1129,8 @@ ipcMain.handle('connect:add', async (_e, input) => {
 });
 
 ipcMain.handle('connect:pair', async (_e, host) => {
-  const res = await pairWith(host);
+  const res = await withPairLock(() => pairWith(host)); // after any pairing running in the background
+  if (res.ok) markFriendPcPaired(host.uuid);
   if (res.ok) reachCache.delete(host.uuid); // the Friends tab shows it paired straight away
   return res;
 });
@@ -1202,6 +1262,7 @@ async function accountFriends(fresh = false) {
   for (const f of data.friends.filter((x) => x.status === 'accepted')) {
     for (const pc of f.pcs) {
       const reach = pc.online && pc.hosting ? await reachFriendPc(pc) : { address: '', paired: false };
+      if (reach.paired) markFriendPcPaired(pc.hostUuid);
       const viaTunnel = tunnels.isTunnelAddress(reach.address);
       pcs.push({
         uuid: pc.hostUuid || `${f.username}:${pc.name}`,
@@ -1222,10 +1283,84 @@ async function accountFriends(fresh = false) {
         guests: pc.guests,
         game: pc.game || '',
         version: pc.version || '',
+        everPaired: Boolean(store.get('friendPcsPaired')[pc.hostUuid]),
+        pairing: (autoPairs.get(pc.hostUuid) || {}).state === 'pairing',
       });
     }
   }
+  autoPairFriends(pcs);
   return { service: state, pcs };
+}
+
+// ---- Pairing with friends' PCs by itself ----------------------------------------------------
+// A friend's Moonshine lets a friend's pairing request through without asking (promptForOffer), so
+// once two people are friends, each PC pairs with the other's as soon as it's online. Nothing shows
+// unless it fails; then the friend list offers Pair.
+
+const AUTO_PAIR_RETRY_MS = 10 * 60 * 1000; // after a failure (they may have been busy or restarting)
+const AUTO_PAIR_DECLINED_MS = 6 * 60 * 60 * 1000; // after a "no" (an older Moonshine asked its user)
+const autoPairs = new Map(); // host uuid -> { state: 'pairing' | 'failed' | 'declined', at }
+let pairLock = Promise.resolve();
+
+/** One pairing at a time: the player's pair command and the host's PIN handling can't overlap. */
+function withPairLock(fn) {
+  const run = pairLock.then(fn, fn);
+  pairLock = run.catch(() => {});
+  return run;
+}
+
+function markFriendPcPaired(uuid) {
+  if (!uuid || store.get('friendPcsPaired')[uuid]) return;
+  store.set('friendPcsPaired', { ...store.get('friendPcsPaired'), [uuid]: true });
+}
+
+function autoPairFriends(pcs) {
+  for (const pc of pcs) {
+    if (!pc.account || !pc.online || pc.paired || !(pc.reachable || pc.canConnectDirectly)) continue;
+    const uuid = pc.uuid;
+    const last = autoPairs.get(uuid);
+    if (last && (last.state === 'pairing'
+      || (last.state === 'failed' && Date.now() - last.at < AUTO_PAIR_RETRY_MS)
+      || (last.state === 'declined' && Date.now() - last.at < AUTO_PAIR_DECLINED_MS))) continue;
+    autoPairs.set(uuid, { state: 'pairing', at: Date.now() });
+    pc.pairing = true;
+    withPairLock(() => autoPairOne(pc))
+      .then((state) => {
+        if (state === 'paired') autoPairs.delete(uuid);
+        else autoPairs.set(uuid, { state, at: Date.now() });
+      })
+      .catch(() => autoPairs.set(uuid, { state: 'failed', at: Date.now() }))
+      .finally(() => {
+        friendsCache = { ...friendsCache, at: 0 };
+        notifyRenderer('friends:changed');
+      });
+  }
+}
+
+/** Pair with one friend's PC in the background: 'paired', 'failed' or 'declined'. */
+async function autoPairOne(pc) {
+  if (streamProcess || streamStarting) return 'failed'; // not in the middle of a stream; try later
+  let address = pc.address;
+  if (!address) {
+    // No shared network: open a direct connection through both routers
+    const f = await friendPcByUuid(pc.uuid);
+    if (!f || !f.device) return 'failed';
+    address = await tunnels.connect({ hostUuid: pc.uuid, device: f.device, port: f.port, name: pc.name });
+  }
+  if (await moonlight.listApps(address)) {
+    // Already paired (e.g. from before they were friends)
+    reachCache.set(pc.uuid, { at: Date.now(), address, paired: true });
+    markFriendPcPaired(pc.uuid);
+    return 'paired';
+  }
+  const res = await pairWith({ uuid: pc.uuid, name: pc.name, address }, { quiet: true });
+  if (res.ok) {
+    reachCache.set(pc.uuid, { at: Date.now(), address, paired: true });
+    markFriendPcPaired(pc.uuid);
+    notifyRenderer('app:toast', `Paired with ${pc.name}. You can connect to it any time it’s on.`);
+    return 'paired';
+  }
+  return res.reason === 'declined' ? 'declined' : 'failed';
 }
 
 /** Tell the service how friends can reach this PC's host. */

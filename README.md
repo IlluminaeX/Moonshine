@@ -11,9 +11,11 @@ One Windows app for game streaming. **Host** shares your PC, and **Connect** pla
   - Every paired device has an **Ask before streaming** switch (on by default). When it's on, a Moonshine popup asks you to **Allow** or **Decline** each stream. This works for any device, however it was paired.
   - The popup's **Don't ask again** turns the switch off for that device.
   - If Moonshine isn't running, devices that have to ask are turned away.
+  - When a device joins without asking (it's allowed to), a popup with a chime says so for 5 seconds, with **Kick** and **Dismiss**. Kicking also makes it ask next time.
   - **Pause hosting** (tray menu or Host tab) for 30 minutes, 1 or 2 hours, or until you resume: hosting stays on, but every stream request is declined, anyone watching is disconnected, and friends see this PC as not hosting. No Windows admin prompt, unlike turning hosting off.
 - **Pairing without the browser**
-  - Friend with Moonshine (on Tailscale, your network, or by IP): they click **Request access**, you get one **Accept** popup, and nobody types the PIN.
+  - Friends on Moonshine pair with each other's PCs by themselves, the first time each PC sees the other online. No PIN, no popup. A friend's PC that is off says it will pair once it's on; **Pair** appears only if pairing by itself didn't work.
+  - Other PCs with Moonshine (on Tailscale, your network, or by IP): click **Pair**, they get one **Accept** popup, and nobody types the PIN.
   - Any other Moonlight client: Moonshine pops up a box to type the PIN that device is showing.
 - **Friends** (sign in with Discord, add friends by username)
   - The list updates live: who is online, free, hosting or in a game, and **what they're playing** (turn off **Share what I'm playing** to hide yours).
@@ -21,6 +23,7 @@ One Windows app for game streaming. **Host** shares your PC, and **Connect** pla
   - **Nicknames** only you see, kept with your account.
   - A badge when a friend's Moonshine is older or newer than yours.
   - **Do not disturb** (tray menu or Friends tab), for an hour, until morning, or until you turn it off: no notifications, and invites to play are answered "not now". Messages still arrive, unread. Requests to stream from your PC still ask.
+- **Volume boost**: play a PC's stream up to 10x louder, for when its owner keeps their game quiet. A slider on that PC's page and in the stream window, or Ctrl+Alt+Shift+Up/Down during the stream. Remembered per PC; loud parts are softened instead of crackling.
 - **Devices** (Host tab): rename, disconnect or remove a device, and set what it may do: keyboard, mouse, controller, touch, pen; see the app list, start apps, join a running stream; clipboard, file transfer, server commands; a fixed resolution or its own virtual display.
   - **New devices can**: what a device gets when it pairs, however it pairs. "Start apps and use a controller" by default; or full control with clipboard and files; or only watch. Devices already paired keep theirs.
 - **Host settings** tab: all of the host's settings, the applications list with an editor (including commands to run before and after an app), global commands, the logs, and **Tools** (pair by typing a PIN, one-time pairing codes, close a stuck app, reset display settings, remove all devices, set the web page's login).

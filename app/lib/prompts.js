@@ -36,7 +36,7 @@ function showNext() {
     title: 'Moonshine',
     icon: path.join(__dirname, '..', 'assets', 'moonshine.png'),
     backgroundColor: '#151012',
-    webPreferences: { preload: path.join(__dirname, '..', 'prompt-preload.js') },
+    webPreferences: { preload: path.join(__dirname, '..', 'prompt-preload.js'), autoplayPolicy: 'no-user-gesture-required' },
   });
   current = { spec, resolve, win };
   win.on('closed', () => {
@@ -48,7 +48,13 @@ function showNext() {
     if (spec.pin) win.show();
     else win.showInactive();
     win.flashFrame(true);
-    shell.beep();
+    if (!spec.sound) shell.beep(); // a prompt with its own sound plays it itself
+    // A notice that goes away by itself: count from when it's on screen, not from when it was queued
+    if (spec.timeoutMs) {
+      setTimeout(() => {
+        if (current && current.win === win) finish({ ok: false, cancelled: true, timedOut: true });
+      }, spec.timeoutMs);
+    }
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'prompt.html'));
 }
@@ -68,6 +74,8 @@ ipcMain.handle('prompt:respond', (event, result) => {
  * @param {string} [spec.checkbox] Label of an optional tick-box.
  * @param {boolean} [spec.pin] Ask for a 4-digit PIN and a device name (`spec.name` is the default).
  * @param {boolean} [spec.danger] Show the second button in red (e.g. Kick).
+ * @param {string} [spec.sound] 'join': play a short chime instead of the system beep.
+ * @param {number} [spec.timeoutMs] Close by itself this long after showing (resolves as cancelled).
  * @returns {Promise<{ok: boolean, declined?: boolean, cancelled?: boolean, checked?: boolean, pin?: string, name?: string}>}
  *   declined: the second button was clicked (not just the window closed).
  */

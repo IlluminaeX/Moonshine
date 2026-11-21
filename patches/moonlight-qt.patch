@@ -4184,6 +4184,176 @@ index b16b1721..0988e592 100644
 +  <circle cx="173" cy="84" r="24" fill="url(#flare)"/>
 +  <circle cx="173" cy="84" r="4.5" fill="#fff6f7"/>
 +</svg>
+diff --git a/app/streaming/audio/audio.cpp b/app/streaming/audio/audio.cpp
+index 4668eec9..b3cb5320 100644
+--- a/app/streaming/audio/audio.cpp
++++ b/app/streaming/audio/audio.cpp
+@@ -9,6 +9,143 @@
+ 
+ #include <Limelight.h>
+ 
++#include <QString>
++#include <cmath>
++
++// Moonshine: volume boost, 1x to 10x, for a PC whose own volume is turned down. Moonshine writes it
++// ("2.5") to the file named by MOONSHINE_VOLUME_FILE, which is read twice a second; Ctrl+Alt+Shift+Up
++// and Down change it during the stream and write it back, so Moonshine shows the same value.
++static SDL_atomic_t s_VolumeMilli = { 1000 };
++static SDL_atomic_t s_VolumeNoticeId = { 0 };
++static const int k_VolumeSteps[] = { 1000, 1250, 1500, 2000, 2500, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000 };
++static const int k_VolumeStepCount = sizeof(k_VolumeSteps) / sizeof(k_VolumeSteps[0]);
++
++static QByteArray volumeFilePath()
++{
++    return qEnvironmentVariable("MOONSHINE_VOLUME_FILE").toUtf8();
++}
++
++static void readVolumeFile()
++{
++    QByteArray path = volumeFilePath();
++    if (path.isEmpty()) {
++        return;
++    }
++    SDL_RWops* rw = SDL_RWFromFile(path.constData(), "rb");
++    if (rw == nullptr) {
++        return;
++    }
++    char text[32] = {};
++    size_t read = SDL_RWread(rw, text, 1, sizeof(text) - 1);
++    SDL_RWclose(rw);
++    if (read > 0) {
++        double value = SDL_atof(text);
++        if (value > 0) {
++            SDL_AtomicSet(&s_VolumeMilli, SDL_max(1000, SDL_min(10000, (int)lround(value * 1000))));
++        }
++    }
++}
++
++static void writeVolumeFile(int milli)
++{
++    QByteArray path = volumeFilePath();
++    if (path.isEmpty()) {
++        return;
++    }
++    SDL_RWops* rw = SDL_RWFromFile(path.constData(), "wb");
++    if (rw != nullptr) {
++        char text[32];
++        int len = SDL_snprintf(text, sizeof(text), "%.2f", milli / 1000.0);
++        SDL_RWwrite(rw, text, 1, len);
++        SDL_RWclose(rw);
++    }
++}
++
++// Loud parts bend smoothly towards full scale instead of clipping harshly.
++static inline float softClip(float x)
++{
++    const float knee = 0.8f;
++    float a = fabsf(x);
++    if (a <= knee) {
++        return x;
++    }
++    float y = knee + (1.0f - knee) * tanhf((a - knee) / (1.0f - knee));
++    return x < 0 ? -y : y;
++}
++
++static void applyVolume(void* buffer, int bytes, bool isFloat)
++{
++    int milli = SDL_AtomicGet(&s_VolumeMilli);
++    if (milli == 1000 || bytes <= 0) {
++        return;
++    }
++    float gain = milli / 1000.0f;
++    if (isFloat) {
++        float* samples = (float*)buffer;
++        int count = bytes / (int)sizeof(float);
++        for (int i = 0; i < count; i++) {
++            samples[i] = softClip(samples[i] * gain);
++        }
++    }
++    else {
++        short* samples = (short*)buffer;
++        int count = bytes / (int)sizeof(short);
++        for (int i = 0; i < count; i++) {
++            samples[i] = (short)lrintf(softClip(samples[i] / 32768.0f * gain) * 32767.0f);
++        }
++    }
++}
++
++static Uint32 hideVolumeNotice(Uint32, void* param)
++{
++    Session* session = Session::get();
++    if (session != nullptr && SDL_AtomicGet(&s_VolumeNoticeId) == (int)(intptr_t)param) {
++        session->getOverlayManager().setOverlayState(Overlay::OverlayStatusUpdate, false);
++    }
++    return 0;
++}
++
++void Session::adjustVolumeBoost(int direction)
++{
++    readVolumeFile(); // Moonshine may have changed it since the last read
++    int current = SDL_AtomicGet(&s_VolumeMilli);
++    int milli = current;
++    if (direction > 0) {
++        // the first step above the current value
++        for (int i = 0; i < k_VolumeStepCount; i++) {
++            if (k_VolumeSteps[i] > current) {
++                milli = k_VolumeSteps[i];
++                break;
++            }
++        }
++    }
++    else {
++        // the last step below it
++        for (int i = k_VolumeStepCount - 1; i >= 0; i--) {
++            if (k_VolumeSteps[i] < current) {
++                milli = k_VolumeSteps[i];
++                break;
++            }
++        }
++    }
++    SDL_AtomicSet(&s_VolumeMilli, milli);
++    writeVolumeFile(milli);
++
++    if (s_ActiveSession != nullptr) {
++        char text[64];
++        if (milli == 1000) {
++            SDL_snprintf(text, sizeof(text), "Volume boost off");
++        }
++        else {
++            SDL_snprintf(text, sizeof(text), "Volume boost %gx", milli / 1000.0);
++        }
++        int id = SDL_AtomicIncRef(&s_VolumeNoticeId) + 1;
++        s_ActiveSession->m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate, text);
++        s_ActiveSession->m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
++        SDL_AddTimer(2000, hideVolumeNotice, (void*)(intptr_t)id);
++    }
++}
++
+ #define TRY_INIT_RENDERER(renderer, opusConfig)        \
+ {                                                      \
+     IAudioRenderer* __renderer = new renderer();       \
+@@ -182,6 +319,11 @@ void Session::arDecodeAndPlaySample(char* sampleData, int sampleLength)
+ 
+     s_ActiveSession->m_AudioSampleCount++;
+ 
++    // Moonshine: pick up a new volume boost twice a second
++    if (s_ActiveSession->m_AudioSampleCount % 100 == 1) {
++        readVolumeFile();
++    }
++
+     // If audio is muted, don't decode or play the audio
+     if (s_ActiveSession->m_AudioMuted) {
+         return;
+@@ -222,6 +364,9 @@ void Session::arDecodeAndPlaySample(char* sampleData, int sampleLength)
+             desiredBufferSize = 0;
+         }
+ 
++        applyVolume(buffer, desiredBufferSize,
++                    s_ActiveSession->m_AudioRenderer->getAudioBufferFormat() == IAudioRenderer::AudioFormat::Float32NE);
++
+         if (!s_ActiveSession->m_AudioRenderer->submitAudio(desiredBufferSize)) {
+             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                         "Reinitializing audio renderer after failure");
 diff --git a/app/streaming/input/gamepad.cpp b/app/streaming/input/gamepad.cpp
 index b649971b..cc478f12 100644
 --- a/app/streaming/input/gamepad.cpp
@@ -4198,8 +4368,42 @@ index b649971b..cc478f12 100644
  
          // Clear buttons down on this gamepad
          LiSendMultiControllerEvent(state->index, m_GamepadMask,
+diff --git a/app/streaming/input/input.cpp b/app/streaming/input/input.cpp
+index 2597f998..615beb44 100644
+--- a/app/streaming/input/input.cpp
++++ b/app/streaming/input/input.cpp
+@@ -135,6 +135,16 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
+     m_SpecialKeyCombos[KeyComboToggleKeyboardGrab].scanCode = SDL_SCANCODE_K;
+     m_SpecialKeyCombos[KeyComboToggleKeyboardGrab].enabled = WMUtils::isRunningDesktopEnvironment();
+ 
++    m_SpecialKeyCombos[KeyComboVolumeUp].keyCombo = KeyComboVolumeUp;
++    m_SpecialKeyCombos[KeyComboVolumeUp].keyCode = SDLK_UP;
++    m_SpecialKeyCombos[KeyComboVolumeUp].scanCode = SDL_SCANCODE_UP;
++    m_SpecialKeyCombos[KeyComboVolumeUp].enabled = true;
++
++    m_SpecialKeyCombos[KeyComboVolumeDown].keyCombo = KeyComboVolumeDown;
++    m_SpecialKeyCombos[KeyComboVolumeDown].keyCode = SDLK_DOWN;
++    m_SpecialKeyCombos[KeyComboVolumeDown].scanCode = SDL_SCANCODE_DOWN;
++    m_SpecialKeyCombos[KeyComboVolumeDown].enabled = true;
++
+     m_OldIgnoreDevices = SDL_GetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES);
+     m_OldIgnoreDevicesExcept = SDL_GetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT);
+ 
+diff --git a/app/streaming/input/input.h b/app/streaming/input/input.h
+index 151c69c4..928ac85e 100644
+--- a/app/streaming/input/input.h
++++ b/app/streaming/input/input.h
+@@ -168,6 +168,8 @@ private:
+         KeyComboTogglePointerRegionLock,
+         KeyComboQuitAndExit,
+         KeyComboToggleKeyboardGrab,
++        KeyComboVolumeUp, // Moonshine: volume boost
++        KeyComboVolumeDown,
+         KeyComboMax
+     };
+ 
 diff --git a/app/streaming/input/keyboard.cpp b/app/streaming/input/keyboard.cpp
-index 29e218da..e2b8568c 100644
+index 29e218da..8b38ca09 100644
 --- a/app/streaming/input/keyboard.cpp
 +++ b/app/streaming/input/keyboard.cpp
 @@ -63,8 +63,7 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
@@ -4212,6 +4416,21 @@ index 29e218da..e2b8568c 100644
          break;
  
      case KeyComboToggleMouseMode:
+@@ -162,6 +161,14 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
+         SDL_PushEvent(&quitExitEvent);
+         break;
+ 
++    case KeyComboVolumeUp:
++        Session::adjustVolumeBoost(1);
++        break;
++
++    case KeyComboVolumeDown:
++        Session::adjustVolumeBoost(-1);
++        break;
++
+     case KeyComboToggleKeyboardGrab:
+         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                     "Detected keyboard grab toggle combo");
 diff --git a/app/streaming/session.cpp b/app/streaming/session.cpp
 index 40c1e59c..151e4892 100644
 --- a/app/streaming/session.cpp
@@ -4251,6 +4470,20 @@ index 40c1e59c..151e4892 100644
  #endif
  
      m_Window = SDL_CreateWindow(windowName.c_str(),
+diff --git a/app/streaming/session.h b/app/streaming/session.h
+index 53ac9e06..1ed5ad85 100644
+--- a/app/streaming/session.h
++++ b/app/streaming/session.h
+@@ -111,6 +111,9 @@ public:
+                         bool& isHardwareAccelerated, bool& isFullScreenOnly,
+                         bool& isHdrSupported, QSize& maxResolution);
+ 
++    // Moonshine: raise or lower the volume boost one step (Ctrl+Alt+Shift+Up/Down)
++    static void adjustVolumeBoost(int direction);
++
+     static Session* get()
+     {
+         return s_ActiveSession;
 diff --git a/app/streaming/video/ffmpeg-renderers/d3d11va.cpp b/app/streaming/video/ffmpeg-renderers/d3d11va.cpp
 index fed027f1..9ef87aa0 100644
 --- a/app/streaming/video/ffmpeg-renderers/d3d11va.cpp

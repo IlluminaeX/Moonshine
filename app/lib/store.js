@@ -37,6 +37,8 @@ const defaults = {
   pauseSkipped: {},
   // Do not disturb: until when (ms; -1 until turned off; 0 off)
   dndUntil: 0,
+  volumeBoost: {}, // host uuid (or address) -> how much louder its stream plays, 1 to 10
+  friendPcsPaired: {}, // friends' host uuids this PC has paired with (to tell, while they're off)
   streamSettings: {},
   startAtLogin: false,
 };
