@@ -952,3 +952,12 @@ body.prompt { display: flex; flex-direction: column; background: radial-gradient
 .friend-actions { display: flex; align-items: center; gap: 14px; margin: 10px 0 2px 52px; }
 .friend-actions .link-button { padding: 0; }
 .version-badge { white-space: nowrap; }
+
+/* Installing an update */
+.update-dialog { align-items: center; }
+.update-dialog-icon { width: 56px; height: 56px; filter: drop-shadow(0 0 16px rgb(229 25 63 / 0.55)); margin-bottom: 2px; }
+.update-dialog h2 { margin: 0; }
+.update-dialog .hint { margin: 0; }
+.update-warnings { margin: 2px 0 0; padding: 10px 14px 10px 30px; width: 100%; box-sizing: border-box; text-align: left; font-size: 13px;
+  color: #ffcf70; background: rgb(255 190 60 / 0.1); border: 1px solid rgb(255 190 60 / 0.28); border-radius: 10px; }
+.update-dialog .actions { width: 100%; margin-top: 6px; }

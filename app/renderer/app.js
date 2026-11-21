@@ -1969,9 +1969,39 @@ $('#app-version').addEventListener('click', () => {
   checkingByHand = true;
   updates.check().then(showUpdate).catch((err) => { checkingByHand = false; toast(err.message); });
 });
-$('#update-now').addEventListener('click', () => {
-  updates.install().catch((err) => toast(errorText(err)));
-});
+// Update now: download and check it (progress shows in the sidebar), then ask in Moonshine's own dialog
+let updateAsking = false;
+async function askToUpdate() {
+  if (updateAsking) return;
+  updateAsking = true;
+  try {
+    const { version, warnings } = await updates.prepare();
+    $('#update-dialog-title').textContent = `Install Moonshine ${version}?`;
+    $('#update-dialog-warnings').replaceChildren(...warnings.map((w) => el('li', { textContent: w })));
+    $('#update-dialog-warnings').classList.toggle('hidden', !warnings.length);
+    $('#update-dialog').classList.remove('hidden');
+    $('#update-install').focus();
+  } catch (err) {
+    toast(errorText(err));
+  } finally {
+    updateAsking = false;
+  }
+}
+function closeUpdateDialog() {
+  $('#update-dialog').classList.add('hidden');
+}
+$('#update-now').addEventListener('click', askToUpdate);
+updates.onAsk(askToUpdate);
+$('#update-later').addEventListener('click', closeUpdateDialog);
+$('#update-dialog').addEventListener('click', (e) => { if (e.target.id === 'update-dialog') closeUpdateDialog(); });
+$('#update-install').addEventListener('click', (e) => busy(e.currentTarget, 'Closing Moonshine…', async () => {
+  $('#update-later').disabled = true;
+  try {
+    await updates.install(); // Moonshine closes once the installer is on its way
+  } finally {
+    $('#update-later').disabled = false;
+  }
+}));
 
 loadHosts();
 host.status().then((s) => { $('#start-at-login').checked = s.startAtLogin; });

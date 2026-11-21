@@ -16,7 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { execFile } = require('child_process');
 const { EventEmitter } = require('events');
 
 const REPO = 'IlluminaeX/Moonshine';
@@ -178,6 +178,7 @@ function download() {
 const HELPER = String.raw`
 param([string]$Installer, [string]$App, [int]$AppPid, [string]$Log)
 function Say($t) { Add-Content -Path $Log -Value "$(Get-Date -Format s) $t" }
+Say "waiting for Moonshine to close"
 try { Wait-Process -Id $AppPid -Timeout 30 -ErrorAction SilentlyContinue } catch {}
 $code = -1
 try {
@@ -191,22 +192,43 @@ $result = if ($code -eq 0) { 'done' } elseif ($code -eq -1) { 'declined' } else 
 Start-Process -FilePath $App -ArgumentList "--updated=$result"
 `;
 
+// Windows closes every process Moonshine starts when Moonshine quits (Electron keeps its child
+// processes in a job that ends with it), so the helper is started by Windows itself instead (WMI's
+// Win32_Process.Create): same user and desktop session, but not tied to Moonshine.
+const LAUNCH = '$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $env:MOONSHINE_HELPER }; '
+  + 'if ($r.ReturnValue -ne 0) { Write-Error "Win32_Process.Create failed: $($r.ReturnValue)"; exit 1 }; $r.ProcessId';
+
+function startOutsideMoonshine(commandLine) {
+  return new Promise((resolve, reject) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', LAUNCH], {
+      windowsHide: true, timeout: 30000, env: { ...process.env, MOONSHINE_HELPER: commandLine },
+    }, (err, stdout, stderr) => {
+      const pid = parseInt(String(stdout).trim(), 10);
+      if (err || !pid) reject(new Error(`the installer helper didn't start (${String(stderr || (err && err.message) || '').trim().slice(0, 200)})`));
+      else resolve(pid);
+    });
+  });
+}
+
 /**
  * Close Moonshine and install the downloaded update. `quit` is called once the helper is running;
- * it must quit the app (the installer can't replace Moonshine's files while it runs).
+ * it must quit the app (the installer can't replace Moonshine's files while it runs). If the helper
+ * can't be started, Moonshine stays open and this throws.
  */
-function install(quit, { appPath = process.execPath } = {}) {
+async function install(quit, { appPath = process.execPath } = {}) {
   if (state.status !== 'ready' || !state.file || !fs.existsSync(state.file)) {
     throw new Error('The update isn\'t downloaded yet.');
   }
   const dir = path.dirname(state.file);
   const script = path.join(dir, 'install-update.ps1');
+  const log = path.join(dir, 'update.log');
   fs.writeFileSync(script, HELPER);
-  const child = spawn('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script,
-    '-Installer', state.file, '-App', appPath, '-AppPid', String(process.pid), '-Log', path.join(dir, 'update.log'),
-  ], { detached: true, stdio: 'ignore', windowsHide: true });
-  child.unref();
+  fs.rmSync(log, { force: true });
+  const q = (s) => `"${s}"`; // none of these paths can contain a double quote
+  await startOutsideMoonshine([
+    'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+    '-File', q(script), '-Installer', q(state.file), '-App', q(appPath), '-AppPid', String(process.pid), '-Log', q(log),
+  ].join(' '));
   setState({ ...state, status: 'installing' });
   quit();
 }

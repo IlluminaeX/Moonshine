@@ -88,7 +88,9 @@ contextBridge.exposeInMainWorld('moonshine', {
   updates: {
     get: invoke('update:get'),
     check: invoke('update:check'),
+    prepare: invoke('update:prepare'),
     install: invoke('update:install'),
+    onAsk: listen('update:ask'),
     onState: listen('update:state'),
   },
   onToast: listen('app:toast'),

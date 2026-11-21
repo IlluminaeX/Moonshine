@@ -654,38 +654,41 @@ ipcMain.handle('apollo:browse', async (_e, kind) => {
 
 // ---- Updates (lib/updater.js) ----------------------------------------------------------
 
-/** Download the update (if needed), warn when that would cut off streams, then install it. */
-async function installUpdate() {
+// Updating takes two steps from the window: "prepare" downloads and checks the update and says what
+// installing would interrupt; Moonshine's own dialog asks; then "install" closes Moonshine and runs it.
+
+/** Download the update (if needed) and list what installing it now would cut off. */
+async function prepareUpdate() {
   if (updater.getState().status !== 'ready') await updater.download();
   const watching = await apollo.guests().catch(() => []);
-  const busy = [];
-  if (streamProcess) busy.push('your stream will close');
-  if (watching.length) busy.push(`${watching.length === 1 ? 'the device watching' : `the ${watching.length} devices watching`} this PC will be disconnected`);
-  const { version } = updater.getState();
-  const choice = await dialog.showMessageBox(mainWindow && mainWindow.isVisible() ? mainWindow : undefined, {
-    type: 'question',
-    title: 'Update Moonshine',
-    message: `Install Moonshine ${version} now?`,
-    detail: `Moonshine closes, Windows asks to allow the install, and Moonshine opens again when it's done (about a minute).${busy.length ? `\n\nWhile it installs, ${busy.join(' and ')}.` : ''}`,
-    buttons: ['Install now', 'Later'],
-    defaultId: 0,
-    cancelId: 1,
-    noLink: true,
-  });
-  if (choice.response !== 0) return false;
-  if (streamProcess) { try { streamProcess.kill(); } catch { /* gone */ } }
-  updater.install(() => { quitting = true; app.quit(); });
-  return true;
+  const warnings = [];
+  if (streamProcess) warnings.push('Your stream will close.');
+  if (watching.length) {
+    warnings.push(`${watching.length === 1 ? 'The device watching this PC' : `The ${watching.length} devices watching this PC`} will be disconnected.`);
+  }
+  return { version: updater.getState().version, warnings };
+}
+
+/** From the tray: open the window and start the same flow there. */
+function installUpdate() {
+  showWindow();
+  notifyRenderer('update:ask');
+  return Promise.resolve();
 }
 
 ipcMain.handle('update:get', () => updater.getState());
 ipcMain.handle('update:check', () => updater.check());
-ipcMain.handle('update:install', async () => {
+ipcMain.handle('update:prepare', async () => {
   try {
-    return await installUpdate();
+    return await prepareUpdate();
   } catch (err) {
     throw new Error(updater.getState().error || err.message);
   }
+});
+ipcMain.handle('update:install', async () => {
+  if (streamProcess) { try { streamProcess.kill(); } catch { /* gone */ } }
+  await updater.install(() => { quitting = true; app.quit(); });
+  return true;
 });
 
 ipcMain.handle('app:setStartAtLogin', (_e, enabled) => {

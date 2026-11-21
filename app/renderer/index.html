@@ -512,6 +512,20 @@
   </div>
 
   <!-- Add a PC -->
+  <!-- Installing an update -->
+  <div id="update-dialog" class="overlay hidden">
+    <div class="dialog update-dialog">
+      <img src="../assets/moonshine.png" alt="" class="update-dialog-icon">
+      <h2 id="update-dialog-title">Install the update?</h2>
+      <p class="hint">Moonshine closes, installs the update and opens again by itself in about a minute. Windows asks you to allow the install.</p>
+      <ul id="update-dialog-warnings" class="update-warnings hidden"></ul>
+      <div class="actions end">
+        <button type="button" id="update-later" class="secondary">Later</button>
+        <button type="button" id="update-install">Install now</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Quick messages with one friend -->
   <div id="chat-dialog" class="overlay hidden">
     <form id="chat-form" class="dialog chat">
