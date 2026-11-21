@@ -1,0 +1,13 @@
+{
+  "apollo": {
+    "repo": "https://github.com/ClassicOldSong/Apollo",
+    "tag": "v0.4.6",
+    "branch": "moonshine"
+  },
+  "moonlight": {
+    "repo": "moonlight-stream/moonlight-qt",
+    "tag": "v6.2.0",
+    "asset": "MoonlightPortable-x64-6.2.0.zip",
+    "sha256": "6f91d268b41ed5ca8066d9d7578dc403b8db190991ff48f00b1700465f8f7ebf"
+  }
+}

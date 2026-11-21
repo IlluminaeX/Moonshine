@@ -1,0 +1,106 @@
+diff --git a/src/Connection.c b/src/Connection.c
+index bac9a6e..2b86841 100644
+--- a/src/Connection.c
++++ b/src/Connection.c
+@@ -1,4 +1,5 @@
+ #include "Limelight-internal.h"
++#include "MoonshineTunnel.h"
+ 
+ static int stage = STAGE_NONE;
+ static ConnListenerConnectionTerminated originalTerminationCallback;
+@@ -278,6 +279,7 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
+     else {
+         Limelog("RTSP port: %u\n", RtspPortNumber);
+     }
++    RtspPortNumber = MoonshineTunnelPort(serverInfo->address, RtspPortNumber);
+ 
+     alreadyTerminated = false;
+     ConnectionInterrupted = false;
+diff --git a/src/MoonshineTunnel.h b/src/MoonshineTunnel.h
+new file mode 100644
+index 0000000..03a0f43
+--- /dev/null
++++ b/src/MoonshineTunnel.h
+@@ -0,0 +1,48 @@
++// Moonshine: direct connections to friends' PCs (see Moonshine's app/lib/tunnels.js).
++//
++// A direct connection gets a stand-in address on this PC (127.77.x.y) that listens on the host's
++// ports shifted by an offset, since the host's own port numbers may already be taken here.
++// Moonshine passes MOONSHINE_TUNNEL="ip|base|offset" when it starts the player. For that address
++// only, ports the tunnel carries (base -5, 0, 9, 10, 11, 21) are shifted; everything else is
++// untouched. Shifting is idempotent: an already-shifted port is never in that set (offset >= 1000).
++#pragma once
++
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++static inline int MoonshineTunnelParse_(const char* addr, int* base, int* offset)
++{
++    char ip[64];
++    const char* env = getenv("MOONSHINE_TUNNEL");
++    if (addr == NULL || env == NULL) {
++        return 0;
++    }
++    if (sscanf(env, "%63[^|]|%d|%d", ip, base, offset) != 3) {
++        return 0;
++    }
++    return strcmp(addr, ip) == 0;
++}
++
++/* Is this host address a direct connection's stand-in? */
++static inline int MoonshineTunnelActive(const char* addr)
++{
++    int base, offset;
++    return MoonshineTunnelParse_(addr, &base, &offset);
++}
++
++/* The port to use on this address for a port the host reported. */
++static inline uint16_t MoonshineTunnelPort(const char* addr, uint16_t port)
++{
++    int base, offset, rel, shifted;
++    if (!MoonshineTunnelParse_(addr, &base, &offset)) {
++        return port;
++    }
++    rel = (int)port - base;
++    if (rel != -5 && rel != 0 && rel != 9 && rel != 10 && rel != 11 && rel != 21) {
++        return port;
++    }
++    shifted = (int)port + offset;
++    return (shifted > 0 && shifted < 65536) ? (uint16_t)shifted : port;
++}
+diff --git a/src/RtspConnection.c b/src/RtspConnection.c
+index e958101..c1faae0 100644
+--- a/src/RtspConnection.c
++++ b/src/RtspConnection.c
+@@ -1,4 +1,5 @@
+ #include "Limelight-internal.h"
++#include "MoonshineTunnel.h"
+ #include "Rtsp.h"
+ 
+ #define RTSP_CONNECT_TIMEOUT_SEC 10
+@@ -1198,6 +1199,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
+         else {
+             Limelog("Audio port: %u\n", AudioPortNumber);
+         }
++        AudioPortNumber = MoonshineTunnelPort(RemoteAddrString, AudioPortNumber);
+ 
+         // Parse the Sunshine ping payload protocol extension if present
+         memset(&AudioPingPayload, 0, sizeof(AudioPingPayload));
+@@ -1282,6 +1284,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
+         else {
+             Limelog("Video port: %u\n", VideoPortNumber);
+         }
++        VideoPortNumber = MoonshineTunnelPort(RemoteAddrString, VideoPortNumber);
+ 
+         freeMessage(&response);
+     }
+@@ -1326,6 +1329,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
+         else {
+             Limelog("Control port: %u\n", ControlPortNumber);
+         }
++        ControlPortNumber = MoonshineTunnelPort(RemoteAddrString, ControlPortNumber);
+ 
+         freeMessage(&response);
+     }

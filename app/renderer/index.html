@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' boxart:; style-src 'self'; script-src 'self'">
+  <title>Moonshine</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="brand"><img src="../assets/moonshine.png" alt=""><span>Moonshine</span></div>
+    <button class="tab active" data-tab="connect">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><path d="m10 8.5 4 2-4 2z" fill="currentColor"/></svg>
+      <span>Connect</span>
+    </button>
+    <button class="tab" data-tab="friends">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.2a6.5 6.5 0 0 1 3 5.8"/></svg>
+      <span>Friends</span>
+    </button>
+    <button class="tab" data-tab="host">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1" fill="currentColor"/><path d="M2 9a14.5 14.5 0 0 1 20 0"/></svg>
+      <span>Host</span>
+    </button>
+    <button class="tab" data-tab="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+      <span>Stream settings</span>
+    </button>
+    <button class="tab" data-tab="apollo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      <span>Host settings</span>
+    </button>
+    <div class="spacer"></div>
+    <div id="update-box" class="update-box hidden">
+      <div id="update-title" class="update-title"></div>
+      <div id="update-detail" class="update-detail"></div>
+      <div id="update-bar" class="update-bar hidden"><div></div></div>
+      <button id="update-now" type="button">Update now</button>
+    </div>
+    <label class="check small"><input type="checkbox" id="start-at-login"> Start with Windows</label>
+    <button id="app-version" type="button" class="version-line" title="Check for updates"></button>
+  </nav>
+
+  <main>
+    <!-- Connect -->
+    <section id="tab-connect" class="page active">
+      <!-- Host list -->
+      <div id="host-list-view">
+        <header>
+          <h1>Connect</h1>
+          <div class="actions">
+            <button id="add-host" class="secondary">Add PC</button>
+            <button id="refresh-hosts" class="secondary">Refresh</button>
+          </div>
+        </header>
+        <p class="hint">Your PCs, PCs on your network, and friends’ PCs shared with you on Tailscale.</p>
+        <div id="hosts" class="cards"></div>
+      </div>
+
+      <!-- One host's games -->
+      <div id="host-view" class="hidden">
+        <header>
+          <div class="title-row">
+            <button id="back-to-hosts" class="secondary icon" aria-label="Back">←</button>
+            <h1 id="host-view-name"></h1>
+          </div>
+          <div class="actions">
+            <button id="refresh-apps" class="secondary">Refresh</button>
+            <button id="quit-app" class="secondary">Close running game</button>
+          </div>
+        </header>
+        <p id="host-view-meta" class="hint"></p>
+        <div id="apps" class="games"></div>
+      </div>
+    </section>
+
+    <!-- Host settings: the host engine's settings, applications, commands and logs -->
+    <section id="tab-friends" class="page">
+      <header>
+        <h1>Friends</h1>
+        <div class="actions">
+          <label class="check small" title="A notification when a friend comes online or starts streaming a game"><input type="checkbox" id="friend-alerts"> Notify me</label>
+          <button id="refresh-friends" class="secondary">Refresh</button>
+        </div>
+      </header>
+      <p class="hint">Who’s online and whether their PC is free. Add friends by username, or they appear when they share their PC with you on Tailscale. Your other PCs are listed too.</p>
+      <div id="friend-account" class="panel friend-account hidden"></div>
+      <div id="friend-requests" class="friend-requests hidden"></div>
+      <div id="friends" class="friends"></div>
+    </section>
+
+    <section id="tab-apollo" class="page">
+      <header>
+        <h1>Host settings</h1>
+        <div class="actions">
+          <button id="apollo-restart" class="secondary">Restart host</button>
+        </div>
+      </header>
+      <nav class="segmented" id="apollo-subnav">
+        <button data-sub="settings" class="active">Settings</button>
+        <button data-sub="apps">Applications</button>
+        <button data-sub="commands">Commands</button>
+        <button data-sub="logs">Logs</button>
+        <button data-sub="tools">Tools</button>
+        <button data-sub="webui">Web UI</button>
+      </nav>
+
+      <div id="apollo-message" class="panel hidden">
+        <p id="apollo-message-text"></p>
+        <button id="apollo-message-action" class="secondary"></button>
+      </div>
+
+      <!-- Settings, built from apollo-schema.js -->
+      <div id="apollo-sub-settings" class="apollo-sub">
+        <div class="settings-layout">
+          <nav id="apollo-sections" class="section-list"></nav>
+          <form id="apollo-settings-form" class="settings-fields"></form>
+        </div>
+        <div id="apollo-save-bar" class="save-bar hidden">
+          <span>Unsaved changes. Saving restarts the host and ends any active stream.</span>
+          <div class="actions">
+            <button id="apollo-discard" type="button" class="secondary">Discard</button>
+            <button id="apollo-save" type="button">Save and restart</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Applications -->
+      <div id="apollo-sub-apps" class="apollo-sub hidden">
+        <div class="row-actions">
+          <p class="hint">What friends and your other devices can launch on this PC.</p>
+          <button id="app-add">Add application</button>
+        </div>
+        <div id="apollo-apps" class="list panel"></div>
+      </div>
+
+      <!-- Logs -->
+      <div id="apollo-sub-logs" class="apollo-sub hidden">
+        <div class="row-actions">
+          <input id="logs-filter" placeholder="Filter (e.g. Error, Warning, audio)">
+          <button id="logs-refresh" class="secondary">Refresh</button>
+          <button id="logs-copy" class="secondary">Copy</button>
+        </div>
+        <pre id="apollo-logs" class="logs"></pre>
+      </div>
+
+      <!-- Tools: pairing by hand, troubleshooting, the web page's login -->
+      <div id="apollo-sub-tools" class="apollo-sub hidden">
+        <div class="scroll">
+          <div class="panel first">
+            <h2>Pair a device by hand</h2>
+            <p class="hint">Moonshine shows a popup when a device asks to pair. If you missed it, type the PIN the device is showing.</p>
+            <form id="pin-form" class="inline">
+              <input id="pin-code" placeholder="PIN" inputmode="numeric" maxlength="4" pattern="\d{4}" required>
+              <input id="pin-name" placeholder="Name for the device" maxlength="60" required>
+              <button type="submit">Pair</button>
+            </form>
+            <h3>One-time code</h3>
+            <p class="hint">For apps that pair with a code instead of a PIN (Artemis). Pick a passphrase, then enter the code and the passphrase on the device within 3 minutes.</p>
+            <form id="otp-form" class="inline">
+              <input id="otp-pass" placeholder="Passphrase (4 or more characters)" minlength="4" required>
+              <input id="otp-name" placeholder="Name for the device" maxlength="60">
+              <button type="submit">Create code</button>
+            </form>
+            <p id="otp-result" class="otp hidden"></p>
+          </div>
+          <div class="panel">
+            <h2>Troubleshooting</h2>
+            <div class="row">
+              <div>
+                <div>Close the running app</div>
+                <div class="hint">Ends the app being streamed, if it’s stuck or won’t close from the device.</div>
+              </div>
+              <button id="tool-close-app" class="secondary">Close app</button>
+            </div>
+            <div class="row">
+              <div>
+                <div>Reset display settings</div>
+                <div class="hint">Use this if your monitors didn’t go back to normal after a stream.</div>
+              </div>
+              <button id="tool-reset-display" class="secondary">Reset</button>
+            </div>
+            <div class="row">
+              <div>
+                <div>Remove every paired device</div>
+                <div class="hint">They will all have to pair again.</div>
+              </div>
+              <button id="tool-unpair-all" class="danger">Remove all</button>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Web page login</h2>
+            <p class="hint">Moonshine doesn’t need this. It’s the username and password for opening the host’s page in a browser on this PC (https://localhost:47990).</p>
+            <form id="weblogin-form" class="inline">
+              <input id="weblogin-user" placeholder="Username" required>
+              <input id="weblogin-pass" type="password" placeholder="New password" required>
+              <button type="submit">Save</button>
+            </form>
+          </div>
+          <p id="host-version" class="hint"></p>
+        </div>
+      </div>
+
+      <!-- The host engine's own web page, for anything Moonshine's pages don't cover -->
+      <div id="apollo-sub-webui" class="apollo-sub hidden">
+        <div class="row-actions">
+          <p class="hint">The host engine’s own page, in case something isn’t in Moonshine yet.</p>
+          <button id="webui-reload" class="secondary">Reload</button>
+        </div>
+        <div id="webui-frame" class="webui-frame"></div>
+      </div>
+
+      <!-- Commands run for every app, and commands devices can trigger -->
+      <div id="apollo-sub-commands" class="apollo-sub hidden">
+        <div class="scroll">
+          <div class="panel first">
+            <div class="cmd-head">
+              <div>
+                <h2>Before and after every app</h2>
+                <p class="hint">“Do” runs before an app starts and “Undo” after it ends. If a “Do” command fails, the app doesn’t start.</p>
+              </div>
+              <button type="button" class="secondary" data-add-cmd="global_prep_cmd">Add</button>
+            </div>
+            <div id="cmd-global_prep_cmd" class="cmd-list"></div>
+          </div>
+          <div class="panel">
+            <div class="cmd-head">
+              <div>
+                <h2>When streaming resumes and pauses</h2>
+                <p class="hint">“Do” runs when the first device connects and “Undo” when the last one disconnects.</p>
+              </div>
+              <button type="button" class="secondary" data-add-cmd="global_state_cmd">Add</button>
+            </div>
+            <div id="cmd-global_state_cmd" class="cmd-list"></div>
+          </div>
+          <div class="panel">
+            <div class="cmd-head">
+              <div>
+                <h2>Server commands</h2>
+                <p class="hint">Commands a device can run from its menu while streaming, if it has the “Run server commands” permission.</p>
+              </div>
+              <button type="button" class="secondary" data-add-cmd="server_cmd">Add</button>
+            </div>
+            <div id="cmd-server_cmd" class="cmd-list"></div>
+          </div>
+        </div>
+        <div id="commands-save-bar" class="save-bar hidden">
+          <span>Unsaved changes. Saving restarts the host and ends any active stream.</span>
+          <div class="actions">
+            <button id="commands-discard" type="button" class="secondary">Discard</button>
+            <button id="commands-save" type="button">Save and restart</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Application editor -->
+    <div id="app-dialog" class="overlay hidden">
+      <form id="app-form" class="dialog wide">
+        <h2 id="app-dialog-title">Edit application</h2>
+        <div class="form-grid">
+          <label class="full">Name<input name="name" required></label>
+          <label class="full">Command <span class="sub">(leave empty to just stream the desktop)</span>
+            <span class="with-button"><input name="cmd" placeholder="C:\Games\MyGame\game.exe"><button type="button" class="secondary" data-browse="cmd">Browse…</button></span>
+          </label>
+          <label class="full">Working folder
+            <span class="with-button"><input name="working-dir"><button type="button" class="secondary" data-browse="working-dir">Browse…</button></span>
+          </label>
+          <label class="full">Cover image
+            <span class="with-button"><input name="image-path" placeholder="PNG file"><button type="button" class="secondary" data-browse="image-path">Browse…</button></span>
+          </label>
+          <label class="full">Detached commands <span class="sub">(one per line; started and left running, e.g. Steam URLs)</span>
+            <textarea name="detached" rows="2"></textarea>
+          </label>
+          <label>Exit timeout (seconds)<input name="exit-timeout" type="number" min="0"></label>
+          <label>Virtual display scale (%)<input name="scale-factor" type="number" min="50" max="400"></label>
+          <label>Controller type
+            <select name="gamepad">
+              <option value="">Use host default</option>
+              <option value="x360">Xbox 360</option>
+              <option value="xone">Xbox One</option>
+              <option value="ds4">DualShock 4 (PS4)</option>
+              <option value="ds5">DualSense (PS5)</option>
+              <option value="switch">Switch Pro</option>
+            </select>
+          </label>
+        </div>
+        <div class="toggles compact">
+          <label class="check"><input type="checkbox" name="virtual-display"> Always use a virtual display</label>
+          <label class="check"><input type="checkbox" name="elevated"> Run as administrator</label>
+          <label class="check"><input type="checkbox" name="auto-detach"> Keep streaming if the app exits right away (launchers)</label>
+          <label class="check"><input type="checkbox" name="wait-all"> Keep streaming until all the app’s processes exit</label>
+          <label class="check"><input type="checkbox" name="terminate-on-pause"> Close the app when the stream is paused</label>
+          <label class="check"><input type="checkbox" name="allow-client-commands"> Run client-specific commands</label>
+          <label class="check"><input type="checkbox" name="use-app-identity"> Use the app’s own identity for clients</label>
+          <label class="check"><input type="checkbox" name="per-client-app-identity"> Separate identity per client</label>
+          <label class="check"><input type="checkbox" name="exclude-global-prep-cmd"> Skip global prep commands</label>
+          <label class="check"><input type="checkbox" name="exclude-global-state-cmd"> Skip global state commands</label>
+        </div>
+        <div class="cmd-head">
+          <div>
+            <h3>Before and after this app</h3>
+            <p class="hint">“Do” runs before it starts and “Undo” after it ends.</p>
+          </div>
+          <button type="button" class="secondary" data-add-cmd="prep-cmd">Add</button>
+        </div>
+        <div id="cmd-prep-cmd" class="cmd-list"></div>
+        <div class="cmd-head">
+          <div>
+            <h3>When streaming resumes and pauses</h3>
+            <p class="hint">“Do” runs when the first device connects and “Undo” when the last one disconnects.</p>
+          </div>
+          <button type="button" class="secondary" data-add-cmd="state-cmd">Add</button>
+        </div>
+        <div id="cmd-state-cmd" class="cmd-list"></div>
+        <div class="actions end">
+          <button type="button" id="app-cancel" class="secondary">Cancel</button>
+          <button type="submit">Save</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Stream settings -->
+    <section id="tab-settings" class="page">
+      <header><h1>Stream settings</h1></header>
+      <p class="hint">Used every time you connect from Moonshine.</p>
+      <form id="settings-form">
+        <div class="panel grid-form">
+          <label>Resolution
+            <select name="resolution">
+              <option value="">Moonlight default</option>
+              <option value="native" id="native-resolution">This screen</option>
+              <option value="1280x720">720p</option>
+              <option value="1920x1080">1080p</option>
+              <option value="2560x1440">1440p</option>
+              <option value="3840x2160">4K</option>
+            </select>
+          </label>
+          <label>Frame rate
+            <select name="fps">
+              <option value="">Moonlight default</option>
+              <option value="30">30 FPS</option>
+              <option value="60">60 FPS</option>
+              <option value="90">90 FPS</option>
+              <option value="120">120 FPS</option>
+              <option value="144">144 FPS</option>
+              <option value="165">165 FPS</option>
+              <option value="240">240 FPS</option>
+            </select>
+          </label>
+          <label>Bitrate
+            <div class="range-row">
+              <input type="range" name="bitrateMbps" min="0" max="150" step="1">
+              <span id="bitrate-label"></span>
+            </div>
+          </label>
+          <label>Display
+            <select name="displayMode">
+              <option value="fullscreen">Full screen</option>
+              <option value="borderless">Borderless window</option>
+              <option value="windowed">Window</option>
+            </select>
+          </label>
+          <label>Video codec
+            <select name="videoCodec">
+              <option value="auto">Automatic</option>
+              <option value="H.264">H.264</option>
+              <option value="HEVC">HEVC</option>
+              <option value="AV1">AV1</option>
+            </select>
+          </label>
+          <label>Audio
+            <select name="audioConfig">
+              <option value="stereo">Stereo</option>
+              <option value="5.1-surround">5.1 surround</option>
+              <option value="7.1-surround">7.1 surround</option>
+            </select>
+          </label>
+        </div>
+        <div class="panel grid-form">
+          <label>Performance stats
+            <select name="overlayMode">
+              <option value="off">Off</option>
+              <option value="compact">Compact line</option>
+              <option value="full">Full panel</option>
+            </select>
+          </label>
+          <label>Stats position
+            <select name="overlayCorner">
+              <option value="top-left">Top left</option>
+              <option value="top-right">Top right</option>
+              <option value="bottom-left">Bottom left</option>
+              <option value="bottom-right">Bottom right</option>
+            </select>
+          </label>
+          <label>Stats opacity
+            <div class="range-row">
+              <input type="range" name="overlayOpacity" min="20" max="100" step="5">
+              <span id="opacity-label"></span>
+            </div>
+          </label>
+        </div>
+        <div class="panel toggles">
+          <label class="check"><input type="checkbox" name="hdr"> HDR</label>
+          <label class="check"><input type="checkbox" name="vsync"> V-Sync</label>
+          <label class="check"><input type="checkbox" name="framePacing"> Frame pacing (smoother, adds a little latency)</label>
+          <label class="check"><input type="checkbox" name="gameOptimization"> Optimize game settings for streaming</label>
+          <label class="check"><input type="checkbox" name="audioOnHost"> Also play audio on the host PC</label>
+          <label class="check"><input type="checkbox" name="muteOnFocusLoss"> Mute when the stream isn’t focused</label>
+          <label class="check"><input type="checkbox" name="quitAfter"> Close the game on the host when I end the stream</label>
+        </div>
+      </form>
+      <p class="hint">To end a stream, press Ctrl+Alt+Shift+Q. Ctrl+Alt+Shift+S switches the stats between full, compact and off.</p>
+
+    </section>
+
+    <!-- Host -->
+    <section id="tab-host" class="page">
+      <header>
+        <h1>Host</h1>
+        <div class="actions">
+          <button id="open-webui" class="secondary">Host settings</button>
+          <button id="open-webui-page" class="secondary">Web UI</button>
+        </div>
+      </header>
+
+      <div class="panel">
+        <div class="row">
+          <div>
+            <div class="label">Hosting</div>
+            <div id="service-state" class="value">Checking…</div>
+          </div>
+          <button id="toggle-service">…</button>
+        </div>
+        <div class="row">
+          <div>
+            <div class="label">Tailscale</div>
+            <div id="tailscale-state" class="value">Checking…</div>
+          </div>
+          <a id="share-link" class="button secondary" href="https://login.tailscale.com/admin/machines" target="_blank">Share this PC</a>
+        </div>
+      </div>
+
+      <div id="guests-panel" class="panel guests-panel">
+        <div class="label">Guests</div>
+        <div id="guests" class="guests"></div>
+        <div id="guest-presets" class="guest-presets hidden">
+          <span class="preset-label">Everyone:</span>
+          <button type="button" class="secondary" data-preset="full" title="Keyboard, mouse, controller, touch and pen">Full control</button>
+          <button type="button" class="secondary" data-preset="controllers" title="Controllers only: no keyboard or mouse">Controllers only</button>
+          <button type="button" class="secondary" data-preset="watch" title="No input at all">Watch only</button>
+        </div>
+      </div>
+
+      <div id="bandwidth-panel" class="panel bandwidth-panel">
+        <div>
+          <div class="label">Upload limit</div>
+          <div id="bandwidth-note" class="bandwidth-note">Shared by everyone watching. Empty means no limit.</div>
+        </div>
+        <form id="bandwidth-form" class="bandwidth-form">
+          <input id="bandwidth-limit" type="number" min="0" max="10000" step="any" placeholder="No limit" aria-label="Upload limit in Mbps">
+          <span class="bandwidth-unit">Mbps</span>
+          <button type="submit" class="secondary">Save</button>
+        </form>
+      </div>
+
+      <div id="login-panel" class="panel hidden">
+        <h2>Host login</h2>
+        <p class="hint">This PC’s host was set up with Apollo before Moonshine. Sign in once with the username and password you used for Apollo’s web page.</p>
+        <form id="login-form" class="inline">
+          <input id="login-user" placeholder="Username" required>
+          <input id="login-pass" type="password" placeholder="Password" required>
+          <button type="submit">Sign in</button>
+        </form>
+      </div>
+
+      <div id="audio-panel" class="panel">
+        <h2>Stream audio</h2>
+        <p class="hint">What the people streaming from this PC hear.</p>
+        <nav id="audio-mode" class="segmented audio-modes">
+          <button type="button" data-mode="system">All system audio</button>
+          <button type="button" data-mode="exclude">Exclude these apps</button>
+          <button type="button" data-mode="include">Only these apps</button>
+        </nav>
+        <div id="audio-apps" class="app-picker">
+          <div id="audio-chips" class="chips"></div>
+          <input id="audio-search" placeholder="Search running apps, or type a name like Discord.exe and press Enter">
+          <div id="audio-suggest" class="suggest"></div>
+        </div>
+        <div class="audio-foot">
+          <p id="audio-note" class="hint"></p>
+          <button id="save-audio">Apply</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Devices</h2>
+        <p class="hint">Devices paired with this PC. With “Ask before streaming” on, you get a popup to allow each stream. Remove a device to revoke it completely.</p>
+        <div id="clients" class="list"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Pairing -->
+  <div id="pair-dialog" class="overlay hidden">
+    <div class="dialog">
+      <h2 id="pair-title">Pairing…</h2>
+      <div id="pair-pin" class="pin hidden"></div>
+      <p id="pair-text" class="hint"></p>
+      <button id="pair-cancel" class="secondary">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Add a PC -->
+  <div id="add-dialog" class="overlay hidden">
+    <form id="add-form" class="dialog">
+      <h2>Add a PC</h2>
+      <p class="hint">Enter the PC’s IP address or hostname. It needs Moonshine, Apollo or Sunshine running.</p>
+      <input id="add-address" placeholder="192.168.1.20 or my-pc" required>
+      <div class="actions end">
+        <button type="button" id="add-cancel" class="secondary">Cancel</button>
+        <button type="submit">Add</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Streaming -->
+  <div id="stream-overlay" class="overlay hidden">
+    <div class="dialog">
+      <div id="stream-label" class="label">Streaming</div>
+      <h2 id="stream-title"></h2>
+      <p id="stream-hint" class="hint">The stream is full screen. If that PC asks its owner first, it starts once they allow it. Press Ctrl+Alt+Shift+Q to end it.</p>
+      <button id="end-stream">End stream</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="apollo-schema.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

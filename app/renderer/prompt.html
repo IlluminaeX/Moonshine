@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+  <title>Moonshine</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="prompt">
+  <div class="prompt-bar">
+    <img src="../assets/moonshine.png" alt="">
+    <span>Moonshine</span>
+  </div>
+  <form id="prompt-form" class="prompt-body">
+    <h2 id="prompt-title"></h2>
+    <div id="prompt-details" class="prompt-details"></div>
+    <div id="prompt-pin" class="prompt-pin hidden">
+      <label>PIN shown on that device
+        <input id="pin" inputmode="numeric" maxlength="4" pattern="\d{4}" placeholder="0000" autocomplete="off">
+      </label>
+      <label>Name for this device
+        <input id="device-name" maxlength="60" autocomplete="off">
+      </label>
+    </div>
+    <label id="prompt-check-row" class="check hidden"><input type="checkbox" id="prompt-check"> <span id="prompt-check-label"></span></label>
+    <div class="actions end">
+      <button type="button" id="prompt-decline" class="secondary"></button>
+      <button type="submit" id="prompt-accept"></button>
+    </div>
+  </form>
+  <script src="prompt.js"></script>
+</body>
+</html>

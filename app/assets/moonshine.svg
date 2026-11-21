@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="70%">
+      <stop offset="0" stop-color="#2a0b14"/>
+      <stop offset="0.6" stop-color="#12060b"/>
+      <stop offset="1" stop-color="#070308"/>
+    </radialGradient>
+    <!-- Outer corona: soft crimson glow fading out -->
+    <radialGradient id="corona" cx="50%" cy="50%" r="50%">
+      <stop offset="0.55" stop-color="#dc143c" stop-opacity="1"/>
+      <stop offset="0.68" stop-color="#a50e2d" stop-opacity="0.75"/>
+      <stop offset="0.82" stop-color="#6e0a1f" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="#5a0618" stop-opacity="0"/>
+    </radialGradient>
+    <!-- The moon: near-black with a faint red earthshine -->
+    <radialGradient id="moon" cx="40%" cy="38%" r="70%">
+      <stop offset="0" stop-color="#2a0d14"/>
+      <stop offset="0.7" stop-color="#0d0508"/>
+      <stop offset="1" stop-color="#050203"/>
+    </radialGradient>
+    <radialGradient id="flare" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#fff2f3"/>
+      <stop offset="0.25" stop-color="#ff6070"/>
+      <stop offset="0.6" stop-color="#dc143c" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#dc143c" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4"/>
+    </filter>
+  </defs>
+
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+
+  <!-- Corona and its bright inner rim -->
+  <circle cx="128" cy="128" r="104" fill="url(#corona)"/>
+  <circle cx="128" cy="128" r="66" fill="none" stroke="#e01a3f" stroke-width="7" filter="url(#soft)"/>
+  <circle cx="128" cy="128" r="64" fill="none" stroke="#ff4a5f" stroke-width="2.5"/>
+
+  <!-- Moon, nudged down-left so a sliver of crimson light shows top-right -->
+  <circle cx="124" cy="132" r="63" fill="url(#moon)"/>
+
+  <!-- Diamond-ring flare where the sun peeks out -->
+  <circle cx="173" cy="84" r="24" fill="url(#flare)"/>
+  <circle cx="173" cy="84" r="4.5" fill="#fff6f7"/>
+</svg>

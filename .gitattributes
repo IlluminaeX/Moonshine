@@ -1,0 +1,4 @@
+# Patches must stay byte-for-byte, or they stop applying
+patches/*.patch -text
+# Run by MSYS2 bash
+*.sh text eol=lf

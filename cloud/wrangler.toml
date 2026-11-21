@@ -1,0 +1,28 @@
+# Moonshine friends service. Deploy from this folder:
+#   npx wrangler login
+#   npx wrangler d1 create moonshine            (once; put the id it prints below)
+#   npx wrangler d1 execute moonshine --remote --file=schema.sql
+#   (a database made before direct connections: npx wrangler d1 execute moonshine --remote --file=migrations/0001_tunnel.sql)
+#   npx wrangler secret put DISCORD_SECRET      (paste the Discord app's Client Secret)
+#   npx wrangler deploy
+name = "moonshine"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+[vars]
+DISCORD_CLIENT_ID = "1573416935054385273"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "moonshine"
+database_id = "355ed8cd-5dec-4008-9d49-2ca71725602d"
+
+# Live links to signed-in PCs (one Durable Object per user; SQLite-backed, as the free plan needs)
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "Hub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Hub"]

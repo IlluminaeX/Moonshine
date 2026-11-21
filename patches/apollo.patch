@@ -1,0 +1,2424 @@
+diff --git a/src/config.cpp b/src/config.cpp
+index f30596d5..5455ff52 100644
+--- a/src/config.cpp
++++ b/src/config.cpp
+@@ -516,6 +516,7 @@ namespace config {
+     "1920x1080x60",  // fallback_mode
+     false, // isolated Display
+     false, // ignore_encoder_probe_failure
++    0,  // moonshine_total_bitrate
+   };
+ 
+   audio_t audio {
+@@ -525,6 +526,8 @@ namespace config {
+     true,  // install_steam_drivers
+     true, // keep_sink_default
+     true, // auto_capture
++    "system",  // audio_capture_mode
++    {},  // audio_capture_app
+   };
+ 
+   stream_t stream {
+@@ -578,6 +581,7 @@ namespace config {
+   };
+ 
+   sunshine_t sunshine {
++    false, // moonshine_managed
+     false, // hide_tray_controls
+     true, // enable_pairing
+     true, // enable_discovery
+@@ -1207,6 +1211,7 @@ namespace config {
+     string_f(vars, "fallback_mode", video.fallback_mode);
+     bool_f(vars, "isolated_virtual_display_option", video.isolated_virtual_display_option);
+     bool_f(vars, "ignore_encoder_probe_failure", video.ignore_encoder_probe_failure);
++    int_between_f(vars, "moonshine_total_bitrate", video.moonshine_total_bitrate, {0, 10000000});
+ 
+     path_f(vars, "pkey", nvhttp.pkey);
+     path_f(vars, "cert", nvhttp.cert);
+@@ -1229,6 +1234,8 @@ namespace config {
+     bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);
+     bool_f(vars, "keep_sink_default", audio.keep_default);
+     bool_f(vars, "auto_capture_sink", audio.auto_capture);
++    string_restricted_f(vars, "audio_capture_mode", audio.capture_mode, {"system"sv, "exclude"sv, "include"sv});
++    string_f(vars, "audio_capture_app", audio.capture_app);
+ 
+     string_restricted_f(vars, "origin_web_ui_allowed", nvhttp.origin_web_ui_allowed, {"pc"sv, "lan"sv, "wan"sv});
+ 
+@@ -1290,6 +1297,7 @@ namespace config {
+     bool_f(vars, "native_pen_touch", input.native_pen_touch);
+     bool_f(vars, "enable_input_only_mode", input.enable_input_only_mode);
+ 
++    bool_f(vars, "moonshine_managed", sunshine.moonshine_managed);
+     bool_f(vars, "hide_tray_controls", sunshine.hide_tray_controls);
+     bool_f(vars, "enable_pairing", sunshine.enable_pairing);
+     bool_f(vars, "enable_discovery", sunshine.enable_discovery);
+diff --git a/src/config.h b/src/config.h
+index bec1ac95..a42d7a78 100644
+--- a/src/config.h
++++ b/src/config.h
+@@ -149,6 +149,8 @@ namespace config {
+     std::string fallback_mode;
+     bool isolated_virtual_display_option;
+     bool ignore_encoder_probe_failure;
++
++    int moonshine_total_bitrate;  ///< Moonshine: upload limit in kbps shared by all viewers, 0 = no limit
+   };
+ 
+   struct audio_t {
+@@ -158,6 +160,8 @@ namespace config {
+     bool install_steam_drivers;
+     bool keep_default;
+     bool auto_capture;
++    std::string capture_mode;  ///< system, exclude or include (Windows process loopback)
++    std::string capture_app;  ///< executables to exclude or include, comma-separated, e.g. Discord.exe, Spotify.exe
+   };
+ 
+   constexpr int ENCRYPTION_MODE_NEVER = 0;  // Never use video encryption, even if the client supports it
+@@ -256,6 +260,7 @@ namespace config {
+   };
+ 
+   struct sunshine_t {
++    bool moonshine_managed;  ///< Moonshine runs this host: no tray icon, and Moonshine approves streams and pairing
+     bool hide_tray_controls;
+     bool enable_pairing;
+     bool enable_discovery;
+diff --git a/src/confighttp.cpp b/src/confighttp.cpp
+index e270dd76..272f128a 100644
+--- a/src/confighttp.cpp
++++ b/src/confighttp.cpp
+@@ -34,6 +34,12 @@
+ #include "logging.h"
+ #include "network.h"
+ #include "nvhttp.h"
++#include "rtsp.h"
++
++// Moonshine: from stream.cpp (stream.h can only follow rtsp.h, which this file does not need it for)
++namespace stream::session {
++  void rebalance_bitrate();
++}
+ #include "platform/common.h"
+ #include "process.h"
+ #include "utility.h"
+@@ -166,6 +172,22 @@ namespace confighttp {
+     return true;
+   }
+ 
++  // Moonshine: a key made at each start and written next to the host's state file, so the Moonshine
++  // app on this PC can use the API (and show the web UI) without the web login.
++  std::string moonshineToken;
++
++  bool hasMoonshineToken(req_https_t request) {
++    if (moonshineToken.empty()) {
++      return false;
++    }
++    auto header = request->header.find("x-moonshine-token");
++    if (header == request->header.end() || header->second != moonshineToken) {
++      return false;
++    }
++    auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
++    return net::from_address(address) == net::PC;
++  }
++
+   /**
+    * @brief Authenticate the request.
+    * @param response The HTTP response object.
+@@ -178,6 +200,8 @@ namespace confighttp {
+   bool authenticate(resp_https_t response, req_https_t request, bool needsRedirect = false) {
+     if (!checkIPOrigin(response, request))
+       return false;
++    if (hasMoonshineToken(request))
++      return true;
+     // If credentials not set, redirect to welcome.
+     if (config::sunshine.username.empty()) {
+       send_redirect(response, request, "/welcome");
+@@ -911,6 +935,7 @@ namespace confighttp {
+       bool enable_legacy_ordering = input_tree.value("enable_legacy_ordering", true);
+       bool allow_client_commands = input_tree.value("allow_client_commands", true);
+       bool always_use_virtual_display = input_tree.value("always_use_virtual_display", false);
++      bool require_approval = input_tree.value("require_approval", true);
+       auto do_cmds = nvhttp::extract_command_entries(input_tree, "do");
+       auto undo_cmds = nvhttp::extract_command_entries(input_tree, "undo");
+       auto perm = static_cast<crypto::PERM>(input_tree.value("perm", static_cast<uint32_t>(crypto::PERM::_no)) & static_cast<uint32_t>(crypto::PERM::_all));
+@@ -923,7 +948,8 @@ namespace confighttp {
+         perm,
+         enable_legacy_ordering,
+         allow_client_commands,
+-        always_use_virtual_display
++        always_use_virtual_display,
++        require_approval
+       );
+       send_response(response, output_tree);
+     } catch (std::exception &e) {
+@@ -1005,6 +1031,7 @@ namespace confighttp {
+     output_tree["platform"] = SUNSHINE_PLATFORM;
+     output_tree["version"] = PROJECT_VERSION;
+ #ifdef _WIN32
++    output_tree["moonshineAudio"] = true;  // Moonshine build: supports audio_capture_mode / audio_capture_app
+     output_tree["vdisplayStatus"] = (int)proc::vDisplayDriverStatus;
+ #endif
+     auto vars = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
+@@ -1192,7 +1219,7 @@ namespace confighttp {
+         errors.push_back("Invalid Username");
+       } else {
+         auto hash = util::hex(crypto::hash(password + config::sunshine.salt)).to_string();
+-        if (config::sunshine.username.empty() ||
++        if (config::sunshine.username.empty() || hasMoonshineToken(request) ||
+             (boost::iequals(username, config::sunshine.username) && hash == config::sunshine.password)) {
+           if (newPassword.empty() || newPassword != confirmPassword)
+             errors.push_back("Password Mismatch");
+@@ -1297,6 +1324,158 @@ namespace confighttp {
+     }
+   }
+ 
++  /**
++   * @brief Moonshine: list the stream and pairing requests waiting for the host's user.
++   *
++   * @api_examples{/api/moonshine/pending| GET| null}
++   */
++  void getGuests(resp_https_t response, req_https_t request) {
++    if (!authenticate(response, request)) {
++      return;
++    }
++
++    nlohmann::json output_tree;
++    output_tree["guests"] = nvhttp::guests();
++    output_tree["status"] = true;
++    send_response(response, output_tree);
++  }
++
++  /**
++   * @brief Moonshine: stream and pairing requests waiting for a decision.
++   */
++  void getPendingRequests(resp_https_t response, req_https_t request) {
++    if (!authenticate(response, request)) {
++      return;
++    }
++
++    nlohmann::json output_tree = nvhttp::pending_requests();
++    output_tree["status"] = true;
++    send_response(response, output_tree);
++  }
++
++  /**
++   * @brief Moonshine: allow or decline a waiting stream request.
++   *
++   * @api_examples{/api/moonshine/decide| POST| {"id":1,"allow":true}}
++   */
++  void decideStreamRequest(resp_https_t response, req_https_t request) {
++    if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
++      return;
++    }
++
++    try {
++      std::stringstream ss;
++      ss << request->content.rdbuf();
++      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
++      nlohmann::json output_tree;
++      output_tree["status"] = nvhttp::decide_stream_request(input_tree.value("id", std::uint64_t {0}), input_tree.value("allow", false));
++      send_response(response, output_tree);
++    } catch (std::exception &e) {
++      BOOST_LOG(warning) << "DecideStreamRequest: "sv << e.what();
++      bad_request(response, request, e.what());
++    }
++  }
++
++  /**
++   * @brief Moonshine: record the answer to a pairing request that came with its PIN.
++   *
++   * @api_examples{/api/moonshine/decide-pair| POST| {"id":"...","allow":true}}
++   */
++  void decidePairOffer(resp_https_t response, req_https_t request) {
++    if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
++      return;
++    }
++
++    try {
++      std::stringstream ss;
++      ss << request->content.rdbuf();
++      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
++      nlohmann::json output_tree;
++      output_tree["status"] = nvhttp::decide_pair_offer(input_tree.value("id", ""), input_tree.value("allow", false));
++      send_response(response, output_tree);
++    } catch (std::exception &e) {
++      BOOST_LOG(warning) << "DecidePairOffer: "sv << e.what();
++      bad_request(response, request, e.what());
++    }
++  }
++
++  /**
++   * @brief Moonshine: record the answer to an invite to play.
++   *
++   * @api_examples{/api/moonshine/decide-invite| POST| {"id":"...","join":true}}
++   */
++  void decideInvite(resp_https_t response, req_https_t request) {
++    if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
++      return;
++    }
++
++    try {
++      std::stringstream ss;
++      ss << request->content.rdbuf();
++      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
++      nlohmann::json output_tree;
++      output_tree["status"] = nvhttp::decide_invite(input_tree.value("id", ""), input_tree.value("join", false));
++      send_response(response, output_tree);
++    } catch (std::exception &e) {
++      BOOST_LOG(warning) << "DecideInvite: "sv << e.what();
++      bad_request(response, request, e.what());
++    }
++  }
++
++  /**
++   * @brief Moonshine: change the upload limit shared by everyone watching, at once.
++   *
++   * @api_examples{/api/moonshine/bandwidth| POST| {"kbps":10000}}
++   */
++  void setBandwidth(resp_https_t response, req_https_t request) {
++    if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
++      return;
++    }
++
++    try {
++      std::stringstream ss;
++      ss << request->content.rdbuf();
++      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
++      const int kbps = input_tree.value("kbps", 0);
++      if (kbps < 0 || kbps > 10000000) {
++        bad_request(response, request, "kbps out of range");
++        return;
++      }
++      config::video.moonshine_total_bitrate = kbps;
++      stream::session::rebalance_bitrate();
++      nlohmann::json output_tree;
++      output_tree["status"] = true;
++      output_tree["kbps"] = kbps;
++      send_response(response, output_tree);
++    } catch (std::exception &e) {
++      BOOST_LOG(warning) << "SetBandwidth: "sv << e.what();
++      bad_request(response, request, e.what());
++    }
++  }
++
++  /**
++   * @brief Moonshine: give these devices' controllers the first player numbers, in this order.
++   *
++   * @api_examples{/api/moonshine/player-order| POST| {"uuids":["...","..."]}}
++   */
++  void setPlayerOrder(resp_https_t response, req_https_t request) {
++    if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
++      return;
++    }
++
++    try {
++      std::stringstream ss;
++      ss << request->content.rdbuf();
++      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
++      nlohmann::json output_tree;
++      output_tree["status"] = rtsp_stream::reorder_players(input_tree.value("uuids", std::vector<std::string> {}));
++      send_response(response, output_tree);
++    } catch (std::exception &e) {
++      BOOST_LOG(warning) << "SetPlayerOrder: "sv << e.what();
++      bad_request(response, request, e.what());
++    }
++  }
++
+   /**
+    * @brief Reset the display device persistence.
+    * @param response The HTTP response object.
+@@ -1444,6 +1623,8 @@ namespace confighttp {
+       nlohmann::json output_tree;
+       nlohmann::json input_tree = nlohmann::json::parse(ss.str());
+       std::string uuid = input_tree.value("uuid", "");
++      // Moonshine: a kicked device has to ask again, rather than slipping back in on its last approval.
++      nvhttp::forget_stream_approval(uuid);
+       output_tree["status"] = nvhttp::find_and_stop_session(uuid, true);
+       send_response(response, output_tree);
+     } catch (std::exception &e) {
+@@ -1508,6 +1689,14 @@ namespace confighttp {
+     auto port_https = net::map_port(PORT_HTTPS);
+     auto address_family = net::af_from_enum_string(config::sunshine.address_family);
+     https_server_t server { config::nvhttp.cert, config::nvhttp.pkey };
++    if (config::sunshine.moonshine_managed) {
++      moonshineToken = crypto::rand_alphabet(40, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"sv);
++      auto token_file = std::filesystem::path(config::nvhttp.file_state).parent_path() / "moonshine_token";
++      if (file_handler::write_file(token_file.string().c_str(), moonshineToken) != 0) {
++        BOOST_LOG(warning) << "Couldn't write "sv << token_file.string() << "; Moonshine will need the web login"sv;
++        moonshineToken.clear();
++      }
++    }
+     server.default_resource["DELETE"] = [](resp_https_t response, req_https_t request) {
+       bad_request(response, request);
+     };
+@@ -1531,6 +1720,13 @@ namespace confighttp {
+     server.resource["^/troubleshooting/?$"]["GET"] = getTroubleshootingPage;
+     server.resource["^/api/login"]["POST"] = login;
+     server.resource["^/api/pin$"]["POST"] = savePin;
++    server.resource["^/api/moonshine/pending$"]["GET"] = getPendingRequests;
++    server.resource["^/api/moonshine/guests$"]["GET"] = getGuests;
++    server.resource["^/api/moonshine/decide$"]["POST"] = decideStreamRequest;
++    server.resource["^/api/moonshine/decide-pair$"]["POST"] = decidePairOffer;
++    server.resource["^/api/moonshine/decide-invite$"]["POST"] = decideInvite;
++    server.resource["^/api/moonshine/bandwidth$"]["POST"] = setBandwidth;
++    server.resource["^/api/moonshine/player-order$"]["POST"] = setPlayerOrder;
+     server.resource["^/api/otp$"]["POST"] = getOTP;
+     server.resource["^/api/apps$"]["GET"] = getApps;
+     server.resource["^/api/apps$"]["POST"] = saveApp;
+diff --git a/src/crypto.h b/src/crypto.h
+index 350bb5cc..113098e3 100644
+--- a/src/crypto.h
++++ b/src/crypto.h
+@@ -107,6 +107,7 @@ namespace crypto {
+     bool enable_legacy_ordering;
+     bool allow_client_commands;
+     bool always_use_virtual_display;
++    bool require_approval;  ///< Moonshine: the host's user must allow each stream from this device
+   };
+ 
+   using p_named_cert_t = std::shared_ptr<named_cert_t>;
+diff --git a/src/entry_handler.cpp b/src/entry_handler.cpp
+index c5810898..9bed5741 100644
+--- a/src/entry_handler.cpp
++++ b/src/entry_handler.cpp
+@@ -138,7 +138,7 @@ namespace service_ctrl {
+         return;
+       }
+ 
+-      service_handle = OpenServiceA(scm_handle, "ApolloService", service_desired_access);
++      service_handle = OpenServiceA(scm_handle, "MoonshineHost", service_desired_access);
+       if (!service_handle) {
+         auto winerr = GetLastError();
+         BOOST_LOG(error) << "OpenService() failed: "sv << winerr;
+diff --git a/src/globals.h b/src/globals.h
+index 1617b7c6..bcbdfa23 100644
+--- a/src/globals.h
++++ b/src/globals.h
+@@ -55,6 +55,7 @@ namespace mail {
+   MAIL(invalidate_ref_frames);
+   MAIL(gamepad_feedback);
+   MAIL(hdr);
++  MAIL(bitrate);  ///< Moonshine: new video bitrate (kbps) for this session's encoder
+ #undef MAIL
+ 
+ }  // namespace mail
+diff --git a/src/input.cpp b/src/input.cpp
+index 6c03d0d3..f7fd015d 100644
+--- a/src/input.cpp
++++ b/src/input.cpp
+@@ -144,6 +144,11 @@ namespace input {
+ 
+     int id;
+ 
++    // Moonshine: what the client said this controller is, to plug it back in when players are reordered
++    platf::gamepad_arrival_t arrival {};
++    // Moonshine: unplugged for a moment while players are reordered; its input waits
++    bool parked = false;
++
+     // When emulating the HOME button, we may need to artificially release the back button.
+     // Afterwards, the gamepad state on sunshine won't match the state on Moonlight.
+     // To prevent Sunshine from sending erroneous input data to the active application,
+@@ -844,7 +849,7 @@ namespace input {
+       return;
+     }
+ 
+-    if (input->gamepads[packet->controllerNumber].id >= 0) {
++    if (input->gamepads[packet->controllerNumber].id >= 0 || input->gamepads[packet->controllerNumber].parked) {
+       BOOST_LOG(warning) << "ControllerNumber already allocated ["sv << packet->controllerNumber << ']';
+       return;
+     }
+@@ -854,6 +859,7 @@ namespace input {
+       util::endian::little(packet->capabilities),
+       util::endian::little(packet->supportedButtonFlags),
+     };
++    input->gamepads[packet->controllerNumber].arrival = arrival;
+ 
+     auto id = alloc_id(gamepadMask);
+     if (id < 0) {
+@@ -1091,6 +1097,11 @@ namespace input {
+ 
+     auto &gamepad = input->gamepads[packet->controllerNumber];
+ 
++    // Moonshine: unplugged for a moment while players are reordered
++    if (gamepad.parked) {
++      return;
++    }
++
+     // If this is an event for a new gamepad, create the gamepad now. Ideally, the client would
+     // send a controller arrival instead of this but it's still supported for legacy clients.
+     if ((packet->activeGamepadMask & (1 << packet->controllerNumber)) && gamepad.id < 0) {
+@@ -1643,6 +1654,65 @@ namespace input {
+     task_pool.push(passthrough_next_message, input);
+   }
+ 
++  std::vector<int> gamepad_ids(const std::shared_ptr<input_t> &input) {
++    std::vector<int> ids;
++    if (input) {
++      for (const auto &gamepad : input->gamepads) {
++        if (gamepad.id >= 0) {
++          ids.push_back(gamepad.id);
++        }
++      }
++    }
++    return ids;
++  }
++
++  void reorder_gamepads(std::vector<std::shared_ptr<input_t>> order) {
++    using namespace std::literals;
++    // On the input thread, so no controller packet is handled halfway through.
++    task_pool.push([order = std::move(order)]() {
++      struct pad_ref {
++        std::shared_ptr<input_t> input;
++        int index;
++      };
++
++      auto pads = std::make_shared<std::vector<pad_ref>>();
++      for (const auto &input : order) {
++        for (int i = 0; i < (int) input->gamepads.size(); ++i) {
++          if (input->gamepads[i].id >= 0) {
++            pads->push_back({input, i});
++          }
++        }
++      }
++
++      // Unplug them all...
++      for (auto &pad : *pads) {
++        auto &gamepad = pad.input->gamepads[pad.index];
++        free_gamepad(platf_input, gamepad.id);
++        gamepad.id = -1;
++        gamepad.parked = true;
++      }
++
++      // ...and once Windows has noticed, plug them back in the new order. Windows gives each new
++      // controller the lowest free player number, so the first one plugged in becomes player 1.
++      task_pool.pushDelayed([pads]() {
++        for (auto &pad : *pads) {
++          auto &gamepad = pad.input->gamepads[pad.index];
++          gamepad.parked = false;
++          auto id = alloc_id(gamepadMask);
++          if (id < 0) {
++            continue;
++          }
++          if (platf::alloc_gamepad(platf_input, {id, (std::uint8_t) pad.index}, gamepad.arrival, pad.input->feedback_queue)) {
++            free_id(gamepadMask, id);
++            continue;
++          }
++          gamepad.id = id;
++          platf::gamepad_update(platf_input, id, gamepad.gamepad_state);
++        }
++      }, 600ms);
++    });
++  }
++
+   void reset(std::shared_ptr<input_t> &input) {
+     task_pool.cancel(key_press_repeat_id);
+     task_pool.cancel(input->mouse_left_button_timeout);
+diff --git a/src/input.h b/src/input.h
+index 37fe7d60..7209f849 100644
+--- a/src/input.h
++++ b/src/input.h
+@@ -12,11 +12,20 @@
+ #include "thread_safe.h"
+ #include "crypto.h"
+ 
++#include <vector>
++
+ namespace input {
+   struct input_t;
+ 
+   void print(void *input);
+   void reset(std::shared_ptr<input_t> &input);
++
++  /// Moonshine: the global numbers of this client's controllers (lower = plugged in earlier).
++  std::vector<int> gamepad_ids(const std::shared_ptr<input_t> &input);
++
++  /// Moonshine: unplug these clients' controllers and plug them back in this order, so the first
++  /// client's controllers become the lowest player numbers.
++  void reorder_gamepads(std::vector<std::shared_ptr<input_t>> order);
+   void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data, const crypto::PERM& permission);
+ 
+   [[nodiscard]] std::unique_ptr<platf::deinit_t> init();
+diff --git a/src/main.cpp b/src/main.cpp
+index 51a59989..9b9d1773 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -257,8 +257,10 @@ int main(int argc, char *argv[]) {
+   task_pool.start(1);
+ 
+ #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
+-  // create tray thread and detach it
+-  system_tray::run_tray();
++  // create tray thread and detach it (Moonshine has its own tray icon and notifications)
++  if (!config::sunshine.moonshine_managed) {
++    system_tray::run_tray();
++  }
+ #endif
+ 
+   // Create signal handler after logging has been initialized
+diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
+index e6df1c0b..61bc6939 100644
+--- a/src/nvhttp.cpp
++++ b/src/nvhttp.cpp
+@@ -6,9 +6,18 @@
+ #define BOOST_BIND_GLOBAL_PLACEHOLDERS
+ 
+ // standard includes
++#include <algorithm>
++#include <cctype>
++#include <condition_variable>
+ #include <filesystem>
++#include <list>
++#include <mutex>
+ #include <string>
++#include <thread>
++#include <unordered_map>
+ #include <utility>
++
++#include <boost/asio/post.hpp>
+ #include <string>
+ 
+ // lib includes
+@@ -251,6 +260,7 @@ namespace nvhttp {
+         named_cert_node["enable_legacy_ordering"] = named_cert_p->enable_legacy_ordering;
+         named_cert_node["allow_client_commands"] = named_cert_p->allow_client_commands;
+         named_cert_node["always_use_virtual_display"] = named_cert_p->always_use_virtual_display;
++        named_cert_node["require_approval"] = named_cert_p->require_approval;
+ 
+         // Add "do" commands if available.
+         if (!named_cert_p->do_cmds.empty()) {
+@@ -330,6 +340,7 @@ namespace nvhttp {
+             named_cert_p->enable_legacy_ordering = true;
+             named_cert_p->allow_client_commands = true;
+             named_cert_p->always_use_virtual_display = false;
++            named_cert_p->require_approval = true;
+             client.named_devices.emplace_back(named_cert_p);
+           }
+         }
+@@ -348,6 +359,7 @@ namespace nvhttp {
+         named_cert_p->enable_legacy_ordering = el.value("enable_legacy_ordering", true);
+         named_cert_p->allow_client_commands = el.value("allow_client_commands", true);
+         named_cert_p->always_use_virtual_display = el.value("always_use_virtual_display", false);
++        named_cert_p->require_approval = el.value("require_approval", true);
+         // Load command entries for "do" and "undo" keys.
+         named_cert_p->do_cmds = extract_command_entries(el, "do");
+         named_cert_p->undo_cmds = extract_command_entries(el, "undo");
+@@ -625,7 +637,12 @@ namespace nvhttp {
+       named_cert_p->cert = std::move(client.cert);
+       named_cert_p->uuid = uuid_util::uuid_t::generate().string();
+       // If the device is the first one paired with the server, assign full permission.
+-      if (client_root.named_devices.empty()) {
++      if (config::sunshine.moonshine_managed) {
++        // Under Moonshine every new device starts the same: it can stream and use a controller, but
++        // not the keyboard, mouse, touch, pen, clipboard, files or server commands. Moonshine's
++        // Devices list changes that per device.
++        named_cert_p->perm = static_cast<PERM>(static_cast<uint32_t>(PERM::input_controller) | static_cast<uint32_t>(PERM::_all_actions));
++      } else if (client_root.named_devices.empty()) {
+         named_cert_p->perm = PERM::_all;
+       } else {
+         named_cert_p->perm = PERM::_default;
+@@ -634,6 +651,7 @@ namespace nvhttp {
+       named_cert_p->enable_legacy_ordering = true;
+       named_cert_p->allow_client_commands = true;
+       named_cert_p->always_use_virtual_display = false;
++      named_cert_p->require_approval = true;
+ 
+       auto it = map_id_sess.find(client.uniqueID);
+       map_id_sess.erase(it);
+@@ -746,9 +764,14 @@ namespace nvhttp {
+         sess.client.cert = util::from_hex_vec(get_arg(args, "clientcert"), true);
+ 
+         BOOST_LOG(debug) << sess.client.cert;
++        // Moonshine: a pairing this device abandoned (cancelled or declined) must not be left to
++        // swallow its next attempt.
++        map_id_sess.erase(sess.client.uniqueID);
+         auto ptr = map_id_sess.emplace(sess.client.uniqueID, std::move(sess)).first;
+ 
+         ptr->second.async_insert_pin.salt = std::move(get_arg(args, "salt"));
++        ptr->second.remote = net::addr_to_normalized_string(request->remote_endpoint().address());
++        ptr->second.created = std::chrono::steady_clock::now();
+ 
+         auto it = args.find("otpauth");
+         if (it != std::end(args)) {
+@@ -852,7 +875,20 @@ namespace nvhttp {
+       return false;
+     }
+ 
+-    auto &sess = std::begin(map_id_sess)->second;
++    // Moonshine: give the PIN to the newest attempt that is waiting for one. Attempts a device gave
++    // up on stay in the map, and the first entry may be one of those.
++    pair_session_t *newest = nullptr;
++    for (auto &[id, candidate] : map_id_sess) {
++      auto &waiting = candidate.async_insert_pin.response;
++      bool waiting_for_pin = (waiting.has_left() && waiting.left()) || (waiting.has_right() && waiting.right());
++      if (waiting_for_pin && (!newest || candidate.created > newest->created)) {
++        newest = &candidate;
++      }
++    }
++    if (!newest) {
++      return false;
++    }
++    auto &sess = *newest;
+     getservercert(sess, tree, pin);
+ 
+     if (!name.empty()) {
+@@ -1025,6 +1061,7 @@ namespace nvhttp {
+       named_cert_node["enable_legacy_ordering"] = named_cert->enable_legacy_ordering;
+       named_cert_node["allow_client_commands"] = named_cert->allow_client_commands;
+       named_cert_node["always_use_virtual_display"] = named_cert->always_use_virtual_display;
++      named_cert_node["require_approval"] = named_cert->require_approval;
+ 
+       // Add "do" commands if available
+       if (!named_cert->do_cmds.empty()) {
+@@ -1065,6 +1102,24 @@ namespace nvhttp {
+     return named_cert_nodes;
+   }
+ 
++  nlohmann::json guests() {
++    auto list = nlohmann::json::array();
++    for (const auto &guest : rtsp_stream::get_all_session_activity()) {
++      nlohmann::json node;
++      node["uuid"] = guest.uuid;
++      node["name"] = guest.name;
++      node["ping"] = guest.ping_ms;
++      node["controller"] = guest.idle_ms[0];
++      node["keyboard"] = guest.idle_ms[1];
++      node["mouse"] = guest.idle_ms[2];
++      node["touch"] = guest.idle_ms[3];
++      node["pads"] = guest.pads;
++      node["bitrate"] = guest.bitrate_kbps;
++      list.push_back(node);
++    }
++    return list;
++  }
++
+   void applist(resp_https_t response, req_https_t request) {
+     print_req<SunshineHTTPS>(request);
+ 
+@@ -1147,6 +1202,429 @@ namespace nvhttp {
+ 
+   }
+ 
++  // ---- Moonshine: ask the host's user before a device starts a stream -------------------------
++  // A launch or resume from a device marked require_approval is parked here until Moonshine (which
++  // polls pending_requests() through the config API) allows or declines it. The HTTPS server has a
++  // single thread, so the wait happens on a helper thread and the real handler is posted back.
++  namespace approval {
++    using namespace std::chrono_literals;
++    constexpr auto WAIT = 60s;  // Moonlight waits up to 120s for /launch and /resume
++    constexpr auto GRACE = 3min;  // reconnects after an approval don't ask again right away
++    constexpr auto POLL_ALIVE = 5s;  // no poll for this long means Moonshine isn't running
++
++    struct request_t {
++      std::uint64_t id;
++      std::string uuid;
++      std::string name;
++      std::string address;
++      std::string app;
++      std::chrono::steady_clock::time_point created;
++      int decision = 0;  // 0 waiting, 1 allowed, -1 declined
++    };
++
++    std::mutex mtx;
++    std::condition_variable cv;
++    std::list<std::shared_ptr<request_t>> waiting;
++    std::unordered_map<std::string, std::chrono::steady_clock::time_point> granted_until;
++    std::chrono::steady_clock::time_point last_poll {};
++    std::uint64_t next_id = 1;
++
++    void deny(resp_https_t response, const std::string &message) {
++      pt::ptree tree;
++      tree.put("root.gamesession", 0);
++      tree.put("root.resume", 0);
++      tree.put("root.<xmlattr>.status_code", 403);
++      tree.put("root.<xmlattr>.status_message", message);
++      std::ostringstream data;
++      pt::write_xml(data, tree);
++      response->write(data.str());
++      response->close_connection_after_response = true;
++    }
++
++    /// The name of the app a /launch or /resume request is for, for the prompt.
++    std::string app_name(req_https_t request, bool resuming) {
++      if (resuming) {
++        return proc::proc.get_last_run_app_name();
++      }
++      auto args = request->parse_query_string();
++      auto appid = get_arg(args, "appid", "");
++      auto appuuid = get_arg(args, "appuuid", "");
++      for (const auto &app : proc::proc.get_apps()) {
++        if ((!appuuid.empty() && app.uuid == appuuid) || (!appid.empty() && app.id == appid)) {
++          return app.name;
++        }
++      }
++      return {};
++    }
++
++    template<class Io, class Handler>
++    void gate(const std::shared_ptr<Io> &io, resp_https_t response, req_https_t request, bool resuming, Handler handler) {
++      auto named_cert_p = get_verified_cert(request);
++      auto now = std::chrono::steady_clock::now();
++
++      // Devices without stream permission are turned away by the handler itself.
++      bool ask = config::sunshine.moonshine_managed && named_cert_p->require_approval && !!(named_cert_p->perm & PERM::_allow_view);
++      std::shared_ptr<request_t> req;
++      if (ask) {
++        std::lock_guard lg {mtx};
++        auto granted = granted_until.find(named_cert_p->uuid);
++        if (granted != granted_until.end() && now < granted->second) {
++          ask = false;
++        } else if (now - last_poll > POLL_ALIVE) {
++          BOOST_LOG(info) << "Stream request from ["sv << named_cert_p->name << "] declined: Moonshine is not running to ask its user"sv;
++          deny(response, "Moonshine is not open on the host, so nobody can allow this device");
++          return;
++        } else {
++          req = std::make_shared<request_t>();
++          req->id = next_id++;
++          req->uuid = named_cert_p->uuid;
++          req->name = named_cert_p->name;
++          req->address = net::addr_to_normalized_string(request->remote_endpoint().address());
++          req->app = app_name(request, resuming);
++          req->created = now;
++          waiting.push_back(req);
++        }
++      }
++      if (!ask) {
++        handler(response, request);
++        return;
++      }
++
++      BOOST_LOG(info) << "Stream request from ["sv << req->name << "] is waiting for the host's user"sv;
++      std::thread([io, req, response, request, handler]() {
++        int decision;
++        {
++          std::unique_lock ul {mtx};
++          cv.wait_for(ul, WAIT, [&]() {
++            return req->decision != 0;
++          });
++          decision = req->decision;
++          waiting.remove(req);
++          if (decision == 1) {
++            granted_until[req->uuid] = std::chrono::steady_clock::now() + GRACE;
++          }
++        }
++        // Back on the server's own thread, like any other request.
++        boost::asio::post(*io, [decision, req, response, request, handler]() {
++          if (decision == 1) {
++            BOOST_LOG(info) << "Stream request from ["sv << req->name << "] allowed"sv;
++            handler(response, request);
++          } else {
++            BOOST_LOG(info) << "Stream request from ["sv << req->name << (decision ? "] declined"sv : "] timed out"sv);
++            deny(response, decision ? "The host declined your request to stream" : "The host did not answer your request to stream");
++          }
++        });
++      }).detach();
++    }
++  }  // namespace approval
++
++  // ---- Moonshine: pairing without typing the PIN ----------------------------------------------
++  // A friend's Moonshine sends the PIN it is pairing with (GET /moonshine/pair) alongside the normal
++  // pairing request. Moonshine on this PC shows "wants to pair: Accept / Decline" and, on Accept,
++  // submits that PIN itself. The friend polls /moonshine/pair-status for the answer.
++  namespace offer {
++    using namespace std::chrono_literals;
++    constexpr auto TTL = 3min;
++
++    struct offer_t {
++      std::string id;
++      std::string pin;
++      std::string name;
++      std::string address;
++      std::chrono::steady_clock::time_point created;
++      int decision = 0;  // 0 waiting, 1 accepted, -1 declined
++    };
++
++    std::mutex mtx;
++    std::list<offer_t> offers;
++
++    void prune(std::chrono::steady_clock::time_point now) {
++      offers.remove_if([&](const offer_t &o) {
++        return now - o.created > TTL;
++      });
++    }
++  }  // namespace offer
++
++  // Moonshine: another Moonshine invites this PC's user to join a stream on it (GET /moonshine/invite).
++  // Moonshine on this PC shows "X invites you to play: Join / Not now"; the inviter polls
++  // /moonshine/invite-status for the answer. Joining is then a normal connection to the inviter.
++  namespace invite_box {
++    using namespace std::chrono_literals;
++    constexpr auto TTL = 2min;
++
++    struct invite_t {
++      std::string id;
++      std::string name;  ///< the inviting PC's name, as it says
++      std::string app;  ///< what to join
++      std::string address;  ///< where the invite came from, which is where to connect
++      int port;  ///< the inviter's host port
++      std::chrono::steady_clock::time_point created;
++      int decision = 0;  // 0 waiting, 1 joined, -1 declined
++    };
++
++    std::mutex mtx;
++    std::list<invite_t> invites;
++
++    void prune(std::chrono::steady_clock::time_point now) {
++      invites.remove_if([&](const invite_t &i) {
++        return now - i.created > TTL;
++      });
++    }
++  }  // namespace invite_box
++
++  bool decide_invite(const std::string &id, bool join) {
++    std::lock_guard lg {invite_box::mtx};
++    for (auto &i : invite_box::invites) {
++      if (i.id == id && i.decision == 0) {
++        i.decision = join ? 1 : -1;
++        return true;
++      }
++    }
++    return false;
++  }
++
++  nlohmann::json pending_requests() {
++    auto now = std::chrono::steady_clock::now();
++    auto age = [&](auto since) {
++      return std::chrono::duration_cast<std::chrono::seconds>(now - since).count();
++    };
++
++    // A millisecond clock for telling which of two requests came first.
++    auto at = [](auto when) {
++      return std::chrono::duration_cast<std::chrono::milliseconds>(when.time_since_epoch()).count();
++    };
++
++    nlohmann::json streams = nlohmann::json::array();
++    {
++      std::lock_guard lg {approval::mtx};
++      approval::last_poll = now;
++      for (const auto &req : approval::waiting) {
++        if (req->decision != 0) {
++          continue;
++        }
++        streams.push_back({{"id", req->id}, {"uuid", req->uuid}, {"name", req->name}, {"address", req->address}, {"app", req->app}, {"age", age(req->created)}});
++      }
++    }
++
++    // Pairing sessions that are waiting for a PIN (the same ones pin() completes).
++    nlohmann::json pairing = nlohmann::json::array();
++    for (auto &[id, sess] : map_id_sess) {
++      auto &async_response = sess.async_insert_pin.response;
++      bool waiting_for_pin = (async_response.has_left() && async_response.left()) || (async_response.has_right() && async_response.right());
++      if (waiting_for_pin) {
++        pairing.push_back({
++          {"id", std::to_string(sess.created.time_since_epoch().count())},
++          {"name", sess.client.name},
++          {"address", sess.remote},
++          {"age", age(sess.created)},
++          {"at", at(sess.created)},
++        });
++      }
++    }
++
++    // Pairing requests from another Moonshine, which sent its PIN along (see namespace offer).
++    nlohmann::json offers = nlohmann::json::array();
++    {
++      std::lock_guard lg {offer::mtx};
++      offer::prune(now);
++      for (const auto &o : offer::offers) {
++        if (o.decision == 0) {
++          offers.push_back({{"id", o.id}, {"pin", o.pin}, {"name", o.name}, {"address", o.address}, {"age", age(o.created)}, {"at", at(o.created)}});
++        }
++      }
++    }
++
++    nlohmann::json invites = nlohmann::json::array();
++    {
++      std::lock_guard lg {invite_box::mtx};
++      invite_box::prune(now);
++      for (const auto &i : invite_box::invites) {
++        if (i.decision == 0) {
++          invites.push_back({{"id", i.id}, {"name", i.name}, {"app", i.app}, {"address", i.address}, {"port", i.port}, {"age", age(i.created)}});
++        }
++      }
++    }
++
++    return {{"streams", streams}, {"pairing", pairing}, {"offers", offers}, {"invites", invites}};
++  }
++
++  bool decide_stream_request(std::uint64_t id, bool allow) {
++    std::lock_guard lg {approval::mtx};
++    for (const auto &req : approval::waiting) {
++      if (req->id == id && req->decision == 0) {
++        req->decision = allow ? 1 : -1;
++        approval::cv.notify_all();
++        return true;
++      }
++    }
++    return false;
++  }
++
++  void forget_stream_approval(const std::string &uuid) {
++    std::lock_guard lg {approval::mtx};
++    approval::granted_until.erase(uuid);
++  }
++
++  bool decide_pair_offer(const std::string &id, bool allow) {
++    std::lock_guard lg {offer::mtx};
++    for (auto &o : offer::offers) {
++      if (o.id == id && o.decision == 0) {
++        o.decision = allow ? 1 : -1;
++        return true;
++      }
++    }
++    return false;
++  }
++
++  template<class T>
++  void moonshine_reply(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Response> response, SimpleWeb::StatusCode code, const nlohmann::json &body) {
++    SimpleWeb::CaseInsensitiveMultimap headers {{"Content-Type", "application/json"}};
++    response->write(code, body.dump(), headers);
++    response->close_connection_after_response = true;
++  }
++
++  /// Is Moonshine running on this PC to show a prompt? (It polls pending_requests() every second.)
++  bool moonshine_listening() {
++    std::lock_guard lg {approval::mtx};
++    return std::chrono::steady_clock::now() - approval::last_poll <= approval::POLL_ALIVE;
++  }
++
++  /// GET /moonshine/hello: tells another Moonshine that this host is one too, and how many are streaming from it
++  /// (just the count; who and what stays private).
++  template<class T>
++  void moonshine_hello(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
++    if (!config::sunshine.moonshine_managed) {
++      not_found<T>(response, request);
++      return;
++    }
++    moonshine_reply<T>(response, SimpleWeb::StatusCode::success_ok, {{"app", "moonshine"}, {"name", config::nvhttp.sunshine_name}, {"listening", moonshine_listening()}, {"guests", rtsp_stream::get_all_session_activity().size()}, {"busy", proc::proc.running() > 0}});
++  }
++
++  /// GET /moonshine/pair?pin=1234&name=Friend-PC: ask this PC's user to accept a pairing.
++  template<class T>
++  void moonshine_pair(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
++    if (!config::sunshine.moonshine_managed) {
++      not_found<T>(response, request);
++      return;
++    }
++    auto args = request->parse_query_string();
++    auto pin = get_arg(args, "pin", "");
++    auto name = get_arg(args, "name", "").substr(0, 64);
++    if (pin.size() != 4 || !std::all_of(pin.begin(), pin.end(), [](unsigned char c) {
++          return std::isdigit(c);
++        })) {
++      moonshine_reply<T>(response, SimpleWeb::StatusCode::client_error_bad_request, {{"error", "PIN must be 4 digits"}});
++      return;
++    }
++    if (!config::sunshine.enable_pairing) {
++      moonshine_reply<T>(response, SimpleWeb::StatusCode::client_error_forbidden, {{"error", "disabled"}});
++      return;
++    }
++    if (!moonshine_listening()) {
++      moonshine_reply<T>(response, SimpleWeb::StatusCode::server_error_service_unavailable, {{"error", "closed"}});
++      return;
++    }
++
++    offer::offer_t o;
++    o.id = uuid_util::uuid_t::generate().string();
++    o.pin = std::move(pin);
++    o.name = name.empty() ? "A device" : std::move(name);
++    o.address = net::addr_to_normalized_string(request->remote_endpoint().address());
++    o.created = std::chrono::steady_clock::now();
++    {
++      std::lock_guard lg {offer::mtx};
++      offer::prune(o.created);
++      auto open = std::count_if(offer::offers.begin(), offer::offers.end(), [](const auto &other) {
++        return other.decision == 0;
++      });
++      if (open >= 8) {
++        moonshine_reply<T>(response, SimpleWeb::StatusCode::client_error_too_many_requests, {{"error", "busy"}});
++        return;
++      }
++      offer::offers.push_back(o);
++    }
++    BOOST_LOG(info) << "Pairing request from ["sv << o.name << "] at "sv << o.address << " is waiting for the host's user"sv;
++    moonshine_reply<T>(response, SimpleWeb::StatusCode::success_ok, {{"id", o.id}});
++  }
++
++  /// GET /moonshine/invite?name=Dani-PC&app=Desktop&port=47989: invite this PC's user to join a stream.
++  template<class T>
++  void moonshine_invite(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
++    if (!config::sunshine.moonshine_managed) {
++      not_found<T>(response, request);
++      return;
++    }
++    if (!moonshine_listening()) {
++      moonshine_reply<T>(response, SimpleWeb::StatusCode::server_error_service_unavailable, {{"error", "closed"}});
++      return;
++    }
++    auto args = request->parse_query_string();
++    invite_box::invite_t i;
++    i.id = uuid_util::uuid_t::generate().string();
++    i.name = get_arg(args, "name", "").substr(0, 64);
++    if (i.name.empty()) {
++      i.name = "A friend";
++    }
++    i.app = get_arg(args, "app", "Desktop").substr(0, 128);
++    try {
++      i.port = std::stoi(get_arg(args, "port", "47989"));
++    } catch (...) {
++      i.port = 0;
++    }
++    if (i.port <= 0 || i.port > 65535) {
++      moonshine_reply<T>(response, SimpleWeb::StatusCode::client_error_bad_request, {{"error", "bad port"}});
++      return;
++    }
++    i.address = net::addr_to_normalized_string(request->remote_endpoint().address());
++    i.created = std::chrono::steady_clock::now();
++    {
++      std::lock_guard lg {invite_box::mtx};
++      invite_box::prune(i.created);
++      // One open invite per inviter, and only a few in all
++      invite_box::invites.remove_if([&](const auto &other) {
++        return other.address == i.address && other.decision == 0;
++      });
++      if (invite_box::invites.size() >= 8) {
++        moonshine_reply<T>(response, SimpleWeb::StatusCode::client_error_too_many_requests, {{"error", "busy"}});
++        return;
++      }
++      invite_box::invites.push_back(i);
++    }
++    BOOST_LOG(info) << "Invite to play from ["sv << i.name << "] at "sv << i.address << " is waiting for the host's user"sv;
++    moonshine_reply<T>(response, SimpleWeb::StatusCode::success_ok, {{"id", i.id}});
++  }
++
++  /// GET /moonshine/invite-status?id=...: did they join?
++  template<class T>
++  void moonshine_invite_status(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
++    auto args = request->parse_query_string();
++    auto id = get_arg(args, "id", "");
++    std::lock_guard lg {invite_box::mtx};
++    for (const auto &i : invite_box::invites) {
++      // Only the inviter may ask
++      if (i.id == id && i.address == net::addr_to_normalized_string(request->remote_endpoint().address())) {
++        moonshine_reply<T>(response, SimpleWeb::StatusCode::success_ok, {{"status", i.decision == 0 ? "pending" : i.decision == 1 ? "joined" : "declined"}});
++        return;
++      }
++    }
++    moonshine_reply<T>(response, SimpleWeb::StatusCode::client_error_not_found, {{"error", "unknown invite"}});
++  }
++
++  /// GET /moonshine/pair-status?id=...: has the host's user answered?
++  template<class T>
++  void moonshine_pair_status(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
++    auto args = request->parse_query_string();
++    auto id = get_arg(args, "id", "");
++    std::lock_guard lg {offer::mtx};
++    for (const auto &o : offer::offers) {
++      if (o.id == id) {
++        moonshine_reply<T>(response, SimpleWeb::StatusCode::success_ok, {{"status", o.decision == 0 ? "pending" : o.decision == 1 ? "accepted" : "declined"}});
++        return;
++      }
++    }
++    moonshine_reply<T>(response, SimpleWeb::StatusCode::client_error_not_found, {{"error", "unknown request"}});
++  }
++
+   void launch(bool &host_audio, resp_https_t response, req_https_t request) {
+     print_req<SunshineHTTPS>(request);
+ 
+@@ -1702,11 +2180,15 @@ namespace nvhttp {
+     https_server.resource["^/pair$"]["GET"] = pair<SunshineHTTPS>;
+     https_server.resource["^/applist$"]["GET"] = applist;
+     https_server.resource["^/appasset$"]["GET"] = appasset;
+-    https_server.resource["^/launch$"]["GET"] = [&host_audio](auto resp, auto req) {
+-      launch(host_audio, resp, req);
++    https_server.resource["^/launch$"]["GET"] = [&host_audio, &https_server](auto resp, auto req) {
++      approval::gate(https_server.io_service, resp, req, false, [&host_audio](auto resp, auto req) {
++        launch(host_audio, resp, req);
++      });
+     };
+-    https_server.resource["^/resume$"]["GET"] = [&host_audio](auto resp, auto req) {
+-      resume(host_audio, resp, req);
++    https_server.resource["^/resume$"]["GET"] = [&host_audio, &https_server](auto resp, auto req) {
++      approval::gate(https_server.io_service, resp, req, true, [&host_audio](auto resp, auto req) {
++        resume(host_audio, resp, req);
++      });
+     };
+     https_server.resource["^/cancel$"]["GET"] = cancel;
+     https_server.resource["^/actions/clipboard$"]["GET"] = getClipboard;
+@@ -1719,6 +2201,11 @@ namespace nvhttp {
+     http_server.default_resource["GET"] = not_found<SimpleWeb::HTTP>;
+     http_server.resource["^/serverinfo$"]["GET"] = serverinfo<SimpleWeb::HTTP>;
+     http_server.resource["^/pair$"]["GET"] = pair<SimpleWeb::HTTP>;
++    http_server.resource["^/moonshine/hello$"]["GET"] = moonshine_hello<SimpleWeb::HTTP>;
++    http_server.resource["^/moonshine/pair$"]["GET"] = moonshine_pair<SimpleWeb::HTTP>;
++    http_server.resource["^/moonshine/pair-status$"]["GET"] = moonshine_pair_status<SimpleWeb::HTTP>;
++    http_server.resource["^/moonshine/invite$"]["GET"] = moonshine_invite<SimpleWeb::HTTP>;
++    http_server.resource["^/moonshine/invite-status$"]["GET"] = moonshine_invite_status<SimpleWeb::HTTP>;
+ 
+     http_server.config.reuse_address = true;
+     http_server.config.address = net::af_to_any_address_string(address_family);
+@@ -1814,7 +2301,8 @@ namespace nvhttp {
+     const crypto::PERM newPerm,
+     const bool enable_legacy_ordering,
+     const bool allow_client_commands,
+-    const bool always_use_virtual_display
++    const bool always_use_virtual_display,
++    const bool require_approval
+   ) {
+     find_and_udpate_session_info(uuid, name, newPerm);
+ 
+@@ -1831,6 +2319,7 @@ namespace nvhttp {
+         named_cert_p->enable_legacy_ordering = enable_legacy_ordering;
+         named_cert_p->allow_client_commands = allow_client_commands;
+         named_cert_p->always_use_virtual_display = always_use_virtual_display;
++        named_cert_p->require_approval = require_approval;
+         save_state();
+         return true;
+       }
+diff --git a/src/nvhttp.h b/src/nvhttp.h
+index 6d2c6e06..04112672 100644
+--- a/src/nvhttp.h
++++ b/src/nvhttp.h
+@@ -121,6 +121,10 @@ namespace nvhttp {
+       std::string salt = {};
+     } async_insert_pin;
+ 
++    // Moonshine: shown in its "a device wants to pair" prompt.
++    std::string remote = {};
++    std::chrono::steady_clock::time_point created = {};
++
+     /**
+      * @brief used as a security measure to prevent out of order calls
+      */
+@@ -280,6 +284,45 @@ namespace nvhttp {
+     const crypto::PERM newPerm,
+     const bool enable_legacy_ordering,
+     const bool allow_client_commands,
+-    const bool always_use_virtual_display
++    const bool always_use_virtual_display,
++    const bool require_approval
+   );
++
++  /**
++   * @brief Moonshine: what is waiting for the host's user.
++   * @return { "streams": [{id, uuid, name, address, app, age}], "pairing": [{id, name, address, age}] }
++   * Calling this also tells Apollo that Moonshine is running and can answer stream requests.
++   */
++  nlohmann::json pending_requests();
++
++  /**
++   * @brief Moonshine: the devices streaming right now, with their ping and how long since each
++   *        kind of input (controller, keyboard, mouse, touch) was last used.
++   */
++  nlohmann::json guests();
++
++  /**
++   * @brief Moonshine: allow or decline a waiting stream request.
++   * @return Whether the request was still waiting.
++   */
++  bool decide_stream_request(std::uint64_t id, bool allow);
++
++  /**
++   * @brief Moonshine: make a device ask again on its next stream, even if it was allowed a moment
++   * ago (used when the host's user kicks it).
++   */
++  void forget_stream_approval(const std::string &uuid);
++
++  /**
++   * @brief Moonshine: record the answer to a pairing request another Moonshine sent with its PIN
++   * (pending_requests()["offers"]), for that Moonshine to pick up.
++   * @return Whether the request was still waiting.
++   */
++  bool decide_pair_offer(const std::string &id, bool allow);
++
++  /**
++   * @brief Moonshine: record the answer to an invite to play (pending_requests()["invites"]).
++   * @return Whether the invite was still waiting.
++   */
++  bool decide_invite(const std::string &id, bool join);
+ }  // namespace nvhttp
+diff --git a/src/platform/windows/audio.cpp b/src/platform/windows/audio.cpp
+index b6853e4a..db2e52c8 100644
+--- a/src/platform/windows/audio.cpp
++++ b/src/platform/windows/audio.cpp
+@@ -6,11 +6,17 @@
+ 
+ // platform includes
+ #include <audioclient.h>
++#include <audiopolicy.h>
+ #include <avrt.h>
+ #include <mmdeviceapi.h>
+ #include <newdev.h>
+ #include <roapi.h>
+ #include <synchapi.h>
++#include <tlhelp32.h>
++
++// standard includes
++#include <algorithm>
++#include <unordered_set>
+ 
+ // local includes
+ #include "misc.h"
+@@ -333,6 +339,156 @@ namespace platf::audio {
+     return audio_client;
+   }
+ 
++  // Process loopback capture (Windows 10 build 20348+). MinGW doesn't ship
++  // audioclientactivationparams.h, so the activation structs are declared here.
++  namespace process_loopback {
++    constexpr auto DEVICE_ID = L"VAD\\Process_Loopback";
++
++    enum activation_type_e : int {
++      ACTIVATION_TYPE_DEFAULT = 0,
++      ACTIVATION_TYPE_PROCESS_LOOPBACK = 1,
++    };
++
++    enum loopback_mode_e : int {
++      MODE_INCLUDE_TARGET_PROCESS_TREE = 0,
++      MODE_EXCLUDE_TARGET_PROCESS_TREE = 1,
++    };
++
++    struct activation_params_t {
++      activation_type_e ActivationType;
++      DWORD TargetProcessId;
++      loopback_mode_e ProcessLoopbackMode;
++    };
++
++    /**
++     * @brief Completion handler for ActivateAudioInterfaceAsync. It must be agile,
++     *        since Windows calls it from a worker thread.
++     */
++    class activate_handler_t: public IActivateAudioInterfaceCompletionHandler, public IAgileObject {
++    public:
++      activate_handler_t():
++          done_event {CreateEventA(nullptr, TRUE, FALSE, nullptr)} {
++      }
++
++      ~activate_handler_t() {
++        if (done_event) {
++          CloseHandle(done_event);
++        }
++      }
++
++      ULONG STDMETHODCALLTYPE AddRef() override {
++        return ++ref_count;
++      }
++
++      ULONG STDMETHODCALLTYPE Release() override {
++        auto count = --ref_count;
++        if (count == 0) {
++          delete this;
++        }
++        return count;
++      }
++
++      HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, VOID **ppvInterface) override {
++        if (riid == IID_IUnknown || riid == __uuidof(IActivateAudioInterfaceCompletionHandler)) {
++          *ppvInterface = static_cast<IActivateAudioInterfaceCompletionHandler *>(this);
++        } else if (riid == __uuidof(IAgileObject)) {
++          *ppvInterface = static_cast<IAgileObject *>(this);
++        } else {
++          *ppvInterface = nullptr;
++          return E_NOINTERFACE;
++        }
++        AddRef();
++        return S_OK;
++      }
++
++      HRESULT STDMETHODCALLTYPE ActivateCompleted(IActivateAudioInterfaceAsyncOperation *operation) override {
++        HRESULT activate_status = E_FAIL;
++        IUnknown *unknown = nullptr;
++        result = operation->GetActivateResult(&activate_status, &unknown);
++        if (SUCCEEDED(result)) {
++          result = activate_status;
++        }
++        if (SUCCEEDED(result) && unknown) {
++          result = unknown->QueryInterface(IID_IAudioClient, (void **) &client);
++        }
++        if (unknown) {
++          unknown->Release();
++        }
++        SetEvent(done_event);
++        return S_OK;
++      }
++
++      HANDLE done_event;
++      HRESULT result = E_FAIL;
++      IAudioClient *client = nullptr;
++
++    private:
++      std::atomic<ULONG> ref_count {1};
++    };
++
++    audio_client_t make_audio_client(DWORD pid, bool include, const format_t &format) {
++      using activate_fn = HRESULT(WINAPI *)(LPCWSTR, REFIID, PROPVARIANT *, IActivateAudioInterfaceCompletionHandler *, IActivateAudioInterfaceAsyncOperation **);
++      static auto activate = (activate_fn) GetProcAddress(LoadLibraryW(L"Mmdevapi.dll"), "ActivateAudioInterfaceAsync");
++      if (!activate) {
++        BOOST_LOG(error) << "ActivateAudioInterfaceAsync isn't available on this system"sv;
++        return nullptr;
++      }
++
++      activation_params_t params {
++        ACTIVATION_TYPE_PROCESS_LOOPBACK,
++        pid,
++        include ? MODE_INCLUDE_TARGET_PROCESS_TREE : MODE_EXCLUDE_TARGET_PROCESS_TREE,
++      };
++      PROPVARIANT activate_params {};
++      activate_params.vt = VT_BLOB;
++      activate_params.blob.cbSize = sizeof(params);
++      activate_params.blob.pBlobData = (BYTE *) &params;
++
++      auto handler = new activate_handler_t();
++      IActivateAudioInterfaceAsyncOperation *operation = nullptr;
++      auto status = activate(DEVICE_ID, IID_IAudioClient, &activate_params, handler, &operation);
++      if (SUCCEEDED(status)) {
++        WaitForSingleObject(handler->done_event, 5000);
++        status = handler->result;
++      }
++      if (operation) {
++        operation->Release();
++      }
++
++      audio_client_t audio_client {handler->client};
++      handler->client = nullptr;
++      handler->Release();
++
++      if (FAILED(status) || !audio_client) {
++        BOOST_LOG(error) << "Couldn't activate process loopback for PID "sv << pid << ": [0x"sv << util::hex(status).to_string_view() << ']';
++        return nullptr;
++      }
++
++      // Process loopback has no mix format, so request the capture format directly.
++      WAVEFORMATEXTENSIBLE capture_waveformat =
++        create_waveformat(sample_format_e::f32, format.channel_count, format.capture_waveformat_channel_mask);
++
++      status = audio_client->Initialize(
++        AUDCLNT_SHAREMODE_SHARED,
++        AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
++          AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
++        0,
++        0,
++        (LPWAVEFORMATEX) &capture_waveformat,
++        nullptr
++      );
++
++      if (FAILED(status)) {
++        BOOST_LOG(error) << "Couldn't initialize process loopback client for ["sv << format.name << "]: [0x"sv << util::hex(status).to_string_view() << ']';
++        return nullptr;
++      }
++
++      BOOST_LOG(info) << "Audio capture "sv << (include ? "includes only"sv : "excludes"sv) << " process tree of PID "sv << pid
++                      << ", format "sv << logging::bracket(waveformat_to_pretty_string(capture_waveformat));
++      return audio_client;
++    }
++  }  // namespace process_loopback
++
+   device_t default_device(device_enum_t &device_enum) {
+     device_t device;
+     HRESULT status;
+@@ -351,6 +507,203 @@ namespace platf::audio {
+     return device;
+   }
+ 
++  // Which apps' audio to capture, from audio_capture_mode and audio_capture_app (a comma-separated list).
++  namespace capture_plan {
++    /** What to capture. No PIDs means the whole default output. */
++    struct plan_t {
++      std::vector<DWORD> pids;  ///< process trees to capture, or (include = false) the one tree to leave out
++      bool include = true;
++
++      bool operator==(const plan_t &other) const {
++        return pids == other.pids && include == other.include;
++      }
++    };
++
++    std::vector<std::wstring> configured_apps() {
++      std::vector<std::wstring> apps;
++      auto all = platf::from_utf8(config::audio.capture_app);
++      std::size_t start = 0;
++      while (start <= all.size()) {
++        auto end = all.find_first_of(L",;|", start);
++        if (end == std::wstring::npos) {
++          end = all.size();
++        }
++        auto name = all.substr(start, end - start);
++        auto first = name.find_first_not_of(L" \t");
++        if (first != std::wstring::npos) {
++          apps.push_back(name.substr(first, name.find_last_not_of(L" \t") - first + 1));
++        }
++        start = end + 1;
++      }
++      return apps;
++    }
++
++    struct process_table_t {
++      std::unordered_map<DWORD, DWORD> parent;
++      std::unordered_map<DWORD, std::wstring> exe;
++
++      DWORD parent_of(DWORD pid) const {
++        auto it = parent.find(pid);
++        return it == parent.end() || it->second == pid ? 0 : it->second;
++      }
++
++      /** True if pid is in `set` or was started, directly or not, by a process in it. */
++      bool in_tree_of(DWORD pid, const std::unordered_set<DWORD> &set) const {
++        for (int depth = 0; pid && depth < 64; ++depth, pid = parent_of(pid)) {
++          if (set.contains(pid)) {
++            return true;
++          }
++        }
++        return false;
++      }
++    };
++
++    process_table_t process_table() {
++      process_table_t table;
++      handle_t snapshot {CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)};
++      if (!snapshot || snapshot.get() == INVALID_HANDLE_VALUE) {
++        return table;
++      }
++      PROCESSENTRY32W entry {sizeof(entry)};
++      for (auto ok = Process32FirstW(snapshot.get(), &entry); ok; ok = Process32NextW(snapshot.get(), &entry)) {
++        table.parent[entry.th32ProcessID] = entry.th32ParentProcessID;
++        table.exe[entry.th32ProcessID] = entry.szExeFile;
++      }
++      return table;
++    }
++
++    /** PIDs of the apps with an audio session on the default output, or nothing if Windows wouldn't say. */
++    std::optional<std::vector<DWORD>> audio_session_pids() {
++      device_enum_t device_enum;
++      if (FAILED(CoCreateInstance(CLSID_MMDeviceEnumerator, nullptr, CLSCTX_ALL, IID_IMMDeviceEnumerator, (void **) &device_enum))) {
++        return std::nullopt;
++      }
++      auto device = default_device(device_enum);
++      if (!device) {
++        return std::nullopt;
++      }
++
++      IAudioSessionManager2 *manager_raw = nullptr;
++      if (FAILED(device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr, (void **) &manager_raw))) {
++        return std::nullopt;
++      }
++      util::safe_ptr<IAudioSessionManager2, Release<IAudioSessionManager2>> manager {manager_raw};
++
++      IAudioSessionEnumerator *sessions_raw = nullptr;
++      if (FAILED(manager->GetSessionEnumerator(&sessions_raw))) {
++        return std::nullopt;
++      }
++      util::safe_ptr<IAudioSessionEnumerator, Release<IAudioSessionEnumerator>> sessions {sessions_raw};
++
++      int count = 0;
++      sessions->GetCount(&count);
++      std::vector<DWORD> pids;
++      for (int i = 0; i < count; ++i) {
++        IAudioSessionControl *control = nullptr;
++        if (FAILED(sessions->GetSession(i, &control))) {
++          continue;
++        }
++        IAudioSessionControl2 *control2 = nullptr;
++        if (SUCCEEDED(control->QueryInterface(__uuidof(IAudioSessionControl2), (void **) &control2))) {
++          DWORD pid = 0;
++          AudioSessionState state = AudioSessionStateExpired;
++          if (control2->IsSystemSoundsSession() != S_OK && SUCCEEDED(control2->GetProcessId(&pid)) && pid &&
++              SUCCEEDED(control2->GetState(&state)) && state != AudioSessionStateExpired) {
++            pids.push_back(pid);
++          }
++          control2->Release();
++        }
++        control->Release();
++      }
++      return pids;
++    }
++
++    /** Keep only the PIDs not started by another PID in the set: capturing a tree covers what it started. */
++    std::vector<DWORD> tops(const std::unordered_set<DWORD> &set, const process_table_t &table) {
++      std::vector<DWORD> result;
++      for (auto pid : set) {
++        if (!table.in_tree_of(table.parent_of(pid), set)) {
++          result.push_back(pid);
++        }
++      }
++      std::sort(result.begin(), result.end());
++      return result;
++    }
++
++    plan_t current() {
++      plan_t plan;
++      if (config::audio.capture_mode == "system") {
++        return plan;
++      }
++      auto apps = configured_apps();
++      if (apps.empty()) {
++        return plan;
++      }
++
++      auto table = process_table();
++      std::unordered_set<DWORD> matches;
++      for (const auto &[pid, exe] : table.exe) {
++        for (const auto &app : apps) {
++          if (_wcsicmp(exe.c_str(), app.c_str()) == 0) {
++            matches.insert(pid);
++            break;
++          }
++        }
++      }
++      auto roots = tops(matches, table);
++      const auto self = GetCurrentProcessId();
++
++      if (config::audio.capture_mode == "include") {
++        // None of them running: capture this process, which plays nothing, so the stream stays
++        // silent instead of carrying everything else.
++        plan.pids = roots.empty() ? std::vector<DWORD> {self} : roots;
++        return plan;
++      }
++
++      if (roots.size() <= 1) {
++        plan.include = false;
++        plan.pids = roots;  // none running: the whole output
++        return plan;
++      }
++
++      // Windows can leave out only one process tree, so capture every other app with audio instead.
++      auto sessions = audio_session_pids();
++      if (!sessions) {
++        BOOST_LOG(warning) << "Couldn't list the apps playing audio; leaving out only the first excluded app"sv;
++        plan.include = false;
++        plan.pids = {roots.front()};
++        return plan;
++      }
++      std::unordered_set<DWORD> keep;
++      for (auto pid : *sessions) {
++        if (pid == self || table.in_tree_of(pid, matches)) {
++          continue;
++        }
++        // Capturing an app also captures what it started, so skip one that started an excluded app.
++        std::unordered_set<DWORD> just {pid};
++        if (std::none_of(matches.begin(), matches.end(), [&](DWORD m) { return table.in_tree_of(m, just); })) {
++          keep.insert(pid);
++        }
++      }
++      plan.pids = tops(keep, table);
++      if (plan.pids.empty()) {
++        plan.pids = {self};
++      }
++      return plan;
++    }
++
++    std::string describe(const plan_t &plan) {
++      if (plan.pids.empty()) {
++        return "all system audio";
++      }
++      std::string text = plan.include ? "only PID" : "everything except PID";
++      for (auto pid : plan.pids) {
++        text += ' ' + std::to_string(pid);
++      }
++      return text;
++    }
++  }  // namespace capture_plan
++
+   class audio_notification_t: public ::IMMNotificationClient {
+   public:
+     audio_notification_t() {
+@@ -481,6 +834,12 @@ namespace platf::audio {
+         return -1;
+       }
+ 
++      plan = capture_plan::current();
++      last_target_check = std::chrono::steady_clock::now();
++      BOOST_LOG(info) << "Audio capture: "sv << capture_plan::describe(plan);
++      std::size_t primary = 0;
++      const format_t *chosen_format = nullptr;
++
+       for (const auto &format : formats) {
+         if (format.channel_count != channels_out) {
+           BOOST_LOG(debug) << "Skipping audio format ["sv << format.name << "] with channel count ["sv
+@@ -489,9 +848,19 @@ namespace platf::audio {
+         }
+ 
+         BOOST_LOG(debug) << "Trying audio format ["sv << format.name << ']';
+-        audio_client = make_audio_client(device, format);
++        for (primary = 0; primary < plan.pids.size() && !audio_client; ++primary) {
++          audio_client = process_loopback::make_audio_client(plan.pids[primary], plan.include, format);
++        }
++        if (!plan.pids.empty() && !audio_client) {
++          BOOST_LOG(warning) << "Process loopback failed, capturing all system audio"sv;
++          plan.pids.clear();
++        }
++        if (!audio_client) {
++          audio_client = make_audio_client(device, format);
++        }
+ 
+         if (audio_client) {
++          chosen_format = &format;
+           BOOST_LOG(debug) << "Found audio format ["sv << format.name << ']';
+           channels = channels_out;
+           break;
+@@ -503,7 +872,8 @@ namespace platf::audio {
+         return -1;
+       }
+ 
+-      REFERENCE_TIME default_latency;
++      // Process loopback clients don't report a device period, so default to 10ms.
++      REFERENCE_TIME default_latency = 100000;
+       audio_client->GetDevicePeriod(&default_latency, nullptr);
+       default_latency_ms = default_latency / 1000;
+ 
+@@ -548,6 +918,21 @@ namespace platf::audio {
+         return -1;
+       }
+ 
++      // The other apps each get their own capture, mixed into the first one's in _fill_mixed.
++      for (auto i = primary; i < plan.pids.size(); ++i) {
++        extra_stream_t extra;
++        extra.event.reset(CreateEventA(nullptr, FALSE, FALSE, nullptr));
++        extra.client = process_loopback::make_audio_client(plan.pids[i], plan.include, *chosen_format);
++        if (!extra.event || !extra.client ||
++            FAILED(extra.client->GetService(IID_IAudioCaptureClient, (void **) &extra.capture)) ||
++            FAILED(extra.client->SetEventHandle(extra.event.get())) ||
++            FAILED(extra.client->Start())) {
++          BOOST_LOG(warning) << "Couldn't capture audio of PID "sv << plan.pids[i] << ", leaving it out"sv;
++          continue;
++        }
++        extras.push_back(std::move(extra));
++      }
++
+       return 0;
+     }
+ 
+@@ -556,6 +941,10 @@ namespace platf::audio {
+         device_enum->UnregisterEndpointNotificationCallback(&endpt_notification);
+       }
+ 
++      for (auto &extra : extras) {
++        extra.client->Stop();
++      }
++
+       if (audio_client) {
+         audio_client->Stop();
+       }
+@@ -591,6 +980,22 @@ namespace platf::audio {
+         return capture_e::reinit;
+       }
+ 
++      // Reinitialize if an app to include or exclude started or exited, or another app started playing
++      if (config::audio.capture_mode != "system") {
++        auto now = std::chrono::steady_clock::now();
++        if (now - last_target_check > 2s) {
++          last_target_check = now;
++          if (!(capture_plan::current() == plan)) {
++            BOOST_LOG(info) << "Apps to capture audio from changed, reinitializing"sv;
++            return capture_e::reinit;
++          }
++        }
++      }
++
++      if (!extras.empty()) {
++        return _fill_mixed();
++      }
++
+       status = WaitForSingleObjectEx(audio_event.get(), default_latency_ms, FALSE);
+       switch (status) {
+         case WAIT_OBJECT_0:
+@@ -673,6 +1078,110 @@ namespace platf::audio {
+ 
+     REFERENCE_TIME default_latency_ms;
+ 
++    // The apps captured or left out with process loopback
++    capture_plan::plan_t plan;
++    std::chrono::steady_clock::time_point last_target_check;
++
++    // Captures of further apps, mixed with audio_client's
++    struct extra_stream_t {
++      handle_t event;
++      audio_client_t client;
++      audio_capture_t capture;
++      std::vector<float> fifo;
++    };
++
++    std::vector<extra_stream_t> extras;
++    std::vector<float> primary_fifo;
++
++    /** Append everything a capture client has waiting. */
++    capture_e drain(IAudioCaptureClient *capture, std::vector<float> &fifo) {
++      UINT32 frames = 0;
++      HRESULT status;
++      for (status = capture->GetNextPacketSize(&frames); SUCCEEDED(status) && frames > 0; status = capture->GetNextPacketSize(&frames)) {
++        float *samples = nullptr;
++        DWORD flags = 0;
++        status = capture->GetBuffer((BYTE **) &samples, &frames, &flags, nullptr, nullptr);
++        if (FAILED(status)) {
++          break;
++        }
++        if (fifo.size() < SAMPLE_RATE * channels) {  // never hold more than a second
++          if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
++            fifo.insert(fifo.end(), frames * channels, 0.0f);
++          } else {
++            fifo.insert(fifo.end(), samples, samples + frames * channels);
++          }
++        }
++        capture->ReleaseBuffer(frames);
++      }
++      if (status == AUDCLNT_E_DEVICE_INVALIDATED) {
++        return capture_e::reinit;
++      }
++      if (FAILED(status)) {
++        BOOST_LOG(error) << "Couldn't capture audio [0x"sv << util::hex(status).to_string_view() << ']';
++        return capture_e::error;
++      }
++      return capture_e::ok;
++    }
++
++    /** Capture from every app in the plan and add them together. */
++    capture_e _fill_mixed() {
++      std::vector<HANDLE> events {audio_event.get()};
++      for (auto &extra : extras) {
++        events.push_back(extra.event.get());
++      }
++      auto status = WaitForMultipleObjectsEx((DWORD) events.size(), events.data(), FALSE, default_latency_ms, FALSE);
++      if (status == WAIT_TIMEOUT) {
++        return capture_e::timeout;
++      }
++      if (status >= WAIT_OBJECT_0 + events.size()) {
++        BOOST_LOG(error) << "Couldn't wait for audio event: [0x"sv << util::hex(status).to_string_view() << ']';
++        return capture_e::error;
++      }
++
++      if (auto result = drain(audio_capture.get(), primary_fifo); result != capture_e::ok) {
++        return result;
++      }
++      for (auto &extra : extras) {
++        if (auto result = drain(extra.capture.get(), extra.fifo); result != capture_e::ok) {
++          return result;
++        }
++      }
++
++      // Mix what all apps have delivered so far. A quiet app may deliver nothing, so once the
++      // others are 20 ms ahead of it, it counts as silent for that stretch.
++      std::size_t lead = primary_fifo.size();
++      std::size_t least = lead;
++      for (auto &extra : extras) {
++        lead = std::max(lead, extra.fifo.size());
++        least = std::min(least, extra.fifo.size());
++      }
++      const std::size_t skew = (SAMPLE_RATE / 50) * channels;
++      std::size_t emit = std::max(least, lead > skew ? lead - skew : 0);
++      emit = std::min<std::size_t>(emit, std::end(sample_buf) - sample_buf_pos);
++      emit -= emit % channels;
++      if (!emit) {
++        return capture_e::ok;
++      }
++
++      std::fill_n(sample_buf_pos, emit, 0.0f);
++      auto add = [&](std::vector<float> &fifo) {
++        auto n = std::min(emit, fifo.size());
++        for (std::size_t i = 0; i < n; ++i) {
++          sample_buf_pos[i] += fifo[i];
++        }
++        fifo.erase(fifo.begin(), fifo.begin() + n);
++      };
++      add(primary_fifo);
++      for (auto &extra : extras) {
++        add(extra.fifo);
++      }
++      for (std::size_t i = 0; i < emit; ++i) {
++        sample_buf_pos[i] = std::clamp(sample_buf_pos[i], -1.0f, 1.0f);
++      }
++      sample_buf_pos += emit;
++      return capture_e::ok;
++    }
++
+     util::buffer_t<float> sample_buf;
+     float *sample_buf_pos;
+     int channels;
+diff --git a/src/platform/windows/input.cpp b/src/platform/windows/input.cpp
+index 9d182c7f..6694cd4d 100644
+--- a/src/platform/windows/input.cpp
++++ b/src/platform/windows/input.cpp
+@@ -22,7 +22,8 @@
+ #include "src/logging.h"
+ #include "src/platform/common.h"
+ 
+-#ifdef __MINGW32__
++// Newer MinGW headers declare the synthetic pointer API themselves.
++#if defined(__MINGW32__) && !(__MINGW64_VERSION_MAJOR >= 12 && NTDDI_VERSION >= NTDDI_WIN10_RS5)
+ DECLARE_HANDLE(HSYNTHETICPOINTERDEVICE);
+ WINUSERAPI HSYNTHETICPOINTERDEVICE WINAPI CreateSyntheticPointerDevice(POINTER_INPUT_TYPE pointerType, ULONG maxCount, POINTER_FEEDBACK_MODE mode);
+ WINUSERAPI BOOL WINAPI InjectSyntheticPointerInput(HSYNTHETICPOINTERDEVICE device, CONST POINTER_TYPE_INFO *pointerInfo, UINT32 count);
+diff --git a/src/rtsp.cpp b/src/rtsp.cpp
+index c81687de..cff7c314 100644
+--- a/src/rtsp.cpp
++++ b/src/rtsp.cpp
+@@ -627,6 +627,35 @@ namespace rtsp_stream {
+       return uuids;
+     }
+ 
++    std::list<stream::session::activity_t>
++    get_all_session_activity() {
++      std::list<stream::session::activity_t> list;
++      auto lg = _session_slots.lock();
++      for (auto &slot : *_session_slots) {
++        if (slot) {
++          list.push_back(stream::session::activity(*slot));
++        }
++      }
++      return list;
++    }
++
++    bool reorder_players(const std::vector<std::string> &uuids) {
++      std::vector<std::shared_ptr<stream::session_t>> order;
++      auto lg = _session_slots.lock();
++      for (const auto &uuid : uuids) {
++        for (auto &slot : *_session_slots) {
++          if (slot && stream::session::activity(*slot).uuid == uuid) {
++            order.push_back(slot);
++          }
++        }
++      }
++      if (order.empty()) {
++        return false;
++      }
++      stream::session::reorder_players(order);
++      return true;
++    }
++
+   private:
+     std::unordered_map<std::string_view, cmd_func_t> _map_cmd_cb;
+ 
+@@ -664,6 +693,14 @@ namespace rtsp_stream {
+     return server.get_all_session_uuids();
+   }
+ 
++  std::list<stream::session::activity_t> get_all_session_activity() {
++    return server.get_all_session_activity();
++  }
++
++  bool reorder_players(const std::vector<std::string> &uuids) {
++    return server.reorder_players(uuids);
++  }
++
+   void terminate_sessions() {
+     server.clear(true);
+   }
+@@ -1055,6 +1092,7 @@ namespace rtsp_stream {
+       }
+ 
+       BOOST_LOG(info) << "Host Streaming bitrate is [" << configuredBitrateKbps << "kbps]";
++      config.moonshineSelectedKbps = (int) configuredBitrateKbps;
+ 
+       // Hack: Restore bitrate for warp mode
+       size_t warp_factor = std::round((float)config.monitor.framerate * 1000 / session.fps);
+@@ -1130,6 +1168,10 @@ namespace rtsp_stream {
+       BOOST_LOG(debug) << "Final adjusted video encoding bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
+       config.monitor.bitrate = configuredBitrateKbps;
+     }
++    config.moonshineBaseKbps = config.monitor.bitrate;
++    if (config.moonshineSelectedKbps <= 0) {
++      config.moonshineSelectedKbps = config.monitor.bitrate;
++    }
+ 
+     if (config.monitor.videoFormat == 1 && video::active_hevc_mode == 1) {
+       BOOST_LOG(warning) << "HEVC is disabled, yet the client requested HEVC"sv;
+diff --git a/src/rtsp.h b/src/rtsp.h
+index c426bd93..a2173868 100644
+--- a/src/rtsp.h
++++ b/src/rtsp.h
+@@ -8,6 +8,8 @@
+ #include <atomic>
+ #include <memory>
+ #include <list>
++#include <string>
++#include <vector>
+ 
+ // local includes
+ #include "crypto.h"
+@@ -22,6 +24,19 @@ namespace stream {
+   struct session_t;
+ }
+ 
++namespace stream::session {
++  /** Moonshine: what a connected device is doing, for the host's guest list. */
++  struct activity_t {
++    std::string uuid;
++    std::string name;
++    int ping_ms;  ///< control stream round trip, 0 if not known yet
++    std::int64_t idle_ms[4];  ///< since the last controller, keyboard, mouse, touch/pen input; -1 if none yet
++    std::vector<int> pads;  ///< global numbers of its controllers (lower = earlier player)
++    int bitrate_kbps = 0;  ///< video bitrate its encoder runs at now
++  };
++
++}  // namespace stream::session
++
+ namespace rtsp_stream {
+   constexpr auto RTSP_SETUP_PORT = 21;
+ 
+@@ -83,6 +98,13 @@ namespace rtsp_stream {
+   std::list<std::string>
+   get_all_session_uuids();
+ 
++  /** Moonshine: ping and input activity of every connected device. */
++  std::list<stream::session::activity_t>
++  get_all_session_activity();
++
++  /// Moonshine: give the listed devices' controllers the first player numbers, in this order.
++  bool reorder_players(const std::vector<std::string> &uuids);
++
+   /**
+    * @brief Terminates all running streaming sessions.
+    */
+diff --git a/src/stream.cpp b/src/stream.cpp
+index bceeb93d..175e7c8f 100644
+--- a/src/stream.cpp
++++ b/src/stream.cpp
+@@ -4,9 +4,12 @@
+  */
+ 
+ // standard includes
++#include <algorithm>
+ #include <fstream>
++#include <mutex>
+ #include <future>
+ #include <queue>
++#include <cstring>
+ 
+ // lib includes
+ #include <boost/endian/arithmetic.hpp>
+@@ -423,6 +426,14 @@ namespace stream {
+     safe::signal_t controlEnd;
+ 
+     std::atomic<session::state_e> state;
++
++    // Moonshine: when each kind of input last arrived (steady clock ms, 0 = never), and the control round trip
++    std::atomic<std::int64_t> last_input_ms[4] {};
++    std::atomic<std::uint32_t> rtt_ms {0};
++
++    // Moonshine: the encoder bitrate this stream was last given (kbps), and where new ones arrive
++    std::atomic<int> bitrate_kbps {0};
++    safe::mail_raw_t::event_t<int> bitrate_events;
+   };
+ 
+   /**
+@@ -561,6 +572,10 @@ namespace stream {
+       return;
+     }
+ 
++    if (session->control.peer) {
++      session->rtt_ms.store(session->control.peer->roundTripTime, std::memory_order_relaxed);
++    }
++
+     auto cb = _map_type_cb.find(type);
+     if (cb == std::end(_map_type_cb)) {
+       BOOST_LOG(debug)
+@@ -793,6 +808,58 @@ namespace stream {
+    * @param msg The message to pass.
+    * @return 0 on success.
+    */
++  static std::int64_t now_ms() {
++    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
++  }
++
++  /** Moonshine: remember when this device last used each kind of input it's allowed to use. */
++  static void note_input(session_t *session, const std::vector<uint8_t> &packet) {
++    if (packet.size() < 8) {
++      return;
++    }
++    std::uint32_t magic;
++    std::memcpy(&magic, packet.data() + 4, sizeof(magic));
++    int kind;
++    crypto::PERM needed;
++    switch (util::endian::little(magic)) {
++      case MULTI_CONTROLLER_MAGIC_GEN5:
++      case SS_CONTROLLER_ARRIVAL_MAGIC:
++      case SS_CONTROLLER_TOUCH_MAGIC:
++      case SS_CONTROLLER_MOTION_MAGIC:
++        kind = 0;
++        needed = crypto::PERM::input_controller;
++        break;
++      case KEY_DOWN_EVENT_MAGIC:
++      case KEY_UP_EVENT_MAGIC:
++      case UTF8_TEXT_EVENT_MAGIC:
++        kind = 1;
++        needed = crypto::PERM::input_kbd;
++        break;
++      case MOUSE_MOVE_REL_MAGIC_GEN5:
++      case MOUSE_MOVE_ABS_MAGIC:
++      case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5:
++      case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
++      case SCROLL_MAGIC_GEN5:
++      case SS_HSCROLL_MAGIC:
++        kind = 2;
++        needed = crypto::PERM::input_mouse;
++        break;
++      case SS_TOUCH_MAGIC:
++        kind = 3;
++        needed = crypto::PERM::input_touch;
++        break;
++      case SS_PEN_MAGIC:
++        kind = 3;
++        needed = crypto::PERM::input_pen;
++        break;
++      default:
++        return;
++    }
++    if (static_cast<std::uint32_t>(session->permission) & static_cast<std::uint32_t>(needed)) {
++      session->last_input_ms[kind].store(now_ms(), std::memory_order_relaxed);
++    }
++  }
++
+   int send_feedback_msg(session_t *session, platf::gamepad_feedback_msg_t &msg) {
+     if (!session->control.peer) {
+       BOOST_LOG(warning) << "Couldn't send gamepad feedback data, still waiting for PING from Moonlight"sv;
+@@ -998,7 +1065,8 @@ namespace stream {
+         std::copy(payload.end() - 16, payload.end(), std::begin(iv));
+       }
+ 
+-      input::passthrough(session->input, std::move(plaintext), session->permission);
++      note_input(session, plaintext);
++        input::passthrough(session->input, std::move(plaintext), session->permission);
+     });
+ 
+     server->map(packetTypes[IDX_EXEC_SERVER_CMD], [server](session_t *session, const std::string_view &payload) {
+@@ -1112,6 +1180,7 @@ namespace stream {
+       // IDX_INPUT_DATA callback will attempt to decrypt unencrypted data, therefore we need pass it directly
+       if (type == packetTypes[IDX_INPUT_DATA]) {
+         plaintext.erase(std::begin(plaintext), std::begin(plaintext) + 4);
++        note_input(session, plaintext);
+         input::passthrough(session->input, std::move(plaintext), session->permission);
+       } else {
+         server->call(type, session, next_payload, true);
+@@ -1956,6 +2025,27 @@ namespace stream {
+       return session.device_uuid;
+     }
+ 
++    void reorder_players(const std::vector<std::shared_ptr<session_t>> &order) {
++      std::vector<std::shared_ptr<input::input_t>> inputs;
++      for (const auto &session : order) {
++        if (session->input) {
++          inputs.push_back(session->input);
++        }
++      }
++      input::reorder_gamepads(std::move(inputs));
++    }
++
++    activity_t activity(const session_t &session) {
++      activity_t result {session.device_uuid, session.device_name, (int) session.rtt_ms.load(), {}, input::gamepad_ids(session.input)};
++      auto now = now_ms();
++      for (int i = 0; i < 4; ++i) {
++        auto at = session.last_input_ms[i].load();
++        result.idle_ms[i] = at ? now - at : -1;
++      }
++      result.bitrate_kbps = session.bitrate_kbps.load();
++      return result;
++    }
++
+     bool uuid_match(const session_t &session, const std::string_view& uuid) {
+       return session.device_uuid == uuid;
+     }
+@@ -1978,6 +2068,74 @@ namespace stream {
+       return false;
+     }
+ 
++    // Moonshine: the streams sharing the host's upload limit
++    static std::mutex bandwidth_mutex;
++    static std::vector<session_t *> bandwidth_sessions;
++
++    /**
++     * Give every stream its share of the upload limit: equal shares, each capped at what its viewer
++     * picked, with what one doesn't use going to the others. Streams whose share changed get the new
++     * encoder bitrate (video.cpp restarts their encoder with it).
++     */
++    static void rebalance_bitrate_locked() {
++      const auto n = bandwidth_sessions.size();
++      if (n == 0) {
++        return;
++      }
++      const double limit = config::video.moonshine_total_bitrate;
++
++      std::vector<size_t> order(n);
++      for (size_t i = 0; i < n; ++i) {
++        order[i] = i;
++      }
++      std::sort(order.begin(), order.end(), [](size_t a, size_t b) {
++        return bandwidth_sessions[a]->config.moonshineSelectedKbps < bandwidth_sessions[b]->config.moonshineSelectedKbps;
++      });
++
++      std::vector<double> share(n);
++      double left = limit;
++      for (size_t k = 0; k < n; ++k) {
++        const auto i = order[k];
++        const double wanted = std::max(1, bandwidth_sessions[i]->config.moonshineSelectedKbps);
++        share[i] = limit > 0 ? std::min(wanted, left / (double) (n - k)) : wanted;
++        left -= share[i];
++      }
++
++      for (size_t i = 0; i < n; ++i) {
++        auto *s = bandwidth_sessions[i];
++        const double wanted = std::max(1, s->config.moonshineSelectedKbps);
++        const double fraction = std::min(1.0, share[i] / wanted);
++        // Never below 500 kbps: an encoder starved further than that is useless to watch
++        const int target = std::max(500, (int) std::lround(s->config.moonshineBaseKbps * fraction));
++        if (target != s->bitrate_kbps.load()) {
++          BOOST_LOG(info) << "Moonshine: video bitrate for ["sv << s->device_name << "] is now "sv << target << " kbps ("sv << n << " watching, limit "sv << (int) limit << " kbps)"sv;
++          s->bitrate_kbps = target;
++          s->bitrate_events->raise(target);
++        }
++      }
++    }
++
++    void rebalance_bitrate() {
++      std::lock_guard lg {bandwidth_mutex};
++      rebalance_bitrate_locked();
++    }
++
++    static void bandwidth_join(session_t &session) {
++      std::lock_guard lg {bandwidth_mutex};
++      bandwidth_sessions.push_back(&session);
++      rebalance_bitrate_locked();
++    }
++
++    static void bandwidth_leave(session_t &session) {
++      std::lock_guard lg {bandwidth_mutex};
++      auto it = std::find(bandwidth_sessions.begin(), bandwidth_sessions.end(), &session);
++      if (it == bandwidth_sessions.end()) {
++        return;
++      }
++      bandwidth_sessions.erase(it);
++      rebalance_bitrate_locked();
++    }
++
+     void stop(session_t &session) {
+       while_starting_do_nothing(session.state);
+       auto expected = state_e::RUNNING;
+@@ -1985,6 +2143,7 @@ namespace stream {
+       if (already_stopping) {
+         return;
+       }
++      bandwidth_leave(session);
+ 
+       session.shutdown_event->raise(true);
+     }
+@@ -1996,6 +2155,7 @@ namespace stream {
+       if (already_stopping) {
+         return;
+       }
++      bandwidth_leave(session);
+ 
+       // reason: graceful termination
+       std::uint32_t reason = 0x80030023;
+@@ -2112,6 +2272,8 @@ namespace stream {
+ 
+       session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
+ 
++      bandwidth_join(session);
++
+       session.audioThread = std::thread {audioThread, &session};
+       session.videoThread = std::thread {videoThread, &session};
+ 
+@@ -2171,6 +2333,8 @@ namespace stream {
+       };
+ 
+       session->video.idr_events = mail->event<bool>(mail::idr);
++      session->bitrate_events = mail->event<int>(mail::bitrate);
++      session->bitrate_kbps = config.monitor.bitrate;
+       session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
+       session->video.lowseq = 0;
+       session->video.ping_payload = launch_session.av_ping_payload;
+diff --git a/src/stream.h b/src/stream.h
+index 1aa08f42..d55c6505 100644
+--- a/src/stream.h
++++ b/src/stream.h
+@@ -36,6 +36,11 @@ namespace stream {
+     uint32_t encryptionFlagsEnabled;
+ 
+     std::optional<int> gcmap;
++
++    // Moonshine: the bitrate the viewer picked (after the host's per-stream maximum) and the encoder
++    // bitrate that works out to, for sharing the host's upload limit between viewers
++    int moonshineSelectedKbps = 0;
++    int moonshineBaseKbps = 0;
+   };
+ 
+   namespace session {
+@@ -49,6 +54,9 @@ namespace stream {
+     std::shared_ptr<session_t> alloc(config_t &config, rtsp_stream::launch_session_t &launch_session);
+     std::string uuid(const session_t& session);
+     bool uuid_match(const session_t& session, const std::string_view& uuid);
++
++    activity_t activity(const session_t &session);
++    void reorder_players(const std::vector<std::shared_ptr<session_t>> &order);
+     bool update_device_info(session_t& session, const std::string& name, const crypto::PERM& newPerm);
+     int start(session_t &session, const std::string &addr_string);
+     void stop(session_t &session);
+@@ -56,5 +64,8 @@ namespace stream {
+     void join(session_t &session);
+     state_e state(session_t &session);
+     inline bool send(session_t& session, const std::string_view &payload);
++
++    /** Moonshine: share the upload limit between the running streams again (after a settings change). */
++    void rebalance_bitrate();
+   }  // namespace session
+ }  // namespace stream
+diff --git a/src/video.cpp b/src/video.cpp
+index 6893137c..48d7e379 100644
+--- a/src/video.cpp
++++ b/src/video.cpp
+@@ -1935,6 +1935,7 @@ namespace video {
+     auto packets = mail::man->queue<packet_t>(mail::video_packets);
+     auto idr_events = mail->event<bool>(mail::idr);
+     auto invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
++    auto bitrate_events = mail->event<int>(mail::bitrate);
+ 
+     {
+       // Load a dummy image into the AVFrame to ensure we have something to encode
+@@ -1979,6 +1980,12 @@ namespace video {
+         break;
+       }
+ 
++      // Moonshine: the host's upload limit gave this stream a new bitrate
++      if (bitrate_events->peek()) {
++        BOOST_LOG(info) << "Restarting the encoder for a new bitrate"sv;
++        break;
++      }
++
+       bool requested_idr_frame = false;
+ 
+       while (invalidate_ref_frames_events->peek()) {
+@@ -2363,6 +2370,7 @@ namespace video {
+ 
+     auto touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
+     auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
++    auto bitrate_events = mail->event<int>(mail::bitrate);
+ 
+     // Encoding takes place on this thread
+     platf::adjust_thread_priority(platf::thread_priority_e::high);
+@@ -2386,6 +2394,14 @@ namespace video {
+ 
+       auto &encoder = *chosen_encoder;
+ 
++      // Moonshine: the bitrate this stream's share of the host's upload limit allows
++      if (bitrate_events->peek()) {
++        if (auto kbps = bitrate_events->pop()) {
++          config.bitrate = *kbps;
++          BOOST_LOG(info) << "Encoding at "sv << config.bitrate << " kbps"sv;
++        }
++      }
++
+       auto encode_device = make_encode_device(*display, encoder, config);
+       if (!encode_device) {
+         return;
+diff --git a/src_assets/windows/misc/autostart/autostart-service.bat b/src_assets/windows/misc/autostart/autostart-service.bat
+index 0f40c9db..970f89e4 100644
+--- a/src_assets/windows/misc/autostart/autostart-service.bat
++++ b/src_assets/windows/misc/autostart/autostart-service.bat
+@@ -1,4 +1,4 @@
+ @echo off
+ 
+ rem Set the service to auto-start
+-sc config ApolloService start= auto
++sc config MoonshineHost start= auto
+diff --git a/src_assets/windows/misc/firewall/add-firewall-rule.bat b/src_assets/windows/misc/firewall/add-firewall-rule.bat
+index 7543ee5b..b681da14 100644
+--- a/src_assets/windows/misc/firewall/add-firewall-rule.bat
++++ b/src_assets/windows/misc/firewall/add-firewall-rule.bat
+@@ -3,7 +3,7 @@
+ rem Get sunshine root directory
+ for %%I in ("%~dp0\..") do set "ROOT_DIR=%%~fI"
+ 
+-set RULE_NAME=Apollo
++set RULE_NAME="Moonshine Host"
+ set PROGRAM_BIN="%ROOT_DIR%\sunshine.exe"
+ 
+ rem Add the rule
+diff --git a/src_assets/windows/misc/firewall/delete-firewall-rule.bat b/src_assets/windows/misc/firewall/delete-firewall-rule.bat
+index df73cf8a..e9736e3b 100644
+--- a/src_assets/windows/misc/firewall/delete-firewall-rule.bat
++++ b/src_assets/windows/misc/firewall/delete-firewall-rule.bat
+@@ -1,6 +1,6 @@
+ @echo off
+ 
+-set RULE_NAME=Apollo
++set RULE_NAME="Moonshine Host"
+ 
+ rem Delete the rule
+ netsh advfirewall firewall delete rule name=%RULE_NAME%
+diff --git a/src_assets/windows/misc/service/install-service.bat b/src_assets/windows/misc/service/install-service.bat
+index bd8e5371..d05ea3ae 100644
+--- a/src_assets/windows/misc/service/install-service.bat
++++ b/src_assets/windows/misc/service/install-service.bat
+@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
+ rem Get sunshine root directory
+ for %%I in ("%~dp0\..") do set "ROOT_DIR=%%~fI"
+ 
+-set SERVICE_NAME=ApolloService
++set SERVICE_NAME=MoonshineHost
+ set "SERVICE_BIN=%ROOT_DIR%\tools\sunshinesvc.exe"
+ set "SERVICE_CONFIG_DIR=%LOCALAPPDATA%\SudoMaker\Apollo"
+ set "SERVICE_CONFIG_FILE=%SERVICE_CONFIG_DIR%\service_start_type.txt"
+@@ -16,7 +16,7 @@ rem Remove the legacy SunshineSvc service
+ net stop sunshinesvc
+ sc delete sunshinesvc
+ 
+-rem Check if ApolloService already exists
++rem Check if MoonshineHost already exists
+ sc qc %SERVICE_NAME% > nul 2>&1
+ if %ERRORLEVEL%==0 (
+     rem Stop the existing service if running
+@@ -58,10 +58,10 @@ if exist "%SERVICE_CONFIG_FILE%" (
+ echo Setting service start type set to: [!SERVICE_START_TYPE!]
+ 
+ rem Run the sc command to create/reconfigure the service
+-sc %SC_CMD% %SERVICE_NAME% binPath= "%SERVICE_BIN%" start= %SERVICE_START_TYPE% DisplayName= "Apollo Service"
++sc %SC_CMD% %SERVICE_NAME% binPath= "%SERVICE_BIN%" start= %SERVICE_START_TYPE% DisplayName= "Moonshine Host"
+ 
+ rem Set the description of the service
+-sc description %SERVICE_NAME% "Apollo is a self-hosted game stream host for Moonlight."
++sc description %SERVICE_NAME% "Lets paired devices stream from this PC. Part of Moonshine (built on Apollo)."
+ 
+ rem Start the new service
+ net start %SERVICE_NAME%
+diff --git a/src_assets/windows/misc/service/uninstall-service.bat b/src_assets/windows/misc/service/uninstall-service.bat
+index a5ae664a..dc1c3673 100644
+--- a/src_assets/windows/misc/service/uninstall-service.bat
++++ b/src_assets/windows/misc/service/uninstall-service.bat
+@@ -5,18 +5,18 @@ set "SERVICE_CONFIG_DIR=%LOCALAPPDATA%\SudoMaker\Apollo"
+ set "SERVICE_CONFIG_FILE=%SERVICE_CONFIG_DIR%\service_start_type.txt"
+ 
+ rem Save the current service start type to a file if the service exists
+-sc qc ApolloService >nul 2>&1
++sc qc MoonshineHost >nul 2>&1
+ if %ERRORLEVEL%==0 (
+     if not exist "%SERVICE_CONFIG_DIR%\" mkdir "%SERVICE_CONFIG_DIR%\"
+ 
+     rem Get the start type
+-    for /f "tokens=3" %%i in ('sc qc ApolloService ^| findstr /C:"START_TYPE"') do (
++    for /f "tokens=3" %%i in ('sc qc MoonshineHost ^| findstr /C:"START_TYPE"') do (
+         set "CURRENT_START_TYPE=%%i"
+     )
+ 
+     rem Set the content to write
+     if "!CURRENT_START_TYPE!"=="2" (
+-        sc qc ApolloService | findstr /C:"(DELAYED)" >nul
++        sc qc MoonshineHost | findstr /C:"(DELAYED)" >nul
+         if !ERRORLEVEL!==0 (
+             set "CONTENT=2-delayed"
+         ) else (
+@@ -36,6 +36,6 @@ rem Stop and delete the legacy SunshineSvc service
+ net stop sunshinesvc
+ sc delete sunshinesvc
+ 
+-rem Stop and delete the new ApolloService service
+-net stop ApolloService
+-sc delete ApolloService
++rem Stop and delete the new MoonshineHost service
++net stop MoonshineHost
++sc delete MoonshineHost
+diff --git a/tools/sunshinesvc.cpp b/tools/sunshinesvc.cpp
+index ee1da711..428812af 100644
+--- a/tools/sunshinesvc.cpp
++++ b/tools/sunshinesvc.cpp
+@@ -17,7 +17,7 @@ SERVICE_STATUS service_status;
+ HANDLE stop_event;
+ HANDLE session_change_event;
+ 
+-#define SERVICE_NAME "ApolloService"
++#define SERVICE_NAME "MoonshineHost"
+ 
+ DWORD WINAPI HandlerEx(DWORD dwControl, DWORD dwEventType, LPVOID lpEventData, LPVOID lpContext) {
+   switch (dwControl) {

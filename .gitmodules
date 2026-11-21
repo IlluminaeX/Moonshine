@@ -1,0 +1,8 @@
+[submodule "upstream/apollo"]
+	path = upstream/apollo
+	url = https://github.com/ClassicOldSong/Apollo
+	ignore = dirty
+[submodule "upstream/moonlight-qt"]
+	path = upstream/moonlight-qt
+	url = https://github.com/moonlight-stream/moonlight-qt
+	ignore = dirty
