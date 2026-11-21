@@ -80,6 +80,7 @@
         <div class="actions">
           <label class="check small" title="Friends see the game you're playing or hosting"><input type="checkbox" id="share-game"> Share what I’m playing</label>
           <label class="check small" title="A notification when a friend comes online or starts streaming a game"><input type="checkbox" id="friend-alerts"> Notify me</label>
+          <label class="check small" title="No notifications, and invites to play are answered “not now”. Requests to stream from this PC still ask."><input type="checkbox" id="dnd"> Do not disturb</label>
           <button id="refresh-friends" class="secondary">Refresh</button>
         </div>
       </header>
@@ -430,7 +431,17 @@
             <div class="label">Hosting</div>
             <div id="service-state" class="value">Checking…</div>
           </div>
-          <button id="toggle-service">…</button>
+          <div class="actions">
+            <select id="pause-hosting" class="secondary-select hidden" title="Let nobody stream from this PC for a while, without turning hosting off">
+              <option value="">Pause…</option>
+              <option value="30">For 30 minutes</option>
+              <option value="60">For 1 hour</option>
+              <option value="120">For 2 hours</option>
+              <option value="-1">Until I resume</option>
+            </select>
+            <button id="resume-hosting" class="hidden">Resume</button>
+            <button id="toggle-service">…</button>
+          </div>
         </div>
         <div class="row">
           <div>
@@ -496,6 +507,14 @@
       <div class="panel">
         <h2>Devices</h2>
         <p class="hint">Devices paired with this PC. With “Ask before streaming” on, you get a popup to allow each stream. Remove a device to revoke it completely.</p>
+        <div class="detail-row new-device-perm">
+          <label for="new-device-perm" class="detail-label">New devices can</label>
+          <select id="new-device-perm">
+            <option value="controller">Start apps and use a controller</option>
+            <option value="full">Start apps, full control, clipboard and files</option>
+            <option value="watch">Only watch</option>
+          </select>
+        </div>
         <div id="clients" class="list"></div>
       </div>
     </section>

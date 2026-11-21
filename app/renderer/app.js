@@ -1208,6 +1208,13 @@ async function loadFriends(first = false, manual = false) {
 
 $('#friend-alerts').addEventListener('change', (e) => window.moonshine.friends.setAlerts(e.target.checked));
 $('#share-game').addEventListener('change', (e) => window.moonshine.friends.setShareGame(e.target.checked));
+$('#dnd').addEventListener('change', async (e) => {
+  await window.moonshine.dnd.set(e.target.checked);
+  toast(e.target.checked ? 'Do not disturb is on: no notifications, and invites get “not now”.' : 'Do not disturb is off.');
+});
+const showDnd = (d) => { $('#dnd').checked = Boolean(d && d.on); };
+window.moonshine.dnd.onChange(showDnd);
+window.moonshine.dnd.get().then(showDnd);
 
 // ---- Quick messages ------------------------------------------------------------------------
 
@@ -1382,7 +1389,7 @@ let hostSnapshot = '';
 /** Show the Host tab. With `statusOnly`, the rest of the tab is only redrawn when something changed. */
 async function loadHost(statusOnly = false) {
   const s = await host.status();
-  const snapshot = JSON.stringify([s.service, s.tailscale, s.tailscaleInstalled, s.loginNeeded, Boolean(s.audio)]);
+  const snapshot = JSON.stringify([s.service, s.tailscale, s.tailscaleInstalled, s.loginNeeded, Boolean(s.audio), s.paused, s.newDevicePerm]);
   if (statusOnly && snapshot === hostSnapshot) return;
   hostSnapshot = snapshot;
   if (s.service === 'running') loadBandwidth();
@@ -1393,12 +1400,19 @@ async function loadHost(statusOnly = false) {
     'not-installed': 'Host not installed (run the Moonshine installer again)',
   }[s.service] || s.service;
   const state = $('#service-state');
-  state.textContent = stateText;
-  state.className = `value ${s.service === 'running' ? 'ok' : 'warn'}`;
+  const paused = s.service === 'running' && s.paused;
+  state.textContent = paused
+    ? `Paused${s.paused === -1 ? '' : ` until ${new Date(s.paused).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}: nobody can stream from this PC`
+    : stateText;
+  state.className = `value ${s.service === 'running' && !paused ? 'ok' : 'warn'}`;
   serviceRunning = s.service === 'running';
   const toggle = $('#toggle-service');
   toggle.textContent = serviceRunning ? 'Stop hosting' : 'Start hosting';
   toggle.disabled = s.service === 'not-installed';
+  $('#pause-hosting').classList.toggle('hidden', !serviceRunning || Boolean(paused));
+  $('#pause-hosting').value = '';
+  $('#resume-hosting').classList.toggle('hidden', !paused);
+  $('#new-device-perm').value = s.newDevicePerm || 'controller';
 
   const ts = $('#tailscale-state');
   if (s.tailscale) {
@@ -1431,6 +1445,37 @@ async function loadHost(statusOnly = false) {
     $('#clients').replaceChildren(el('div', { className: 'empty', textContent: why }));
   }
 }
+
+$('#pause-hosting').addEventListener('change', async (e) => {
+  const minutes = Number(e.target.value);
+  e.target.value = '';
+  if (!minutes) return;
+  try {
+    await host.pause(minutes);
+    await loadHost();
+  } catch (err) {
+    toast(errorText(err));
+  }
+});
+
+$('#resume-hosting').addEventListener('click', (e) => busy(e.target, 'Resuming…', async () => {
+  await host.resume();
+  toast('Hosting resumed.');
+  await loadHost();
+}));
+
+$('#new-device-perm').addEventListener('change', async (e) => {
+  try {
+    await host.setNewDevicePerm(e.target.value);
+    toast({
+      controller: 'Devices paired from now on can start apps and use a controller.',
+      full: 'Devices paired from now on get full control.',
+      watch: 'Devices paired from now on can only watch.',
+    }[e.target.value]);
+  } catch (err) {
+    toast(errorText(err));
+  }
+});
 
 // What a paired device may do (the host's permission bits, src/crypto.h in upstream/apollo).
 const PERMISSIONS = [

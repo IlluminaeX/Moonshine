@@ -27,6 +27,16 @@ const defaults = {
   // stand-in address (127.77.x.y:port) the same, so the player's saved PC stays valid.
   tunnelHosts: {},
   updateNotified: '', // the newest version a "new version" balloon was shown for
+  // What a newly paired device may do: 'controller' (start apps, controller only), 'full', 'watch'
+  newDevicePerm: 'controller',
+  // Host device uuids seen so far; any other device is new and gets newDevicePerm (null: not looked yet)
+  knownDevices: null,
+  // Hosting paused: until when (ms; -1 until resumed by hand; 0 not paused), and the devices that
+  // could stream without asking before the pause (uuid -> true), to let them again afterwards
+  pausedUntil: 0,
+  pauseSkipped: {},
+  // Do not disturb: until when (ms; -1 until turned off; 0 off)
+  dndUntil: 0,
   streamSettings: {},
   startAtLogin: false,
 };

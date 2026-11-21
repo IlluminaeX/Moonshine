@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld('moonshine', {
     setBandwidth: invoke('host:setBandwidth'),
     setPlayerOrder: invoke('host:setPlayerOrder'),
     unpair: invoke('host:unpair'),
+    pause: invoke('host:pause'),
+    resume: invoke('host:resume'),
+    setNewDevicePerm: invoke('host:setNewDevicePerm'),
     onChanged: listen('host:changed'),
   },
   apollo: {
@@ -92,6 +95,11 @@ contextBridge.exposeInMainWorld('moonshine', {
     install: invoke('update:install'),
     onAsk: listen('update:ask'),
     onState: listen('update:state'),
+  },
+  dnd: {
+    get: invoke('app:dnd'),
+    set: invoke('app:setDnd'),
+    onChange: listen('app:dnd'),
   },
   onToast: listen('app:toast'),
 });

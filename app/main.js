@@ -82,6 +82,32 @@ async function refreshTray() {
   const state = await apollo.serviceState();
   const recent = store.get('recentHosts');
   const update = updater.getState();
+  const paused = isPaused();
+  const dnd = isDnd();
+  tray.setToolTip(['Moonshine', paused ? 'hosting paused' : '', dnd ? 'do not disturb' : ''].filter(Boolean).join(' · '));
+  const pauseItems = state !== 'running' ? [] : paused ? [{
+    label: `Resume hosting (paused${untilText(store.get('pausedUntil'))})`,
+    click: () => resumeHosting().then(() => notifyRenderer('app:toast', 'Hosting resumed.')),
+  }] : [{
+    label: 'Pause hosting',
+    submenu: [
+      { label: 'For 30 minutes', click: () => pauseHosting(Date.now() + 30 * 60000) },
+      { label: 'For 1 hour', click: () => pauseHosting(Date.now() + 60 * 60000) },
+      { label: 'For 2 hours', click: () => pauseHosting(Date.now() + 120 * 60000) },
+      { label: 'Until I resume', click: () => pauseHosting(-1) },
+    ],
+  }];
+  const dndItem = dnd ? {
+    label: `Turn off Do not disturb${untilText(store.get('dndUntil')) ? ` (on${untilText(store.get('dndUntil'))})` : ''}`,
+    click: () => setDnd(0),
+  } : {
+    label: 'Do not disturb',
+    submenu: [
+      { label: 'For 1 hour', click: () => setDnd(Date.now() + 60 * 60000) },
+      { label: 'Until tomorrow morning', click: () => setDnd(nextMorning()) },
+      { label: 'Until I turn it off', click: () => setDnd(-1) },
+    ],
+  };
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open Moonshine', click: showWindow },
     ...(['available', 'downloading', 'ready'].includes(update.status) ? [{
@@ -99,6 +125,8 @@ async function refreshTray() {
         notifyRenderer('host:changed');
       },
     },
+    ...pauseItems,
+    dndItem,
     ...(recent.length ? [{
       label: 'Connect to',
       submenu: recent.map((h) => ({ label: `${h.name}: ${h.app}`, click: () => startStream(h, h.app) })),
@@ -208,7 +236,7 @@ async function promptForOffer(offer) {
     const added = await waitForNewClient(before);
     if (added) {
       rememberUser(added.uuid, friend || (device && device.user));
-      if (choice.checked) await apollo.updateClient(added, { require_approval: false });
+      await setUpNewDevice(added, choice.checked ? { require_approval: false } : {});
     }
     await apollo.decidePair(offer.id, true);
     notifyRenderer('app:toast', `Paired with ${name}.`);
@@ -237,6 +265,7 @@ async function promptForPin(request) {
   const added = await waitForNewClient(before, 8000);
   if (added) {
     rememberUser(added.uuid, device && device.user);
+    await setUpNewDevice(added).catch(() => {});
     notifyRenderer('app:toast', `Paired with ${added.name}. It will ask before each stream.`);
     notifyRenderer('host:changed');
   } else {
@@ -304,6 +333,129 @@ async function joinInvite(inv) {
   startStream(target, inv.app);
 }
 
+// ---- Host: what new devices may do ------------------------------------------------------------
+// The host's permission bits (src/crypto.h in upstream/apollo). A device paired from now on gets the
+// set chosen in the Devices list, however it paired; devices paired before keep theirs.
+
+const P = { list: 1 << 24, view: 1 << 25, launch: 1 << 26, controller: 1 << 8, touch: 1 << 9, pen: 1 << 10,
+  mouse: 1 << 11, keyboard: 1 << 12, clipboardSet: 1 << 16, clipboardRead: 1 << 17, upload: 1 << 18, download: 1 << 19 };
+const NEW_DEVICE_PERMS = {
+  controller: P.list | P.view | P.launch | P.controller,
+  full: P.list | P.view | P.launch | P.controller | P.touch | P.pen | P.mouse | P.keyboard
+    | P.clipboardSet | P.clipboardRead | P.upload | P.download,
+  watch: P.list | P.view,
+};
+
+function newDevicePerm() {
+  return (NEW_DEVICE_PERMS[store.get('newDevicePerm')] ?? NEW_DEVICE_PERMS.controller) >>> 0;
+}
+
+function markKnown(uuids) {
+  store.set('knownDevices', [...new Set([...(store.get('knownDevices') || []), ...uuids])]);
+}
+
+/** Give a just-paired device the default permissions (and any other settings), once. */
+async function setUpNewDevice(client, extra = {}) {
+  markKnown([client.uuid]);
+  const changes = { perm: newDevicePerm(), ...extra };
+  await apollo.updateClient(client, changes);
+  Object.assign(client, changes);
+}
+
+/** Catch devices paired some other way (one-time code, the web page): new uuids get the defaults. */
+async function setUpUnknownDevices(clients) {
+  const known = store.get('knownDevices');
+  if (!known) {
+    markKnown(clients.map((c) => c.uuid)); // first look: everything already paired keeps its settings
+    return;
+  }
+  for (const c of clients) if (!known.includes(c.uuid)) await setUpNewDevice(c).catch(() => {});
+}
+
+// ---- Host: pausing, and do not disturb ---------------------------------------------------------
+// Pausing keeps the host engine running (stopping it needs a Windows admin prompt each time) but
+// lets nobody in: every device has to ask, every ask is declined, and anyone watching is
+// disconnected. Friends see this PC as not hosting. Do not disturb silences notifications.
+
+const isPaused = () => { const u = store.get('pausedUntil'); return u === -1 || u > Date.now(); };
+const isDnd = () => { const u = store.get('dndUntil'); return u === -1 || u > Date.now(); };
+const clockTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const untilText = (u) => (u === -1 ? '' : ` until ${clockTime(u)}`);
+
+/** 8 AM tomorrow (or today, before 8 AM). */
+function nextMorning() {
+  const d = new Date();
+  if (d.getHours() >= 8) d.setDate(d.getDate() + 1);
+  d.setHours(8, 0, 0, 0);
+  return d.getTime();
+}
+
+/** While paused: every device asks first (remembering which didn't have to), and nobody stays connected. */
+async function enforcePause(clients) {
+  const skipped = { ...store.get('pauseSkipped') };
+  for (const c of clients) {
+    if (c.require_approval) continue;
+    skipped[c.uuid] = true;
+    store.set('pauseSkipped', skipped);
+    await apollo.updateClient(c, { require_approval: true }).catch(() => {});
+  }
+  for (const c of clients) if (c.connected) await apollo.disconnectClient(c.uuid).catch(() => {});
+}
+
+function hostingChanged() {
+  refreshTray();
+  notifyRenderer('host:changed');
+  presenceOnce();
+}
+
+async function pauseHosting(until) {
+  store.set('pausedUntil', until);
+  const clients = await apollo.listClients().catch(() => []);
+  await enforcePause(clients);
+  hostingChanged();
+  notifyRenderer('app:toast', `Hosting paused${untilText(until)}. Nobody can stream from this PC.`);
+}
+
+async function resumeHosting() {
+  const skipped = store.get('pauseSkipped');
+  store.set('pausedUntil', 0);
+  store.set('pauseSkipped', {});
+  const clients = await apollo.listClients().catch(() => []);
+  for (const c of clients) {
+    if (skipped[c.uuid] && c.require_approval) await apollo.updateClient(c, { require_approval: false }).catch(() => {});
+  }
+  hostingChanged();
+}
+
+function setDnd(until) {
+  store.set('dndUntil', until);
+  refreshTray();
+  notifyRenderer('app:dnd', dndState());
+}
+
+function dndState() {
+  return { on: isDnd(), until: store.get('dndUntil') };
+}
+
+/** Every 15 seconds: end a pause or do not disturb whose time is up. */
+function checkSchedules() {
+  const p = store.get('pausedUntil');
+  if (p > 0 && p <= Date.now()) {
+    resumeHosting().then(() => showBalloon('Hosting resumed', 'Friends and your devices can stream from this PC again.', 'host'));
+  }
+  const d = store.get('dndUntil');
+  if (d > 0 && d <= Date.now()) setDnd(0);
+}
+
+ipcMain.handle('host:pause', (_e, minutes) => pauseHosting(minutes > 0 ? Date.now() + minutes * 60000 : -1));
+ipcMain.handle('host:resume', () => resumeHosting());
+ipcMain.handle('host:setNewDevicePerm', (_e, preset) => {
+  if (!NEW_DEVICE_PERMS[preset]) throw new Error('Unknown permission set.');
+  store.set('newDevicePerm', preset);
+});
+ipcMain.handle('app:dnd', () => dndState());
+ipcMain.handle('app:setDnd', (_e, on) => setDnd(on ? -1 : 0));
+
 // ---- Host: who is watching right now ---------------------------------------------------------
 
 const JOIN_NOTICE_MS = 20 * 1000; // how long a "joined your stream" notice stays up
@@ -355,6 +507,9 @@ async function watchGuests() {
     }
     hostingSeen = running;
     if (running) {
+      const clients = await apollo.listClients();
+      await setUpUnknownDevices(clients);
+      if (isPaused()) await enforcePause(clients);
       const apps = await apollo.getApps().catch(() => null);
       const current = apps && (apps.apps || []).find((a) => a.uuid && a.uuid === apps.current_app);
       const game = current ? current.name : '';
@@ -370,7 +525,7 @@ async function watchGuests() {
           const allowed = letIn.get(g.uuid);
           const rejoined = leftAt.get(g.uuid);
           const quiet = (allowed && Date.now() - allowed < REJOIN_QUIET_MS) || (rejoined && Date.now() - rejoined < REJOIN_QUIET_MS);
-          if (!quiet) noticeJoin(g).catch(() => {});
+          if (!quiet && !isPaused()) noticeJoin(g).catch(() => {});
         }
         for (const uuid of watching) if (!now.has(uuid)) leftAt.set(uuid, Date.now());
         const changed = now.size !== watching.size || [...now].some((u) => !watching.has(u));
@@ -407,6 +562,13 @@ async function pollHostRequests() {
     const live = new Set();
     for (const request of streams) {
       const key = `stream:${request.id}`;
+      if (isPaused()) {
+        if (!prompted.has(key)) {
+          prompted.add(key);
+          apollo.decideStream(request.id, false).catch(() => {});
+        }
+        continue;
+      }
       live.add(key);
       if (!prompted.has(key)) raisePrompt(key, () => promptForStream(request));
     }
@@ -424,6 +586,15 @@ async function pollHostRequests() {
         if (!prompted.has(key)) {
           prompted.add(key);
           apollo.decideInvite(inv.id, false).catch(() => {});
+        }
+        continue;
+      }
+      if (isDnd()) {
+        // Do not disturb: the friend sees "not now", and this PC's user hears about it in the window
+        if (!prompted.has(key)) {
+          prompted.add(key);
+          apollo.decideInvite(inv.id, false).catch(() => {});
+          notifyRenderer('app:toast', `${inv.name} invited you to play ${inv.app}. Do not disturb answered “not now”.`);
         }
         continue;
       }
@@ -457,6 +628,7 @@ async function pairWithPin(pin, name) {
   if (!(await apollo.submitPin(pin, name, 0))) throw new Error('No device is waiting to pair. Start pairing on the device first.');
   const added = await waitForNewClient(before, 8000);
   if (!added) throw new Error('Pairing didn’t complete. The PIN may have been wrong; try again from that device.');
+  await setUpNewDevice(added).catch(() => {});
   notifyRenderer('host:changed');
   return added.name;
 }
@@ -532,6 +704,8 @@ ipcMain.handle('host:status', async () => {
     audio,
     loginNeeded,
     startAtLogin: store.get('startAtLogin'),
+    paused: isPaused() ? store.get('pausedUntil') : 0,
+    newDevicePerm: NEW_DEVICE_PERMS[store.get('newDevicePerm')] ? store.get('newDevicePerm') : 'controller',
   };
 });
 
@@ -1068,7 +1242,7 @@ async function presenceOnce() {
         hostUuid: self ? self.uuid : '',
         port: Number(cfg.port) || library.DEFAULT_PORT,
         addrs: ts && ts.self.ip ? [ts.self.ip] : [],
-        hosting: Boolean(self),
+        hosting: Boolean(self) && !isPaused(),
         busy: Boolean(self && self.busy),
         guests: guests.length,
         tunnel: hub.isConnected(),
@@ -1282,7 +1456,7 @@ function alertFriend(key, title, content) {
 let balloonTab = null; // the tab a click on the current balloon opens (null: just the window)
 let balloonChat = ''; // and the conversation, for a message
 function showBalloon(title, content, tab = null, chat = '') {
-  if (!tray) return;
+  if (!tray || isDnd()) return;
   balloonTab = tab;
   balloonChat = chat;
   tray.displayBalloon({ title, content, icon, respectQuietTime: true });
@@ -1461,6 +1635,7 @@ app.whenReady().then(() => {
   setTimeout(watchFriends, 15000);
   setTimeout(reportPresence, 5000);
   setInterval(refreshTray, 30000);
+  setInterval(checkSchedules, 15000);
 });
 
 let saidBye = false;
