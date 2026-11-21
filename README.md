@@ -14,6 +14,11 @@ One Windows app for game streaming. **Host** shares your PC, and **Connect** pla
 - **Pairing without the browser**
   - Friend with Moonshine (on Tailscale, your network, or by IP): they click **Request access**, you get one **Accept** popup, and nobody types the PIN.
   - Any other Moonlight client: Moonshine pops up a box to type the PIN that device is showing.
+- **Friends** (sign in with Discord, add friends by username)
+  - The list updates live: who is online, free, hosting or in a game, and **what they're playing** (turn off **Share what I'm playing** to hide yours).
+  - **Quick messages**: one-tap phrases ("Want to play?", "On my way"...) or a short note, delivered at once to friends who are online. Conversations stay on your PC.
+  - **Nicknames** only you see, kept with your account.
+  - A badge when a friend's Moonshine is older or newer than yours.
 - **Devices** (Host tab): rename, disconnect or remove a device, and set what it may do: keyboard, mouse, controller, touch, pen; see the app list, start apps, join a running stream; clipboard, file transfer, server commands; a fixed resolution or its own virtual display.
 - **Host settings** tab: all of the host's settings, the applications list with an editor (including commands to run before and after an app), global commands, the logs, and **Tools** (pair by typing a PIN, one-time pairing codes, close a stuck app, reset display settings, remove all devices, set the web page's login).
   - **Web UI** shows the host engine's own page inside Moonshine, already signed in, for anything Moonshine's pages don't cover.

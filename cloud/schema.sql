@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS devices (
   busy INTEGER NOT NULL DEFAULT 0,
   guests INTEGER NOT NULL DEFAULT 0,
   tunnel INTEGER NOT NULL DEFAULT 0, -- connected to the live link, so it can take direct connections
+  version TEXT NOT NULL DEFAULT '', -- its Moonshine version ('' = older than 0.3.0)
+  game TEXT NOT NULL DEFAULT '', -- what it's playing or hosting, if its owner shares that
   last_seen INTEGER NOT NULL DEFAULT 0,
   created INTEGER NOT NULL
 );
@@ -39,6 +41,21 @@ CREATE TABLE IF NOT EXISTS friends (
   PRIMARY KEY (a, b)
 );
 CREATE INDEX IF NOT EXISTS friends_b ON friends(b);
+
+-- A name you gave a friend; only you see it.
+CREATE TABLE IF NOT EXISTS nicknames (
+  owner INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  friend INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  nick TEXT NOT NULL,
+  PRIMARY KEY (owner, friend)
+);
+
+-- When each quick message was sent (not what it said), to limit how many a person sends.
+CREATE TABLE IF NOT EXISTS message_log (
+  sender INTEGER NOT NULL,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS message_log_sender ON message_log(sender, at);
 
 -- Sign-ins in progress: the app opens the browser with a random session and polls for its token.
 CREATE TABLE IF NOT EXISTS logins (

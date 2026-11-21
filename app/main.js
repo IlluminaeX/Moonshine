@@ -7,6 +7,7 @@ const { execFile } = require('child_process');
 const { pathToFileURL } = require('url');
 const {
   app, BrowserWindow, Tray, Menu, WebContentsView, ipcMain, dialog, nativeImage, nativeTheme, session, shell, protocol, net,
+  powerMonitor,
 } = require('electron');
 
 const store = require('./lib/store');
@@ -335,9 +336,32 @@ async function noticeJoin(guest) {
 }
 
 /** Every 2 seconds: notice devices joining, and tell friends straight away when the count changes. */
+let hostingSeen = null; // whether the host service was running at the last look
+let hostGame = ''; // the app running on this PC's host for a stream ('' when none)
+let streamApp = ''; // the app this PC is streaming from another PC ('' when not streaming)
+
+/** What friends see this PC playing (if its user shares that). */
+function currentGame() {
+  return store.get('shareGame') ? (streamApp || hostGame) : '';
+}
+
 async function watchGuests() {
   try {
-    if ((await apollo.serviceState().catch(() => '')) === 'running') {
+    const running = (await apollo.serviceState().catch(() => '')) === 'running';
+    if (hostingSeen !== null && running !== hostingSeen) {
+      // Friends see "hosting" change in seconds (again a bit later: the host takes a moment to answer)
+      presenceOnce();
+      setTimeout(presenceOnce, 8000);
+    }
+    hostingSeen = running;
+    if (running) {
+      const apps = await apollo.getApps().catch(() => null);
+      const current = apps && (apps.apps || []).find((a) => a.uuid && a.uuid === apps.current_app);
+      const game = current ? current.name : '';
+      if (game !== hostGame) {
+        hostGame = game;
+        presenceOnce(); // friends see what's playing in seconds
+      }
       const guests = await apollo.guests();
       const now = new Set(guests.map((g) => g.uuid));
       if (watching) {
@@ -355,6 +379,7 @@ async function watchGuests() {
       watching = now;
     } else {
       watching = null;
+      if (hostGame) { hostGame = ''; presenceOnce(); }
     }
   } catch {
     watching = null; // the host is restarting
@@ -783,12 +808,16 @@ async function startStream(host, appName) {
   let errorOutput = '';
   streamProcess = moonlight.stream(host.address, appName, streamSettings.toArgs(), streamSettings.toEnv());
   streamAddress = host.address;
+  streamApp = appName;
+  presenceOnce();
   streamProcess.stderr.on('data', (chunk) => {
     errorOutput = (errorOutput + chunk).slice(-4000); // only the end is needed, for the error message
   });
   streamProcess.on('exit', (code) => {
     streamProcess = null;
     streamAddress = '';
+    streamApp = '';
+    presenceOnce();
     for (const ms of [4000, 10000]) setTimeout(() => { friendsCache = { ...friendsCache, at: 0 }; }, ms);
     const lastLine = errorOutput.trim().split(/\r?\n/).pop();
     notifyRenderer('stream:state', { active: false, error: code ? (lastLine || 'The stream ended with an error.') : null });
@@ -874,9 +903,9 @@ ipcMain.handle('connect:pair', async (_e, host) => {
  * free, in a game, or hosting (and for how many). A quick check of the PCs found last time;
  * `full` looks for PCs again first.
  */
-ipcMain.handle('friends:status', (_e, full) => friendsStatus(full));
+ipcMain.handle('friends:status', (_e, full, manual) => friendsStatus(full, manual));
 
-async function friendsStatus(full) {
+async function friendsStatus(full, manual = false) {
   if (full || !lastHosts.length) await findHosts();
   const ts = await tailscale.status();
   const me = ts ? ts.self.user : '';
@@ -900,16 +929,22 @@ async function friendsStatus(full) {
   // A friend's PC that just came online isn't in the last search yet
   const unseen = ts ? ts.peers.some((p) => p.os === 'windows' && p.user !== me && !known.has(p.ip)) : false;
 
-  const account = await accountFriends(full);
+  // The service list: pushed changes keep it current while the live link is up, so only the Refresh
+  // button (or a search without the link) asks the service again
+  const account = await accountFriends(manual || (full && !hub.isConnected()));
   // A PC that's both a Moonshine friend's and on Tailscale is listed once, under the friend
   const accountUuids = new Set(account.pcs.map((p) => p.uuid));
   const merged = [...pcs.filter((p) => !accountUuids.has(p.uuid)), ...account.pcs];
-  return { me, tailscale: Boolean(ts), pcs: merged, unseen, alerts: store.get('friendAlerts'), service: account.service };
+  return {
+    me, tailscale: Boolean(ts), pcs: merged, unseen, alerts: store.get('friendAlerts'), shareGame: store.get('shareGame'),
+    version: app.getVersion(), service: account.service,
+  };
 }
 
 // ---- Moonshine accounts: friends by username -------------------------------------------------
 
-const FRIENDS_CACHE_MS = 15000;
+const FRIENDS_CACHE_MS = 15000; // without the live link
+const FRIENDS_LIVE_CACHE_MS = 5 * 60 * 1000; // with it: the service pushes changes, this is a safety net
 const REACH_CACHE_MS = 60000;
 let friendsCache = { at: 0, data: null, error: '' };
 const reachCache = new Map(); // host uuid -> { at, address, paired }
@@ -919,7 +954,8 @@ const isPrivateAddress = (a) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.t
 
 async function serviceFriends(fresh = false) {
   if (!service.signedIn()) return null;
-  if (!fresh && friendsCache.data && Date.now() - friendsCache.at < FRIENDS_CACHE_MS) return friendsCache.data;
+  const maxAge = hub.isConnected() ? FRIENDS_LIVE_CACHE_MS : FRIENDS_CACHE_MS;
+  if (!fresh && friendsCache.data && Date.now() - friendsCache.at < maxAge) return friendsCache.data;
   try {
     const data = await service.friends();
     friendsCache = { at: Date.now(), data, error: '' };
@@ -980,7 +1016,10 @@ async function accountFriends(fresh = false) {
   if (!data) return { service: state, pcs: [] };
   state.username = data.me ? data.me.username || '' : state.username;
   state.requests = data.friends.filter((f) => f.status !== 'accepted').map((f) => ({ username: f.username, status: f.status }));
-  state.friends = data.friends.filter((f) => f.status === 'accepted').map((f) => ({ username: f.username, online: f.online }));
+  const unread = store.get('unread');
+  state.friends = data.friends.filter((f) => f.status === 'accepted').map((f) => ({
+    username: f.username, nickname: f.nickname || '', online: f.online, unread: unread[f.username] || 0,
+  }));
   const names = store.get('pcNames');
   const pcs = [];
   for (const f of data.friends.filter((x) => x.status === 'accepted')) {
@@ -1004,6 +1043,8 @@ async function accountFriends(fresh = false) {
         canConnectDirectly: !reach.address && pc.online && pc.hosting && Boolean(pc.tunnel && pc.device) && hub.isConnected(),
         busy: pc.busy,
         guests: pc.guests,
+        game: pc.game || '',
+        version: pc.version || '',
       });
     }
   }
@@ -1028,18 +1069,40 @@ async function presenceOnce() {
         busy: Boolean(self && self.busy),
         guests: guests.length,
         tunnel: hub.isConnected(),
+        version: app.getVersion(),
+        game: currentGame(),
       });
-      await serviceFriends(true);
+      // With the live link up, a change to friends arrives as a notice; without it, check now
+      await serviceFriends(!hub.isConnected());
     }
+    return true;
   } catch {
-    // offline for a moment; try again next minute
+    return false; // offline for a moment; try again soon
   }
 }
 
-/** ...every minute while signed in. */
+const PRESENCE_LIVE_MS = 5 * 60 * 1000; // live link up: changes are reported as they happen anyway
+const PRESENCE_MS = 60 * 1000;
+const PRESENCE_RETRY_MS = 30 * 1000;
+
+/** ...regularly while signed in, so friends see this PC as online. */
 async function reportPresence() {
-  await presenceOnce();
-  setTimeout(reportPresence, 60000);
+  const ok = await presenceOnce();
+  setTimeout(reportPresence, !ok ? PRESENCE_RETRY_MS : hub.isConnected() ? PRESENCE_LIVE_MS : PRESENCE_MS);
+}
+
+// ---- Live friends list: the service says when something about friends changed --------------------
+
+let friendsChangedTimer = null;
+
+/** A "friends-changed" notice: fetch the list once (several notices in a row count as one). */
+function onFriendsChanged() {
+  clearTimeout(friendsChangedTimer);
+  friendsChangedTimer = setTimeout(async () => {
+    await serviceFriends(true);
+    notifyRenderer('friends:changed');
+    if (store.get('friendAlerts')) checkFriendAlerts();
+  }, 750);
 }
 
 ipcMain.handle('service:signIn', async () => {
@@ -1053,7 +1116,7 @@ ipcMain.handle('service:signIn', async () => {
 ipcMain.handle('service:cancelSignIn', () => service.cancelSignIn());
 ipcMain.handle('service:signOut', async () => {
   tunnels.closeAll();
-  hub.stop();
+  await hub.stop({ bye: true });
   await service.signOut();
   friendsCache = { at: 0, data: null, error: '' };
   friendAddresses = new Map();
@@ -1079,6 +1142,67 @@ ipcMain.handle('service:remove', async (_e, username) => {
 });
 
 ipcMain.handle('friends:setAlerts', (_e, on) => store.set('friendAlerts', Boolean(on)));
+ipcMain.handle('friends:setShareGame', (_e, on) => {
+  store.set('shareGame', Boolean(on));
+  presenceOnce();
+});
+ipcMain.handle('friends:setNickname', async (_e, username, nickname) => {
+  const res = await service.setNickname(username, String(nickname || '').trim());
+  friendsCache.at = 0;
+  return res.nickname;
+});
+
+// ---- Quick messages: short notes to friends who are online -----------------------------------
+// The service only passes them on; the conversation is kept on this PC (last 50 per friend).
+
+const MESSAGES_KEPT = 50;
+let openChat = ''; // the friend whose conversation is on screen
+
+function addMessage(username, entry) {
+  const all = store.get('messages');
+  all[username] = [...(all[username] || []), entry].slice(-MESSAGES_KEPT);
+  store.set('messages', all);
+}
+
+/** A friend's name as this PC's user calls them. */
+function friendLabel(username) {
+  const f = ((friendsCache.data && friendsCache.data.friends) || []).find((x) => x.username === username);
+  return (f && f.nickname) || username;
+}
+
+function onMessage(msg) {
+  const from = String(msg.from || '');
+  const text = String(msg.text || '').slice(0, 200);
+  if (!from || !text) return;
+  const entry = { mine: false, text, at: Number(msg.at) || Date.now() };
+  addMessage(from, entry);
+  const looking = openChat === from && mainWindow && mainWindow.isVisible() && mainWindow.isFocused();
+  if (!looking) {
+    const unread = store.get('unread');
+    unread[from] = (unread[from] || 0) + 1;
+    store.set('unread', unread);
+    showBalloon(friendLabel(from), text, 'friends', from);
+  }
+  notifyRenderer('friends:message', { username: from, entry, looking });
+}
+
+ipcMain.handle('friends:sendMessage', async (_e, username, text) => {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (!clean) throw new Error('Type a message first.');
+  const res = await service.sendMessage(username, clean);
+  const entry = { mine: true, text: clean, at: res.at || Date.now() };
+  addMessage(username, entry);
+  return entry;
+});
+ipcMain.handle('friends:messages', (_e, username) => {
+  const unread = store.get('unread');
+  if (unread[username]) {
+    delete unread[username];
+    store.set('unread', unread);
+  }
+  return store.get('messages')[username] || [];
+});
+ipcMain.handle('friends:chatOpen', (_e, username) => { openChat = String(username || ''); });
 
 /** A friend's online, hosting PC from the friends list: { device, port, name, username }. */
 async function friendPcByUuid(uuid) {
@@ -1153,13 +1277,26 @@ function alertFriend(key, title, content) {
 }
 
 let balloonTab = null; // the tab a click on the current balloon opens (null: just the window)
-function showBalloon(title, content, tab = null) {
+let balloonChat = ''; // and the conversation, for a message
+function showBalloon(title, content, tab = null, chat = '') {
   if (!tray) return;
   balloonTab = tab;
+  balloonChat = chat;
   tray.displayBalloon({ title, content, icon, respectQuietTime: true });
 }
 
 async function watchFriends() {
+  await checkFriendAlerts();
+  setTimeout(watchFriends, ALERT_EVERY_MS);
+}
+
+let alertCheck = null;
+function checkFriendAlerts() {
+  if (!alertCheck) alertCheck = checkFriendAlertsNow().finally(() => { alertCheck = null; });
+  return alertCheck;
+}
+
+async function checkFriendAlertsNow() {
   try {
     if (store.get('friendAlerts')) {
       let res = await friendsStatus(Date.now() - lastAlertSearch > ALERT_SEARCH_EVERY_MS);
@@ -1170,12 +1307,13 @@ async function watchFriends() {
       if (friendSeen) {
         for (const pc of friends) {
           const before = friendSeen.get(pc.uuid) || { online: false, busy: false };
-          const who = pc.user.replace(/@.*$/, '');
+          const who = pc.account ? friendLabel(pc.user) : pc.user.replace(/@.*$/, '');
+          const game = pc.game && !/^desktop$/i.test(pc.game) ? pc.game : '';
           if (pc.online && !before.online) {
-            alertFriend(`online:${pc.uuid}`, `${who} is online`, pc.busy ? `${pc.name} is streaming a game.` : `${pc.name} is free.`);
+            alertFriend(`online:${pc.uuid}`, `${who} is online`, pc.busy ? `${pc.name} is streaming ${game || 'a game'}.` : `${pc.name} is free.`);
           } else if (pc.online && pc.busy && !before.busy) {
             // A game started streaming on their PC. Who else joins it later isn't worth a notification.
-            alertFriend(`streaming:${pc.uuid}`, `${who} started streaming`, `A game is running on ${pc.name}. Open Moonshine to ask to join.`);
+            alertFriend(`streaming:${pc.uuid}`, `${who} started streaming`, `${game || 'A game'} is running on ${pc.name}. Open Moonshine to ask to join.`);
           }
         }
       }
@@ -1193,7 +1331,6 @@ async function watchFriends() {
   } catch {
     // Tailscale or the network is having a moment; try again next round
   }
-  setTimeout(watchFriends, ALERT_EVERY_MS);
 }
 ipcMain.handle('connect:rename', (_e, uuid, name) => renamePc(uuid, String(name || '').trim().slice(0, 60)));
 
@@ -1260,6 +1397,7 @@ app.whenReady().then(() => {
   tray.on('balloon-click', () => {
     showWindow();
     if (balloonTab) notifyRenderer('app:selectTab', balloonTab);
+    if (balloonChat) notifyRenderer('friends:openChat', balloonChat);
   });
   refreshTray();
 
@@ -1302,7 +1440,17 @@ app.whenReady().then(() => {
     log: (line) => console.log(line),
   });
   // Tell friends straight away when this PC can (or can no longer) take direct connections
-  hub.events.on('up', () => presenceOnce());
+  hub.events.on('up', () => {
+    friendsCache.at = 0;
+    presenceOnce().then(() => notifyRenderer('friends:changed'));
+  });
+  hub.events.on('message', (msg) => {
+    if (msg.type === 'friends-changed') onFriendsChanged();
+    else if (msg.type === 'message') onMessage(msg);
+  });
+  // Asleep, this PC can't be streamed from: show it offline now, and back online on waking
+  powerMonitor.on('suspend', () => { hub.stop({ bye: true }); });
+  powerMonitor.on('resume', () => { hub.start(); });
   hub.events.on('down', () => setTimeout(() => { if (!hub.isConnected()) presenceOnce(); }, 5000));
   hub.start();
 
@@ -1312,8 +1460,15 @@ app.whenReady().then(() => {
   setInterval(refreshTray, 30000);
 });
 
-app.on('before-quit', () => {
+let saidBye = false;
+app.on('before-quit', (event) => {
   quitting = true;
   tunnels.closeAll();
+  // Say "bye" on the live link first, so friends see this PC go offline straight away
+  if (!saidBye && hub.isConnected()) {
+    saidBye = true;
+    event.preventDefault();
+    hub.stop({ bye: true }).finally(() => app.quit());
+  }
 });
 app.on('window-all-closed', () => { /* stay in the tray */ });

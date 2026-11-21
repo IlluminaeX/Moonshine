@@ -78,6 +78,7 @@
       <header>
         <h1>Friends</h1>
         <div class="actions">
+          <label class="check small" title="Friends see the game you're playing or hosting"><input type="checkbox" id="share-game"> Share what I’m playing</label>
           <label class="check small" title="A notification when a friend comes online or starts streaming a game"><input type="checkbox" id="friend-alerts"> Notify me</label>
           <button id="refresh-friends" class="secondary">Refresh</button>
         </div>
@@ -511,6 +512,38 @@
   </div>
 
   <!-- Add a PC -->
+  <!-- Quick messages with one friend -->
+  <div id="chat-dialog" class="overlay hidden">
+    <form id="chat-form" class="dialog chat">
+      <div class="chat-head">
+        <div>
+          <h2 id="chat-title"></h2>
+          <div id="chat-status" class="hint"></div>
+        </div>
+        <button type="button" id="chat-close" class="secondary icon" aria-label="Close">✕</button>
+      </div>
+      <div id="chat-log" class="chat-log"></div>
+      <div id="chat-quick" class="chat-quick"></div>
+      <div class="chat-send">
+        <input id="chat-input" maxlength="200" placeholder="Write a message…" autocomplete="off">
+        <button type="submit" id="chat-submit">Send</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- A friend's nickname -->
+  <div id="nick-dialog" class="overlay hidden">
+    <form id="nick-form" class="dialog">
+      <h2>Nickname</h2>
+      <p id="nick-hint" class="hint"></p>
+      <input id="nick-input" maxlength="32" placeholder="Nickname" autocomplete="off">
+      <div class="actions end">
+        <button type="button" id="nick-cancel" class="secondary">Cancel</button>
+        <button type="submit" id="nick-save">Save</button>
+      </div>
+    </form>
+  </div>
+
   <div id="add-dialog" class="overlay hidden">
     <form id="add-form" class="dialog">
       <h2>Add a PC</h2>

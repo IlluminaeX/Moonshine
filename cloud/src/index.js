@@ -13,23 +13,50 @@
 //   POST /auth/signout                   app: forget this PC's token
 //   GET  /me                             { username }
 //   POST /me/username {name}             pick or change your username
-//   POST /presence {name, hostUuid, port, addrs, hosting, busy, guests}
-//   GET  /friends                        { me, friends: [{ username, status, online, pcs }] }
+//   POST /presence {name, hostUuid, port, addrs, hosting, busy, guests, tunnel, version, game}
+//   GET  /friends                        { me, friends: [{ username, nickname, status, online, pcs }] }
 //   POST /friends/request {username}
 //   POST /friends/respond {username, accept}
 //   POST /friends/remove {username}
+//   POST /friends/nickname {username, nickname}   your name for a friend ('' clears it); only you see it
+//   POST /messages/send {username, text}          a quick message to a friend's online PCs (not stored)
 //   POST /hub/ticket                     { ticket }: a one-time pass for the live link below
-//   GET  /hub?ticket=T                   WebSocket: the service pushes direct-connection requests here
+//   GET  /hub?ticket=T                   WebSocket: the service pushes direct-connection requests and
+//                                        "friends-changed" notices here; the PC sends "bye" before it quits
 //   POST /tunnel/offer {device, session, pub, cands}         ask a friend's PC for a direct connection
 //   POST /tunnel/answer {device, session, pub, cands, error}  that PC's reply
 //
 // Direct connections: the two PCs swap their public addresses and keys through here (over the live
 // link), then connect to each other straight through their routers. Only friends (or the same person)
 // can ask, and the stream itself never passes through the service.
+//
+// Live friends list: whenever something friends see changes (a PC comes online or goes offline, starts
+// or stops hosting or streaming, a guest joins or leaves, a friend request is sent or answered, a
+// username changes), the service pushes {type: "friends-changed"} to those friends' connected PCs, and
+// they fetch /friends again. So PCs only need to report every few minutes, and a PC that quits or
+// loses its link shows offline within seconds instead of after the reporting window.
 
 import { DurableObject } from 'cloudflare:workers';
 
-const ONLINE_MS = 2 * 60 * 1000; // a PC reports every minute while Moonshine is open
+// A PC with its live link up reports every 5 minutes (every minute without it), and at once when
+// something changes. Missing reports for this long counts as offline even if no "bye" came.
+const ONLINE_MS = 6 * 60 * 1000;
+const OFFLINE_GRACE_MS = 20 * 1000; // a link that drops without "bye" may just be reconnecting
+const MESSAGE_MAX = 200;
+const MESSAGES_PER_MINUTE = 20;
+const NICKNAME_MAX = 32;
+const MESSAGES_SINCE = '0.3.0'; // the first Moonshine that shows quick messages
+
+/** "0.10.0" vs "0.9.2"; '' (a Moonshine too old to say) is older than everything. */
+function compareVersions(a, b) {
+  const p = (v) => String(v || '0').split('-')[0].split('.').map((n) => parseInt(n, 10) || 0);
+  const x = p(a); const y = p(b);
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0);
+  return 0;
+}
+
+/** Text from a PC, made safe to store and show: no control characters, trimmed, capped. */
+const cleanText = (t, max) => String(t || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 const LOGIN_TTL_MS = 10 * 60 * 1000;
 const DEVICE_SHOWN_MS = 30 * 24 * 60 * 60 * 1000; // PCs not seen for a month drop off friends' lists
 const MAX_PENDING_OUT = 20;
@@ -179,7 +206,7 @@ async function pollLogin(env, url) {
   return json({ token: login.token, username: who ? who.username : null });
 }
 
-async function setUsername(env, me, body) {
+async function setUsername(env, ctx, me, body) {
   const name = String(body.name || '').trim();
   if (!USERNAME.test(name)) return fail(400, 'Usernames are 3–20 letters, numbers, dots, dashes or underscores.');
   if (RESERVED.has(name.toLowerCase())) return fail(409, 'That username is taken.');
@@ -189,6 +216,7 @@ async function setUsername(env, me, body) {
   } catch {
     return fail(409, 'That username is taken.');
   }
+  ctx.waitUntil(notifyFriends(env, me.user_id));
   return json({ username: name });
 }
 
@@ -197,11 +225,18 @@ function cleanAddrs(addrs) {
   return [...new Set(addrs.filter((a) => typeof a === 'string' && a.length <= 64 && /^[0-9a-fA-F.:]+$/.test(a)))].slice(0, 8);
 }
 
-async function presence(env, me, body, request) {
+/** What friends see of a device; a report that changes it (or brings it back online) is news. */
+const deviceView = (d, now) => JSON.stringify([d.name, d.host_uuid, d.port, d.addrs, d.public_ip, Boolean(d.hosting),
+  Boolean(d.busy), d.guests, Boolean(d.tunnel), d.version, d.game, now - d.last_seen < ONLINE_MS]);
+
+async function presence(env, ctx, me, body, request) {
   const publicIp = request.headers.get('CF-Connecting-IP') || '';
-  await env.DB.prepare(
-    `UPDATE devices SET name = ?, host_uuid = ?, port = ?, addrs = ?, public_ip = ?, hosting = ?, busy = ?, guests = ?, tunnel = ?, last_seen = ?
-     WHERE id = ?`,
+  const now = Date.now();
+  const cols = 'name, host_uuid, port, addrs, public_ip, hosting, busy, guests, tunnel, version, game, last_seen';
+  const before = await env.DB.prepare(`SELECT ${cols} FROM devices WHERE id = ?`).bind(me.device_id).first();
+  const after = await env.DB.prepare(
+    `UPDATE devices SET name = ?, host_uuid = ?, port = ?, addrs = ?, public_ip = ?, hosting = ?, busy = ?, guests = ?, tunnel = ?, version = ?, game = ?, last_seen = ?
+     WHERE id = ? RETURNING ${cols}`,
   ).bind(
     String(body.name || '').slice(0, 64),
     String(body.hostUuid || '').slice(0, 64),
@@ -212,9 +247,12 @@ async function presence(env, me, body, request) {
     body.busy ? 1 : 0,
     Math.min(Math.max(Number(body.guests) || 0, 0), 64),
     body.tunnel ? 1 : 0,
-    Date.now(),
+    /^\d{1,4}\.\d{1,4}\.\d{1,4}(-[\w.]{1,20})?$/.test(String(body.version || '')) ? String(body.version) : '',
+    cleanText(body.game, 80),
+    now,
     me.device_id,
-  ).run();
+  ).first();
+  if (!before || !after || deviceView(before, now) !== deviceView(after, now)) ctx.waitUntil(notifyFriends(env, me.user_id));
   return json({ ok: true, publicIp });
 }
 
@@ -222,7 +260,7 @@ async function userByName(env, name) {
   return env.DB.prepare('SELECT id, username FROM users WHERE username_lower = ?').bind(String(name || '').trim().toLowerCase()).first();
 }
 
-async function requestFriend(env, me, body) {
+async function requestFriend(env, ctx, me, body) {
   if (!me.username) return fail(400, 'Pick a username first.');
   const them = await userByName(env, body.username);
   if (!them) return fail(404, 'No one has that username.');
@@ -233,15 +271,17 @@ async function requestFriend(env, me, body) {
   if (theirs) {
     // They already asked: asking back accepts
     await env.DB.prepare('UPDATE friends SET status = ? WHERE a = ? AND b = ?').bind('accepted', them.id, me.user_id).run();
+    ctx.waitUntil(notifyUsers(env, [them.id]));
     return json({ status: 'accepted' });
   }
   const open = await env.DB.prepare('SELECT COUNT(*) AS n FROM friends WHERE a = ? AND status = ?').bind(me.user_id, 'pending').first();
   if (open.n >= MAX_PENDING_OUT) return fail(429, 'You have too many friend requests waiting. Cancel some first.');
   await env.DB.prepare('INSERT INTO friends (a, b, status, created) VALUES (?, ?, ?, ?)').bind(me.user_id, them.id, 'pending', Date.now()).run();
+  ctx.waitUntil(notifyUsers(env, [them.id]));
   return json({ status: 'outgoing' });
 }
 
-async function respondFriend(env, me, body) {
+async function respondFriend(env, ctx, me, body) {
   const them = await userByName(env, body.username);
   if (!them) return fail(404, 'No one has that username.');
   const stmt = body.accept
@@ -249,22 +289,79 @@ async function respondFriend(env, me, body) {
     : env.DB.prepare('DELETE FROM friends WHERE a = ? AND b = ? AND status = ?').bind(them.id, me.user_id, 'pending');
   const res = await stmt.run();
   if (!res.meta.changes) return fail(404, 'That request is gone.');
+  ctx.waitUntil(notifyUsers(env, [them.id]));
   return json({ status: body.accept ? 'accepted' : 'declined' });
 }
 
-async function removeFriend(env, me, body) {
+async function removeFriend(env, ctx, me, body) {
   const them = await userByName(env, body.username);
   if (!them) return fail(404, 'No one has that username.');
   await env.DB.prepare('DELETE FROM friends WHERE (a = ? AND b = ?) OR (a = ? AND b = ?)')
     .bind(me.user_id, them.id, them.id, me.user_id).run();
+  await env.DB.prepare('DELETE FROM nicknames WHERE (owner = ? AND friend = ?) OR (owner = ? AND friend = ?)')
+    .bind(me.user_id, them.id, them.id, me.user_id).run();
+  ctx.waitUntil(notifyUsers(env, [them.id, me.user_id]));
   return json({ ok: true });
+}
+
+async function acceptedFriend(env, me, username) {
+  const them = await userByName(env, username);
+  if (!them || them.id === me.user_id) return null;
+  const ok = await env.DB.prepare(
+    "SELECT 1 AS ok FROM friends WHERE status = 'accepted' AND ((a = ?1 AND b = ?2) OR (a = ?2 AND b = ?1))",
+  ).bind(me.user_id, them.id).first();
+  return ok ? them : null;
+}
+
+async function setNickname(env, ctx, me, body) {
+  const them = await acceptedFriend(env, me, body.username);
+  if (!them) return fail(404, 'They aren’t on your friends list.');
+  const nick = cleanText(body.nickname, NICKNAME_MAX);
+  if (nick) {
+    await env.DB.prepare('INSERT INTO nicknames (owner, friend, nick) VALUES (?, ?, ?) ON CONFLICT (owner, friend) DO UPDATE SET nick = excluded.nick')
+      .bind(me.user_id, them.id, nick).run();
+  } else {
+    await env.DB.prepare('DELETE FROM nicknames WHERE owner = ? AND friend = ?').bind(me.user_id, them.id).run();
+  }
+  ctx.waitUntil(notifyUsers(env, [me.user_id])); // your other PCs show it too
+  return json({ nickname: nick });
+}
+
+/** A quick message, pushed to the friend's online PCs. Nothing is kept but when it was sent. */
+async function sendMessage(env, me, body) {
+  if (!me.username) return fail(400, 'Pick a username first.');
+  const them = await acceptedFriend(env, me, body.username);
+  if (!them) return fail(404, 'They aren’t on your friends list.');
+  const text = cleanText(body.text, MESSAGE_MAX);
+  if (!text) return fail(400, 'Type a message first.');
+  const now = Date.now();
+  const sent = await env.DB.prepare('SELECT COUNT(*) AS n FROM message_log WHERE sender = ? AND at > ?').bind(me.user_id, now - 60000).first();
+  if (sent.n >= MESSAGES_PER_MINUTE) return fail(429, 'That’s a lot of messages. Wait a minute.');
+  const { results: pcs } = await env.DB.prepare('SELECT version FROM devices WHERE user_id = ? AND tunnel = 1 AND last_seen > ?')
+    .bind(them.id, now - ONLINE_MS).all();
+  if (!pcs.length) return fail(409, `${them.username} isn’t online right now.`);
+  if (!pcs.some((p) => compareVersions(p.version, MESSAGES_SINCE) >= 0)) {
+    return fail(409, `${them.username}’s Moonshine is too old for messages. Ask them to update it.`);
+  }
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM message_log WHERE at < ?').bind(now - 60000),
+    env.DB.prepare('INSERT INTO message_log (sender, at) VALUES (?, ?)').bind(me.user_id, now),
+  ]);
+  const hub = env.HUB.get(env.HUB.idFromName(String(them.id)));
+  const res = await hub.fetch('https://hub/broadcast', {
+    method: 'POST', body: JSON.stringify({ type: 'message', from: me.username, text, at: now }),
+  });
+  const { sent: delivered } = await res.json();
+  if (!delivered) return fail(409, `${them.username} isn’t online right now.`);
+  return json({ ok: true, at: now });
 }
 
 async function listFriends(env, me, request) {
   const myIp = request.headers.get('CF-Connecting-IP') || '';
   const { results: rows } = await env.DB.prepare(
-    `SELECT f.a, f.b, f.status, u.id AS other, u.username FROM friends f
+    `SELECT f.a, f.b, f.status, u.id AS other, u.username, n.nick FROM friends f
      JOIN users u ON u.id = CASE WHEN f.a = ?1 THEN f.b ELSE f.a END
+     LEFT JOIN nicknames n ON n.owner = ?1 AND n.friend = u.id
      WHERE f.a = ?1 OR f.b = ?1`,
   ).bind(me.user_id).all();
 
@@ -272,7 +369,7 @@ async function listFriends(env, me, request) {
   const devices = new Map();
   if (accepted.length) {
     const { results } = await env.DB.prepare(
-      `SELECT id, user_id, name, host_uuid, port, addrs, public_ip, hosting, busy, guests, tunnel, last_seen FROM devices
+      `SELECT id, user_id, name, host_uuid, port, addrs, public_ip, hosting, busy, guests, tunnel, version, game, last_seen FROM devices
        WHERE user_id IN (${accepted.map(() => '?').join(',')}) AND last_seen > ?`,
     ).bind(...accepted, Date.now() - DEVICE_SHOWN_MS).all();
     for (const d of results) {
@@ -294,6 +391,8 @@ async function listFriends(env, me, request) {
         hosting: Boolean(d.hosting),
         busy: Boolean(d.busy),
         guests: d.guests,
+        version: d.version,
+        game: online ? d.game : '',
       });
       devices.set(d.user_id, list);
     }
@@ -304,7 +403,7 @@ async function listFriends(env, me, request) {
     friends: rows.map((r) => {
       const status = r.status === 'accepted' ? 'accepted' : r.a === me.user_id ? 'outgoing' : 'incoming';
       const pcs = status === 'accepted' ? (devices.get(r.other) || []).filter((p) => p.name) : [];
-      return { username: r.username, status, online: pcs.some((p) => p.online), pcs };
+      return { username: r.username, nickname: r.nick || '', status, online: pcs.some((p) => p.online), pcs };
     }).filter((f) => f.username),
   });
 }
@@ -342,6 +441,41 @@ async function reachableDevice(env, me, deviceId) {
   return friends ? target : null;
 }
 
+/**
+ * Tell these users' connected PCs that their friends list changed. Only users with a PC online are
+ * told (a Durable Object call each); the rest see the change when they next open Moonshine.
+ */
+async function notifyUsers(env, userIds) {
+  const ids = [...new Set(userIds)].filter((id) => Number.isInteger(id));
+  if (!ids.length) return;
+  const { results } = await env.DB.prepare(
+    `SELECT DISTINCT user_id FROM devices WHERE tunnel = 1 AND last_seen > ? AND user_id IN (${ids.map(() => '?').join(',')})`,
+  ).bind(Date.now() - ONLINE_MS, ...ids).all();
+  await Promise.all(results.map(async (r) => {
+    try {
+      const hub = env.HUB.get(env.HUB.idFromName(String(r.user_id)));
+      await hub.fetch('https://hub/broadcast', { method: 'POST', body: JSON.stringify({ type: 'friends-changed' }) });
+    } catch (err) {
+      console.error('notify', r.user_id, err && err.message);
+    }
+  }));
+}
+
+/** Tell everyone on this user's friends list (accepted or asked) that something about them changed. */
+async function notifyFriends(env, userId) {
+  const { results } = await env.DB.prepare(
+    'SELECT CASE WHEN a = ?1 THEN b ELSE a END AS other FROM friends WHERE a = ?1 OR b = ?1',
+  ).bind(userId).all();
+  await notifyUsers(env, results.map((r) => r.other));
+}
+
+/** Show a PC offline now (unless it reported after `since`), and tell its friends. */
+async function markOffline(env, deviceId, userId, since) {
+  const res = await env.DB.prepare('UPDATE devices SET last_seen = ?, tunnel = 0 WHERE id = ? AND last_seen <= ?')
+    .bind(Date.now() - ONLINE_MS, deviceId, since).run();
+  if (res.meta.changes) await notifyFriends(env, userId);
+}
+
 /** Push a message to one PC over its live link. False if that PC isn't connected right now. */
 async function pushTo(env, target, message) {
   const hub = env.HUB.get(env.HUB.idFromName(String(target.user_id)));
@@ -367,7 +501,7 @@ async function hubConnect(env, request, url) {
   const row = await env.DB.prepare('DELETE FROM hub_tickets WHERE ticket = ? RETURNING device_id, user_id, created').bind(ticket).first();
   if (!row || Date.now() - row.created > TICKET_TTL_MS) return fail(401, 'Sign in again.');
   const hub = env.HUB.get(env.HUB.idFromName(String(row.user_id)));
-  return hub.fetch(`https://hub/connect?device=${row.device_id}`, { headers: request.headers });
+  return hub.fetch(`https://hub/connect?device=${row.device_id}&user=${row.user_id}`, { headers: request.headers });
 }
 
 async function tunnelOffer(env, me, body) {
@@ -404,6 +538,8 @@ async function tunnelAnswer(env, me, body) {
 /**
  * One per user: holds the live links of that user's signed-in PCs (WebSockets tagged with the PC's
  * device id) and pushes messages to them. It hibernates between messages, so idle links cost nothing.
+ * When a link closes it marks that PC offline: at once after a "bye", or after a short grace period
+ * if the link just dropped (a reconnect or a fresh report in the meantime cancels that).
  */
 export class Hub extends DurableObject {
   constructor(ctx, env) {
@@ -416,13 +552,16 @@ export class Hub extends DurableObject {
     const url = new URL(request.url);
     if (url.pathname === '/connect') {
       const device = url.searchParams.get('device') || '';
-      if (!/^\d+$/.test(device)) return new Response('bad device', { status: 400 });
+      const user = url.searchParams.get('user') || '';
+      if (!/^\d+$/.test(device) || !/^\d+$/.test(user)) return new Response('bad device', { status: 400 });
       // One link per PC: a reconnect replaces the old one
       for (const old of this.ctx.getWebSockets(device)) {
         try { old.close(4000, 'replaced'); } catch { /* already closing */ }
       }
       const pair = new WebSocketPair();
       this.ctx.acceptWebSocket(pair[1], [device]);
+      pair[1].serializeAttachment({ device: Number(device), user: Number(user) });
+      await this.ctx.storage.delete([`offline:${device}`, `bye:${device}`]); // back before its grace period ran out
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
     if (url.pathname === '/send' && request.method === 'POST') {
@@ -436,24 +575,78 @@ export class Hub extends DurableObject {
       }
       return Response.json({ sent });
     }
+    if (url.pathname === '/broadcast' && request.method === 'POST') {
+      const text = await request.text();
+      let sent = 0;
+      for (const ws of this.ctx.getWebSockets()) {
+        try { ws.send(text); sent++; } catch { /* closing */ }
+      }
+      return Response.json({ ok: true, sent });
+    }
     return new Response('not found', { status: 404 });
   }
 
-  webSocketMessage() {
-    // PCs only send keep-alive pings, which are answered automatically
+  // Keep-alive pings are answered automatically; the only other message is "bye" when Moonshine quits
+  async webSocketMessage(ws, message) {
+    if (message !== 'bye') return;
+    const who = ws.deserializeAttachment();
+    try { ws.close(1000, 'bye'); } catch { /* closing */ }
+    if (who && !this.otherLink(ws, who.device)) {
+      await this.ctx.storage.put(`bye:${who.device}`, true); // its close needs no grace period
+      await this.ctx.storage.delete(`offline:${who.device}`);
+      await markOffline(this.env, who.device, who.user, Date.now());
+    }
   }
 
-  webSocketClose(ws) {
+  async webSocketClose(ws, code) {
     try { ws.close(1000, 'bye'); } catch { /* already closed */ }
+    await this.linkGone(ws, code);
   }
 
-  webSocketError(ws) {
+  async webSocketError(ws) {
     try { ws.close(1011, 'error'); } catch { /* already closed */ }
+    await this.linkGone(ws, 1011);
+  }
+
+  /** Another open link from the same PC (it reconnected). */
+  otherLink(ws, device) {
+    return this.ctx.getWebSockets(String(device)).some((w) => w !== ws && w.readyState === WebSocket.READY_STATE_OPEN);
+  }
+
+  async linkGone(ws, code) {
+    const who = ws.deserializeAttachment();
+    if (!who) return;
+    if (await this.ctx.storage.get(`bye:${who.device}`)) { // already marked offline
+      await this.ctx.storage.delete(`bye:${who.device}`);
+      return;
+    }
+    if (code === 4000 || this.otherLink(ws, who.device)) return; // replaced by a newer link
+    const key = `offline:${who.device}`;
+    if (await this.ctx.storage.get(key)) return;
+    const due = Date.now() + OFFLINE_GRACE_MS;
+    await this.ctx.storage.put(key, { user: who.user, since: Date.now(), due });
+    const alarm = await this.ctx.storage.getAlarm();
+    if (!alarm || alarm > due) await this.ctx.storage.setAlarm(due);
+  }
+
+  async alarm() {
+    const pending = await this.ctx.storage.list({ prefix: 'offline:' });
+    let next = 0;
+    for (const [key, p] of pending) {
+      const device = Number(key.slice('offline:'.length));
+      if (p.due > Date.now()) {
+        next = next ? Math.min(next, p.due) : p.due;
+        continue;
+      }
+      await this.ctx.storage.delete(key);
+      if (!this.otherLink(null, device)) await markOffline(this.env, device, p.user, p.since);
+    }
+    if (next) await this.ctx.storage.setAlarm(next);
   }
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const route = `${request.method} ${url.pathname}`;
     try {
@@ -475,12 +668,14 @@ export default {
           await env.DB.prepare('DELETE FROM devices WHERE id = ?').bind(me.device_id).run();
           return json({ ok: true });
         case 'GET /me': return json({ username: me.username });
-        case 'POST /me/username': return await setUsername(env, me, body);
-        case 'POST /presence': return await presence(env, me, body, request);
+        case 'POST /me/username': return await setUsername(env, ctx, me, body);
+        case 'POST /presence': return await presence(env, ctx, me, body, request);
         case 'GET /friends': return await listFriends(env, me, request);
-        case 'POST /friends/request': return await requestFriend(env, me, body);
-        case 'POST /friends/respond': return await respondFriend(env, me, body);
-        case 'POST /friends/remove': return await removeFriend(env, me, body);
+        case 'POST /friends/request': return await requestFriend(env, ctx, me, body);
+        case 'POST /friends/respond': return await respondFriend(env, ctx, me, body);
+        case 'POST /friends/remove': return await removeFriend(env, ctx, me, body);
+        case 'POST /friends/nickname': return await setNickname(env, ctx, me, body);
+        case 'POST /messages/send': return await sendMessage(env, me, body);
         case 'POST /hub/ticket': return await hubTicket(env, me);
         case 'POST /tunnel/offer': return await tunnelOffer(env, me, body);
         case 'POST /tunnel/answer': return await tunnelAnswer(env, me, body);

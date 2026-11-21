@@ -117,6 +117,8 @@ async function friends() {
 const request = (username) => call('POST', '/friends/request', { username });
 const respond = (username, accept) => call('POST', '/friends/respond', { username, accept });
 const remove = (username) => call('POST', '/friends/remove', { username });
+const setNickname = (username, nickname) => call('POST', '/friends/nickname', { username, nickname });
+const sendMessage = (username, text) => call('POST', '/messages/send', { username, text });
 
 // Direct connections (lib/tunnels.js): a one-time pass for the live link (lib/hub.js), and the
 // offer and answer two PCs swap to connect straight to each other.
@@ -126,6 +128,7 @@ const tunnelAnswer = (answer) => call('POST', '/tunnel/answer', answer);
 
 module.exports = {
   configured, signedIn, signIn, cancelSignIn, signOut, setUsername, reportPresence, friends, request, respond, remove,
+  setNickname, sendMessage,
   hubTicket, tunnelOffer, tunnelAnswer, SERVICE_URL,
   username: () => store.get('serviceUsername') || '',
 };

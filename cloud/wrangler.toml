@@ -3,6 +3,7 @@
 #   npx wrangler d1 create moonshine            (once; put the id it prints below)
 #   npx wrangler d1 execute moonshine --remote --file=schema.sql
 #   (a database made before direct connections: npx wrangler d1 execute moonshine --remote --file=migrations/0001_tunnel.sql)
+#   (one made before nicknames and messages: npx wrangler d1 execute moonshine --remote --file=migrations/0002_social.sql)
 #   npx wrangler secret put DISCORD_SECRET      (paste the Discord app's Client Secret)
 #   npx wrangler deploy
 name = "moonshine"

@@ -879,11 +879,45 @@ function avatarFor(seed, text) {
   return a;
 }
 
+/** "Desktop" reads better as what it is. */
+function gameLabel(game) {
+  return /^desktop$/i.test(game) ? 'the desktop' : game;
+}
+
+/** "0.10.0" vs "0.9.2"; '' (a Moonshine too old to say) is older than everything. */
+function compareVersions(a, b) {
+  const p = (v) => String(v || '0').split('-')[0].split('.').map((n) => parseInt(n, 10) || 0);
+  const x = p(a); const y = p(b);
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0);
+  return 0;
+}
+
+/** A badge when a friend's online PCs run an older or newer Moonshine than this one. */
+function versionBadge(list, mine) {
+  const versions = list.filter((p) => p.account && p.online).map((p) => p.version || '');
+  if (!versions.length || !mine) return null;
+  const oldest = versions.reduce((a, b) => (compareVersions(a, b) <= 0 ? a : b));
+  if (compareVersions(oldest, mine) < 0) {
+    const badge = el('span', { className: 'version-badge', textContent: 'Older Moonshine' });
+    badge.title = `Their Moonshine is ${oldest || 'older than 0.3.0'} and yours is ${mine}. Messages, live updates and what they’re playing need the newest version on both PCs. Ask them to update: Moonshine updates itself from its sidebar.`;
+    return badge;
+  }
+  if (versions.every((v) => compareVersions(v, mine) > 0)) {
+    const newest = versions.reduce((a, b) => (compareVersions(a, b) >= 0 ? a : b));
+    const badge = el('span', { className: 'version-badge newer', textContent: 'Update yours' });
+    badge.title = `They have Moonshine ${newest}; you have ${mine}. Click to check for the update.`;
+    badge.addEventListener('click', () => $('#app-version').click());
+    return badge;
+  }
+  return null;
+}
+
 function friendPcStatus(pc) {
   if (!pc.online) return { dot: '', text: 'Offline' };
   if (pc.account && !pc.reachable && !pc.canConnectDirectly) return { dot: 'busy', text: 'Online · can’t reach it from here yet', title: 'Their PC is on, but this PC has no way to reach it: no shared Tailscale or network, and their Moonshine can’t take direct connections right now (both PCs need the latest Moonshine, open and signed in).' };
-  if (pc.guests > 0) return { dot: 'hosting', text: `Hosting · ${pc.guests} connected` };
-  if (pc.busy) return { dot: 'busy', text: 'In a game' };
+  const game = pc.game ? ` · ${gameLabel(pc.game)}` : '';
+  if (pc.guests > 0) return { dot: 'hosting', text: `Hosting · ${pc.guests} connected${game}` };
+  if (pc.busy) return { dot: 'busy', text: `In a game${game}` };
   return { dot: 'online', text: 'Free' };
 }
 
@@ -1068,14 +1102,16 @@ function renderRequests(requests, service) {
   }
 }
 
-function renderFriends({ me, tailscale, pcs, alerts, service }) {
+function renderFriends({ me, tailscale, pcs, alerts, shareGame, version, service }) {
   renderAccount(service);
   $('#friend-alerts').checked = Boolean(alerts);
+  $('#share-game').checked = shareGame !== false;
+  lastFriendsService = service;
   for (const pc of pcs) pc.mine = Boolean(me) && pc.user === me; // friends' PCs and other PCs can be invited
   const box = $('#friends');
   // Nothing changed since the last refresh: leave the cards alone (no flicker, buttons keep their state)
   const view = JSON.stringify([me, tailscale, pcs, service && service.signedIn, service && service.username,
-    ((service && service.friends) || []).map((f) => [f.username, f.online])]);
+    ((service && service.friends) || []).map((f) => [f.username, f.online, f.nickname, f.unread]), version]);
   if (view === friendsView && box.children.length) return;
   friendsView = view;
   const shownBefore = new Set([...box.querySelectorAll('.friend[data-key]')].map((n) => n.dataset.key));
@@ -1099,18 +1135,35 @@ function renderFriends({ me, tailscale, pcs, alerts, service }) {
   const ordered = [...groups].sort(([a, la], [b, lb]) => (rank(a, la) - rank(b, lb)) || a.localeCompare(b));
   box.replaceChildren(...ordered.map(([key, list]) => {
     list.sort((a, b) => (b.online - a.online) || (a.name || '').localeCompare(b.name || ''));
-    const title = key === 'me' ? 'Your PCs' : key === 'other' ? 'Other PCs' : personName(key);
+    const account = (service && service.friends || []).find((f) => f.username === key);
+    const isAccount = Boolean(account);
+    const title = key === 'me' ? 'Your PCs' : key === 'other' ? 'Other PCs' : (account && account.nickname) || personName(key);
     const online = list.some((p) => p.online);
+    const playing = list.find((p) => p.online && p.game);
     const summary = key === 'me' || key === 'other'
       ? `${list.filter((p) => p.online).length} of ${list.length} online`
-      : online ? (list.some((p) => p.guests > 0) ? 'Hosting' : list.some((p) => p.busy) ? 'In a game' : 'Online') : 'Offline';
-    const isAccount = (service && service.friends || []).some((f) => f.username === key);
+      : !online ? 'Offline'
+      : playing ? `Playing ${gameLabel(playing.game)}`
+      : list.some((p) => p.guests > 0) ? 'Hosting' : list.some((p) => p.busy) ? 'In a game' : 'Online';
+    const name = el('div', { className: 'friend-name', textContent: title });
+    if (account && account.nickname) name.append(el('span', { className: 'friend-handle', textContent: key }));
+    const badge = isAccount ? versionBadge(list, version) : null;
+    if (badge) name.append(badge);
     const head = el('div', { className: 'friend-head' },
       avatarFor(key, title),
       el('div', { className: 'friend-head-text' },
-        el('div', { className: 'friend-name', textContent: title }),
-        el('div', { className: 'friend-summary', textContent: list.length || !isAccount ? summary : (service.friends.find((f) => f.username === key).online ? 'Online' : 'Offline'), title: key.includes('@') ? key : '' })));
+        name,
+        el('div', { className: 'friend-summary', textContent: list.length || !isAccount ? summary : (account.online ? 'Online' : 'Offline'), title: key.includes('@') ? key : '' })));
+    const actions = el('div', { className: 'friend-actions' });
     if (isAccount) {
+      const message = el('button', { className: 'secondary message-button', textContent: 'Message' });
+      if (account.unread) message.append(el('span', { className: 'unread-count', textContent: String(account.unread) }));
+      message.title = `Send ${title} a quick message`;
+      message.addEventListener('click', () => openChat(key));
+      const nick = el('button', { className: 'link-button neutral', textContent: 'Nickname' });
+      nick.title = 'A name only you see for this friend';
+      nick.addEventListener('click', () => openNickname(key, account.nickname || ''));
+      actions.append(message, nick);
       const remove = el('button', { className: 'link-button', textContent: 'Remove' });
       remove.title = `Stop being friends with ${key}`;
       remove.addEventListener('click', () => {
@@ -1120,10 +1173,11 @@ function renderFriends({ me, tailscale, pcs, alerts, service }) {
           await loadFriends();
         });
       });
-      head.append(remove);
+      actions.append(remove);
     }
     const card = el('div', { className: `friend${online ? '' : ' away'}` },
       head,
+      ...(actions.children.length ? [actions] : []),
       list.length
         ? el('div', { className: 'friend-pcs' }, ...list.map(friendPcRow))
         : el('div', { className: 'friend-summary', textContent: 'No PCs with Moonshine open yet.' }));
@@ -1133,7 +1187,7 @@ function renderFriends({ me, tailscale, pcs, alerts, service }) {
 }
 
 /** Show the Friends tab. A full search for PCs now and then; quick status checks every few seconds. */
-async function loadFriends(first = false) {
+async function loadFriends(first = false, manual = false) {
   clearTimeout(friendsTimer);
   if (!$('#tab-friends').classList.contains('active')) return;
   const box = $('#friends');
@@ -1141,9 +1195,10 @@ async function loadFriends(first = false) {
   const full = Date.now() - friendsFullAt > 60000;
   try {
     if (document.visibilityState === 'visible') {
-      const res = await window.moonshine.friends.status(full);
+      const res = await window.moonshine.friends.status(full, manual);
       if (full) friendsFullAt = Date.now();
       renderFriends(res);
+      if (chatWith) showChatStatus();
     }
   } catch (err) {
     if (first) toast(errorText(err));
@@ -1152,11 +1207,130 @@ async function loadFriends(first = false) {
 }
 
 $('#friend-alerts').addEventListener('change', (e) => window.moonshine.friends.setAlerts(e.target.checked));
+$('#share-game').addEventListener('change', (e) => window.moonshine.friends.setShareGame(e.target.checked));
+
+// ---- Quick messages ------------------------------------------------------------------------
+
+const QUICK_MESSAGES = ['Want to play?', 'Join me!', 'On my way', 'Give me 5 minutes', 'Can’t right now', 'GG!'];
+let lastFriendsService = null;
+let chatWith = '';
+
+function chatFriend() {
+  return ((lastFriendsService && lastFriendsService.friends) || []).find((f) => f.username === chatWith);
+}
+
+function chatTime(at) {
+  const d = new Date(at);
+  const today = new Date().toDateString() === d.toDateString();
+  return today ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function chatBubble(m) {
+  return el('div', { className: `chat-msg${m.mine ? ' mine' : ''}` }, m.text, el('time', { textContent: chatTime(m.at) }));
+}
+
+function showChatStatus() {
+  const f = chatFriend();
+  const online = f && f.online;
+  $('#chat-status').textContent = online ? 'Online · messages arrive at once' : 'Offline · messages only reach friends who are online';
+  $('#chat-submit').disabled = !online;
+  for (const b of $('#chat-quick').children) b.disabled = !online;
+}
+
+async function openChat(username) {
+  chatWith = username;
+  const f = chatFriend();
+  $('#chat-title').textContent = (f && f.nickname) || username;
+  const log = $('#chat-log');
+  const history = await window.moonshine.friends.messages(username);
+  log.replaceChildren(...(history.length ? history.map(chatBubble) : [el('div', { className: 'chat-empty', textContent: 'No messages yet. Say hi, or pick a quick message below.' })]));
+  $('#chat-quick').replaceChildren(...QUICK_MESSAGES.map((text) => {
+    const b = el('button', { type: 'button', className: 'secondary', textContent: text });
+    b.addEventListener('click', () => sendChat(text, b));
+    return b;
+  }));
+  showChatStatus();
+  $('#chat-dialog').classList.remove('hidden');
+  log.scrollTop = log.scrollHeight;
+  $('#chat-input').focus();
+  window.moonshine.friends.chatOpen(username);
+  friendsView = ''; // its unread count is gone now
+  loadFriends();
+}
+
+function closeChat() {
+  $('#chat-dialog').classList.add('hidden');
+  chatWith = '';
+  window.moonshine.friends.chatOpen('');
+}
+
+function appendChat(entry) {
+  const log = $('#chat-log');
+  log.querySelector('.chat-empty')?.remove();
+  log.append(chatBubble(entry));
+  log.scrollTop = log.scrollHeight;
+}
+
+function sendChat(text, button) {
+  return busy(button, 'Sending…', async () => {
+    const entry = await window.moonshine.friends.sendMessage(chatWith, text);
+    appendChat(entry);
+    return true;
+  }).finally(showChatStatus);
+}
+
+$('#chat-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const input = $('#chat-input');
+  const text = input.value.trim();
+  if (!text || !chatWith) return;
+  sendChat(text, $('#chat-submit')).then((sent) => { if (sent) input.value = ''; input.focus(); });
+});
+$('#chat-close').addEventListener('click', closeChat);
+$('#chat-dialog').addEventListener('click', (e) => { if (e.target.id === 'chat-dialog') closeChat(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && chatWith) closeChat(); });
+
+window.moonshine.friends.onMessage(({ username, entry, looking }) => {
+  if (username === chatWith && !$('#chat-dialog').classList.contains('hidden')) {
+    appendChat(entry);
+    if (!looking) window.moonshine.friends.messages(username); // read it: clears the unread count
+  } else {
+    const f = ((lastFriendsService && lastFriendsService.friends) || []).find((x) => x.username === username);
+    toast(`${(f && f.nickname) || username}: ${entry.text}`);
+  }
+  friendsView = '';
+  loadFriends();
+});
+window.moonshine.friends.onOpenChat((username) => { selectTab('friends'); openChat(username); });
+
+// ---- Nicknames: a name only you see for a friend ---------------------------------------------
+
+let nicknameFor = '';
+function openNickname(username, current) {
+  nicknameFor = username;
+  $('#nick-hint').textContent = `Only you see it. Leave it empty to show ${username} again.`;
+  $('#nick-input').value = current;
+  $('#nick-dialog').classList.remove('hidden');
+  $('#nick-input').focus();
+  $('#nick-input').select();
+}
+$('#nick-cancel').addEventListener('click', () => $('#nick-dialog').classList.add('hidden'));
+$('#nick-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  busy($('#nick-save'), 'Saving…', async () => {
+    await window.moonshine.friends.setNickname(nicknameFor, $('#nick-input').value.trim());
+    $('#nick-dialog').classList.add('hidden');
+    friendsView = '';
+    await loadFriends(false, true);
+  });
+});
+// The service said something changed (a friend came online, started streaming, sent a request...)
+window.moonshine.friends.onChanged(() => loadFriends());
 window.moonshine.onSelectTab((name) => selectTab(name));
 
 $('#refresh-friends').addEventListener('click', (e) => busy(e.target, 'Refreshing…', async () => {
   friendsFullAt = 0;
-  await loadFriends();
+  await loadFriends(false, true);
 }));
 
 // ---- Stream settings -------------------------------------------------------------

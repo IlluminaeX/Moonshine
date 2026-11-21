@@ -1,5 +1,6 @@
 // The live link to Moonshine's friends service: a WebSocket the service uses to push direct-connection
-// requests and answers to this PC the moment they happen. Stays up while signed in, reconnecting after
+// requests and answers, and "your friends list changed" notices, to this PC the moment they happen.
+// Saying "bye" on it (quitting, going to sleep) shows this PC offline to friends at once. Stays up while signed in, reconnecting after
 // network trouble; idle, it costs one small ping every 30 seconds.
 'use strict';
 
@@ -100,16 +101,31 @@ function start() {
   connect();
 }
 
-/** Drop the link (signing out, quitting). */
-function stop() {
+/**
+ * Drop the link (signing out, quitting, going to sleep). With `bye`, tell the service first so
+ * friends see this PC go offline straight away; resolves once that's sent (at most about a second).
+ */
+function stop({ bye = false } = {}) {
   running = false;
   clearTimers();
-  if (ws) {
-    const socket = ws;
-    ws = null;
-    try { socket.close(); } catch { /* closed */ }
-  }
+  const socket = ws;
+  ws = null;
   setConnected(false);
+  if (!socket) return Promise.resolve();
+  if (!bye || socket.readyState !== WebSocket.OPEN) {
+    try { socket.close(); } catch { /* closed */ }
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, 1000);
+    function done() {
+      clearTimeout(timer);
+      try { socket.close(); } catch { /* closed */ }
+      resolve();
+    }
+    socket.onclose = done; // the service closes it after reading "bye"
+    try { socket.send('bye'); } catch { done(); }
+  });
 }
 
 /** Reconnect now, e.g. right after signing in. */

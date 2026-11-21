@@ -14,6 +14,12 @@ const defaults = {
   pcNames: {},
   // Show a notification when a friend comes online or starts hosting
   friendAlerts: true,
+  // Tell friends what game you're playing or hosting
+  shareGame: true,
+  // Quick messages with friends, kept on this PC only: username -> [{ mine, text, at }] (newest last)
+  messages: {},
+  // Unread quick messages: username -> count
+  unread: {},
   // Moonshine account (friends service): this PC's sign-in token (DPAPI-encrypted) and username
   serviceToken: '',
   serviceUsername: '',
