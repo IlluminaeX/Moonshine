@@ -96,7 +96,7 @@ Every release is signed. `scripts/release.ps1` signs `Moonshine-Setup.exe` with 
 To publish a release:
 1. Raise `version` in `app/package.json` (and `package-lock.json`).
 2. Build: `build-apollo.ps1 -Package`, `build-moonlight.ps1 -Package`, `package.ps1`.
-3. Commit and push, then `pwsh scripts/release.ps1 -Notes "What's new"`. It signs the installer and creates the GitHub release `v<version>` with it (needs the GitHub CLI, signed in).
+3. Commit and push, then `pwsh scripts/release.ps1 -Notes "What's new"`. It signs the installer and creates the GitHub release `v<version>` with it (needs the GitHub CLI, signed in). The signature goes into the release notes as a hidden comment (`<!-- moonshine-update-sig: … -->`), so the release page shows only the installer. Don't remove that line when editing a release's notes, or the app can't install that release. Moonshine 0.3.2 and older only read a separate `Moonshine-Setup.exe.sig` file; `-SigAsset` attaches one too (0.3.3 was released that way so those copies could update).
 
 Keep a backup of the signing key. Without it, the copies of Moonshine already installed can't take another in-app update.
 

@@ -3,13 +3,18 @@
 #   pwsh scripts/release.ps1 -NewKey          once: make the update signing key (kept outside the repo)
 #   pwsh scripts/release.ps1 [-Notes "..."]   sign the installer and publish it as v<app version>
 #   pwsh scripts/release.ps1 -SignOnly        sign only (writes dist/Moonshine-Setup.exe.sig)
+#   pwsh scripts/release.ps1 -SigAsset        also attach Moonshine-Setup.exe.sig to the release
+#
+# The signature goes into the release notes as a hidden comment, which the app reads and GitHub's
+# page doesn't show; leave that line alone when editing a release's notes. Moonshine 0.3.2 and older
+# only read the attached .sig file, so a release meant for them to update to needs -SigAsset.
 #
 # Before a release: raise "version" in app/package.json, build (build-apollo, build-moonlight,
 # package.ps1), and commit. The tag is v<that version>. Needs the GitHub CLI (gh), signed in.
 #
 # The private key lives in %USERPROFILE%\.moonshine-release\update-key.pem. Back it up somewhere
 # safe: without it, the Moonshine apps already installed can't take another in-app update.
-param([switch]$NewKey, [switch]$SignOnly, [string]$Notes = '', [string]$KeyFile = '')
+param([switch]$NewKey, [switch]$SignOnly, [switch]$SigAsset, [string]$Notes = '', [string]$KeyFile = '')
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path $PSScriptRoot -Parent
@@ -52,6 +57,15 @@ $tag = "v$version"
 & gh release view $tag 2>$null | Out-Null
 if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists. Raise the version in app/package.json." }
 if (-not $Notes) { $Notes = "Moonshine $version" }
-gh release create $tag $installer "$installer.sig" --title "Moonshine $version" --notes $Notes
-if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }
+$sigJson = (Get-Content "$installer.sig" -Raw | ConvertFrom-Json | ConvertTo-Json -Compress)
+$sigB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($sigJson))
+$body = $Notes.TrimEnd() + "`n`n<!-- moonshine-update-sig: $sigB64 -->`n"
+$notesFile = Join-Path ([IO.Path]::GetTempPath()) "moonshine-notes-$version.md"
+[IO.File]::WriteAllText($notesFile, $body, [Text.UTF8Encoding]::new($false))
+$files = @($installer)
+if ($SigAsset) { $files += "$installer.sig" }
+gh release create $tag @files --title "Moonshine $version" --notes-file $notesFile
+$code = $LASTEXITCODE
+Remove-Item $notesFile -Force -ErrorAction SilentlyContinue
+if ($code -ne 0) { throw 'gh release create failed' }
 Write-Host "Published $tag. Installed copies of Moonshine will offer it within a few hours (or at once with Check for updates)."

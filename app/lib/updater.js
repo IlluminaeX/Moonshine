@@ -1,10 +1,12 @@
 // In-app updates from Moonshine's GitHub releases.
 //
-// A release is tagged vX.Y.Z and carries two files:
-//   Moonshine-Setup.exe       the installer
-//   Moonshine-Setup.exe.sig   JSON { version, sha256, signature }: an Ed25519 signature over
-//                             "moonshine-update-v1:<version>:<sha256>", made by scripts/release.ps1
-//                             with a private key that never leaves the publisher's PC.
+// A release is tagged vX.Y.Z and carries the installer, Moonshine-Setup.exe, and its signature:
+// JSON { version, sha256, signature }, an Ed25519 signature over
+// "moonshine-update-v1:<version>:<sha256>" made by scripts/release.ps1 with a private key that never
+// leaves the publisher's PC. The signature sits in the release notes as a hidden HTML comment,
+// <!-- moonshine-update-sig: <base64 of the JSON> -->, which GitHub doesn't show on the page.
+// Releases up to 0.3.3 also attached it as Moonshine-Setup.exe.sig (what 0.3.2 and older look for);
+// that file is still used when the notes have none.
 // Moonshine only installs a download whose hash and signature check out against the public key
 // below and whose signed version is newer than its own, so a tampered or old installer is refused
 // even if someone got hold of the GitHub account.
@@ -77,6 +79,20 @@ async function getJson(url) {
   return res.json();
 }
 
+const SIG_COMMENT = /<!--\s*moonshine-update-sig:\s*([A-Za-z0-9+/=]+)\s*-->/;
+
+/** The signature hidden in the release notes, or null. */
+function sigFromNotes(body) {
+  const m = SIG_COMMENT.exec(String(body || ''));
+  if (!m) return null;
+  try {
+    const sig = JSON.parse(Buffer.from(m[1], 'base64').toString('utf8'));
+    return sig && typeof sig === 'object' ? sig : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Look for a newer release. Quiet failures when `background`; otherwise the error is shown. */
 async function check({ background = false } = {}) {
   if (['downloading', 'ready', 'installing'].includes(state.status)) return state;
@@ -91,17 +107,19 @@ async function check({ background = false } = {}) {
     const version = String(release.tag_name || '').replace(/^v/, '');
     const installer = (release.assets || []).find((a) => a.name === ASSET);
     const sigAsset = (release.assets || []).find((a) => a.name === `${ASSET}.sig`);
-    if (!version || !installer || !sigAsset || compareVersions(version, currentVersion) <= 0) {
+    const sig = sigFromNotes(release.body);
+    if (!version || !installer || (!sig && !sigAsset) || compareVersions(version, currentVersion) <= 0) {
       setState({ status: 'current', checkedAt: Date.now() });
       return state;
     }
     setState({
       status: 'available',
       version,
-      notes: String(release.body || '').slice(0, 4000),
+      notes: String(release.body || '').replace(SIG_COMMENT, '').trim().slice(0, 4000),
       size: installer.size || 0,
       url: installer.browser_download_url,
-      sigUrl: sigAsset.browser_download_url,
+      sig,
+      sigUrl: sig ? '' : sigAsset.browser_download_url,
       page: release.html_url || '',
     });
   } catch (err) {
@@ -148,9 +166,12 @@ function download() {
     const file = path.join(dir, `Moonshine-Setup-${offer.version}.exe`);
     try {
       setState({ ...offer, status: 'downloading', received: 0, total: offer.size });
-      const sigRes = await fetchImpl(offer.sigUrl, { headers: { 'User-Agent': 'Moonshine-updater' }, cache: 'no-store' });
-      if (!sigRes.ok) throw new Error(`signature download failed (${sigRes.status})`);
-      const sig = JSON.parse(await sigRes.text());
+      let sig = offer.sig;
+      if (!sig) {
+        const sigRes = await fetchImpl(offer.sigUrl, { headers: { 'User-Agent': 'Moonshine-updater' }, cache: 'no-store' });
+        if (!sigRes.ok) throw new Error(`signature download failed (${sigRes.status})`);
+        sig = JSON.parse(await sigRes.text());
+      }
       let last = 0;
       const sha256 = await downloadTo(offer.url, file, offer.size, (received, total) => {
         if (Date.now() - last < 150 && received < total) return;
@@ -252,5 +273,6 @@ module.exports = {
   events,
   compareVersions,
   verifySignature,
+  sigFromNotes,
   RELEASES_URL,
 };
