@@ -2001,12 +2001,50 @@ function showUpdate(s) {
     button.disabled = s.status === 'downloading';
     button.textContent = s.status === 'downloading' ? 'Downloading…' : s.status === 'ready' ? 'Install now' : 'Update now';
   }
+  showUpdateBanner(s);
   if (checkingByHand && s.status !== 'checking') {
     checkingByHand = false;
     if (s.status === 'current') toast(`You have the latest version (${s.current}).`);
     else if (s.status === 'error') toast(s.message);
   }
 }
+
+// The banner: hidden with its ✕ until a newer version than the one dismissed comes out
+let bannerState = null;
+function bannerDismissed() {
+  try { return localStorage.getItem('updateBannerDismissed') || ''; } catch { return ''; }
+}
+function showUpdateBanner(s) {
+  bannerState = s;
+  const banner = $('#update-banner');
+  const active = ['available', 'downloading', 'ready', 'installing'].includes(s.status);
+  // Once you've started updating, it stays up even if dismissed earlier
+  const dismissed = s.status === 'available' && !s.error && bannerDismissed() === s.version;
+  banner.classList.toggle('hidden', !active || dismissed);
+  if (!active || dismissed) return;
+  $('#update-banner-title').textContent = s.status === 'installing'
+    ? `Installing Moonshine ${s.version}…`
+    : `Moonshine ${s.version} is available`;
+  let detail = `You have ${s.current}. Updating takes about a minute; Moonshine opens again by itself.`;
+  if (s.status === 'downloading') {
+    const pct = s.total ? Math.min(100, Math.round((s.received / s.total) * 100)) : 0;
+    detail = `Downloading… ${pct}%`;
+  } else if (s.status === 'ready') detail = 'Downloaded and checked. Install it when you’re ready.';
+  else if (s.error) detail = s.error;
+  $('#update-banner-detail').textContent = detail;
+  const button = $('#update-banner-now');
+  button.classList.toggle('hidden', s.status === 'installing');
+  button.disabled = s.status === 'downloading';
+  button.textContent = s.status === 'downloading' ? 'Downloading…' : s.status === 'ready' ? 'Install now' : 'Update now';
+  $('#update-banner-close').classList.toggle('hidden', s.status !== 'available');
+}
+$('#update-banner-now').addEventListener('click', () => askToUpdate());
+$('#update-banner-close').addEventListener('click', () => {
+  if (bannerState && bannerState.version) {
+    try { localStorage.setItem('updateBannerDismissed', bannerState.version); } catch { /* shown again next start */ }
+  }
+  $('#update-banner').classList.add('hidden');
+});
 
 updates.onState(showUpdate);
 updates.get().then(showUpdate);

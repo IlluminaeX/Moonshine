@@ -41,6 +41,16 @@
   </nav>
 
   <main>
+    <!-- A new version: across the top of every page until updated or dismissed -->
+    <div id="update-banner" class="update-banner hidden" role="status">
+      <svg class="update-banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
+      <div class="update-banner-text">
+        <div id="update-banner-title" class="update-banner-title"></div>
+        <div id="update-banner-detail" class="update-banner-detail"></div>
+      </div>
+      <button id="update-banner-now" type="button">Update now</button>
+      <button id="update-banner-close" type="button" class="update-banner-close" title="Hide until the next version" aria-label="Hide">✕</button>
+    </div>
     <!-- Connect -->
     <section id="tab-connect" class="page active">
       <!-- Host list -->
