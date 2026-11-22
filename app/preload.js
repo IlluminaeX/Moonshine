@@ -45,6 +45,10 @@ contextBridge.exposeInMainWorld('moonshine', {
     hide: invoke('webui:hide'),
     reload: invoke('webui:reload'),
   },
+  speed: {
+    test: invoke('speed:test'),
+    onProgress: listen('speed:progress'),
+  },
   connect: {
     hosts: invoke('connect:hosts'),
     add: invoke('connect:add'),

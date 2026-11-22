@@ -22,6 +22,7 @@ const service = require('./lib/friends-service');
 const hub = require('./lib/hub');
 const tunnels = require('./lib/tunnels');
 const updater = require('./lib/updater');
+const speedtest = require('./lib/speedtest');
 
 let mainWindow = null;
 let tray = null;
@@ -1019,28 +1020,81 @@ function watchVolumeFile(on) {
 ipcMain.handle('connect:volume', (_e, key) => volumeFor(key));
 ipcMain.handle('connect:setVolume', (_e, key, value) => setVolume(key, value));
 
-async function startStream(host, appName) {
+// ---- Auto-reconnect: a stream whose connection drops is picked up again ----------------------
+// Moonshine's player reports a dropped connection ("MOONSHINE_DROPPED" on stderr) instead of showing
+// an error, and leaves the game running on the host. Moonshine then starts the same game again,
+// which resumes it, a few times with growing waits before giving up.
+
+const RECONNECT_WAITS_MS = [1500, 3000, 5000, 8000, 12000]; // one per try
+const STEADY_MS = 20000; // a stream that ran this long is working again: the tries start over
+let reconnectTries = 0;
+let reconnectTimer = null;
+let reconnectFor = null; // { host, appName } while waiting to reconnect
+let endedByUser = false;
+
+function stopReconnecting() {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  reconnectFor = null;
+  reconnectTries = 0;
+}
+
+/** The stream dropped (or a try to get it back failed): try again, or give up after the last try. */
+function scheduleReconnect(host, appName, reason) {
+  reconnectTries += 1;
+  if (reconnectTries > RECONNECT_WAITS_MS.length) {
+    const tries = reconnectTries - 1;
+    stopReconnecting();
+    notifyRenderer('stream:state', { active: false, error: `Lost the connection to ${host.name} and couldn’t get it back after ${tries} tries.${reason ? ` (${reason})` : ''}` });
+    showWindow();
+    return;
+  }
+  reconnectFor = { host, appName };
+  notifyRenderer('stream:state', {
+    active: true, reconnecting: true, host: host.name, app: appName, attempt: reconnectTries, attempts: RECONNECT_WAITS_MS.length,
+    volumeKey: volumeKey(host), volume: volumeFor(volumeKey(host)),
+  });
+  showWindow();
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    startStream(host, appName, { resumed: true });
+  }, RECONNECT_WAITS_MS[reconnectTries - 1]);
+}
+
+async function startStream(host, appName, { resumed = false } = {}) {
   if (streamProcess || streamStarting) return;
+  if (!resumed) stopReconnecting(); // a new stream replaces one being reconnected
+  reconnectFor = null;
+  endedByUser = false;
+  const requested = host; // as asked for: a direct connection's address is opened again on a reconnect
   if (tunnels.isTunnelAddress(host.address)) {
     streamStarting = true;
     try {
       host = { ...host, address: await tunnels.ensureFor(host.address) };
     } catch (err) {
-      notifyRenderer('app:toast', err.message);
+      if (resumed && !endedByUser) scheduleReconnect(requested, appName, err.message);
+      else notifyRenderer('app:toast', err.message);
       return;
     } finally {
       streamStarting = false;
     }
     if (streamProcess) return;
+    if (endedByUser) return; // stopped while the connection was opening
   }
-  const recent = store.get('recentHosts').filter((h) => h.app && !(h.address === host.address && h.app === appName));
-  store.set('recentHosts', [{ name: host.name, address: host.address, uuid: host.uuid || '', app: appName }, ...recent].slice(0, 5));
-  refreshTray();
+  if (!resumed) {
+    const recent = store.get('recentHosts').filter((h) => h.app && !(h.address === host.address && h.app === appName));
+    store.set('recentHosts', [{ name: host.name, address: host.address, uuid: host.uuid || '', app: appName }, ...recent].slice(0, 5));
+    refreshTray();
+  }
 
   let errorOutput = '';
   streamVolumeKey = volumeKey(host);
   writeVolumeFile(volumeFor(streamVolumeKey));
-  streamProcess = moonlight.stream(host.address, appName, streamSettings.toArgs(), { ...streamSettings.toEnv(), MOONSHINE_VOLUME_FILE: volumeFile() });
+  const reconnects = streamSettings.get().autoReconnect !== false;
+  const startedAt = Date.now();
+  streamProcess = moonlight.stream(host.address, appName, streamSettings.toArgs(), {
+    ...streamSettings.toEnv(), MOONSHINE_VOLUME_FILE: volumeFile(), ...(reconnects ? { MOONSHINE_RECONNECT: '1' } : {}),
+  });
   watchVolumeFile(true);
   streamAddress = host.address;
   streamApp = appName;
@@ -1055,7 +1109,15 @@ async function startStream(host, appName) {
     streamApp = '';
     presenceOnce();
     for (const ms of [4000, 10000]) setTimeout(() => { friendsCache = { ...friendsCache, at: 0 }; }, ms);
-    const lastLine = errorOutput.trim().split(/\r?\n/).pop();
+    const dropped = /MOONSHINE_DROPPED/.test(errorOutput);
+    const lastLine = errorOutput.trim().split(/\r?\n/).filter((l) => !/MOONSHINE_DROPPED/.test(l)).pop();
+    if (Date.now() - startedAt >= STEADY_MS) reconnectTries = 0; // it was working: a fresh set of tries
+    // Dropped, or a try to get it back that didn't start: try (again), unless the user ended it
+    if (reconnects && !endedByUser && (dropped || (resumed && code))) {
+      scheduleReconnect(requested, appName, dropped ? '' : lastLine);
+      return;
+    }
+    stopReconnecting();
     notifyRenderer('stream:state', { active: false, error: code ? (lastLine || 'The stream ended with an error.') : null });
     showWindow();
   });
@@ -1666,7 +1728,15 @@ ipcMain.handle('connect:apps', async (_e, host) => withBoxArt(host.uuid, (await 
 ipcMain.handle('connect:stream', (_e, host, appName) => startStream(host, appName));
 
 ipcMain.handle('connect:endStream', () => {
-  if (!streamProcess) return;
+  endedByUser = true;
+  if (!streamProcess) {
+    // Waiting to reconnect: stop trying
+    if (reconnectFor || reconnectTimer) {
+      stopReconnecting();
+      notifyRenderer('stream:state', { active: false, error: null });
+    }
+    return;
+  }
   // Ask the player to close first, so it ends the stream properly and writes its statistics;
   // force it only if it hasn't gone after a few seconds.
   const child = streamProcess;
@@ -1688,6 +1758,26 @@ ipcMain.handle('settings:get', () => {
 });
 
 ipcMain.handle('settings:set', (_e, settings) => streamSettings.set(settings));
+
+// ---- Speed test: a suggested stream bitrate (download) and host upload limit (upload) ------------
+let speedTesting = false;
+ipcMain.handle('speed:test', async (_e, kind) => {
+  if (speedTesting) throw new Error('A speed test is already running.');
+  speedTesting = true;
+  try {
+    const onProgress = (mbps) => notifyRenderer('speed:progress', { kind, mbps });
+    if (kind === 'upload') {
+      const mbps = await speedtest.upload({ onProgress });
+      return { mbps, recommended: speedtest.recommendUploadLimit(mbps) };
+    }
+    const mbps = await speedtest.download({ onProgress });
+    return { mbps, recommended: speedtest.recommendBitrate(mbps) };
+  } catch (err) {
+    throw new Error(`The speed test didn’t work: ${err.message}. Check the internet connection and try again.`);
+  } finally {
+    speedTesting = false;
+  }
+});
 
 // ---- App lifecycle -------------------------------------------------------------
 

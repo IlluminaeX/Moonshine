@@ -123,9 +123,9 @@ body {
 .update-bar { height: 5px; border-radius: 3px; background: rgb(255 255 255 / 0.1); overflow: hidden; }
 .update-bar > div { height: 100%; width: 0; background: var(--accent, #e5193f); transition: width 0.2s; }
 .update-box button { padding: 7px 10px; font-size: 13px; }
-.version-line { background: none; border: none; padding: 6px 4px 0; margin: 0; font-size: 11px; color: var(--muted); text-align: left; cursor: pointer; box-shadow: none; }
-.version-line:hover { color: inherit; background: none; text-decoration: underline; }
-.version-line:disabled { cursor: default; text-decoration: none; }
+.version-line { background: none; border: none; padding: 10px 4px 2px; margin: 0; font-size: 11px; font-weight: 500; letter-spacing: 0.02em; color: var(--muted); opacity: 0.75; text-align: left; cursor: pointer; box-shadow: none; transition: opacity 0.15s, color 0.15s; }
+.version-line:hover { color: var(--text); opacity: 1; background: none; }
+.version-line:disabled { cursor: default; }
 
 /* Top of the window: a new version */
 .update-banner {
@@ -1003,3 +1003,36 @@ body.prompt { display: flex; flex-direction: column; background: radial-gradient
 .prompt-timer { height: 3px; background: var(--accent, #e5193f); transform-origin: left; }
 .prompt-timer.running { animation: prompt-countdown linear forwards; }
 @keyframes prompt-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
+/* Connect: a PC's name opens its page */
+button.friend-pc-name { background: none; border: none; box-shadow: none; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; min-height: 0; }
+button.friend-pc-name:hover { background: none; color: var(--accent-bright); text-decoration: underline; text-underline-offset: 3px; }
+#host-view .empty button { margin-top: 12px; }
+
+/* Settings: Moonshine's own and streaming */
+.settings-heading { font-size: 15px; margin: 22px 0 10px; }
+#tab-settings > header + .settings-heading { margin-top: 14px; }
+
+/* Host settings, Advanced: groups of settings */
+.settings-group { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 26px 0 6px; padding-top: 14px; border-top: 1px solid var(--border); }
+.settings-group:first-of-type { margin-top: 8px; border-top: none; padding-top: 0; }
+
+/* Connect: the page's switches, under its title */
+.connect-options { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 14px 0 12px; }
+.connect-options .check { white-space: nowrap; padding: 0; font-size: 13px; }
+
+/* Stream window while getting a dropped stream back */
+#stream-overlay.reconnecting #stream-label { color: var(--accent-bright); animation: reconnect-pulse 1.2s ease-in-out infinite; }
+@keyframes reconnect-pulse { 50% { opacity: 0.45; } }
+
+/* Speed test: under the bitrate (Settings) and the upload limit (Host) */
+.speed-test { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-top: 10px; }
+.bandwidth-panel .speed-test { flex-basis: 100%; }
+.small-button { padding: 6px 12px; font-size: 12px; min-height: 0; }
+.speed-result { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 10px; background: rgb(229 25 63 / 0.08); animation: page-in 0.2s var(--ease); }
+.speed-text { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.speed-text .hint { font-size: 12px; margin: 0; font-weight: 400; }
+.speed-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.bandwidth-panel { flex-wrap: wrap; }
+.grid-form .speed-result { flex-direction: column; align-items: flex-start; gap: 10px; }
+.speed-text strong { color: var(--text); font-weight: 600; }

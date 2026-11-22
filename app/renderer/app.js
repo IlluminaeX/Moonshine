@@ -44,15 +44,13 @@ document.addEventListener('click', (e) => {
 // ---- Tabs -------------------------------------------------------------------
 
 const tabLoaders = {
-  connect: () => showHostList(),
-  friends: () => loadFriends(true),
+  friends: () => { showHostList(); loadFriends(true); },
   host: () => loadHost(),
   settings: () => loadSettings(),
   apollo: () => showApollo(),
 };
 
 function selectTab(name) {
-  hideWebUi();
   document.querySelectorAll('.tab, .page').forEach((n) => n.classList.remove('active'));
   document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
   $(`#tab-${name}`).classList.add('active');
@@ -75,7 +73,6 @@ const apolloLoaders = {
   commands: () => loadApolloCommands(),
   logs: () => loadApolloLogs(),
   tools: () => loadApolloTools(),
-  webui: () => loadWebUi(),
 };
 
 function showApollo() {
@@ -83,7 +80,6 @@ function showApollo() {
 }
 
 function selectApolloSub(name) {
-  hideWebUi();
   apolloSub = name;
   document.querySelectorAll('#apollo-subnav button').forEach((b) => b.classList.toggle('active', b.dataset.sub === name));
   document.querySelectorAll('.apollo-sub').forEach((n) => n.classList.toggle('hidden', n.id !== `apollo-sub-${name}`));
@@ -197,43 +193,38 @@ $('#weblogin-form').addEventListener('submit', (e) => {
   });
 });
 
-// ---- Host settings: the host engine's web page ---------------------------------------
-// The page is a separate view the main process lays over #webui-frame (main.js), so it has to be
-// told where the frame is, and hidden whenever anything else is on screen.
-
-const { webui } = window.moonshine;
-let webUiVisible = false;
-
-function placeWebUi() {
-  if (!webUiVisible) return;
-  const r = $('#webui-frame').getBoundingClientRect();
-  if (r.width > 0 && r.height > 0) webui.show({ x: r.x, y: r.y, width: r.width, height: r.height });
-}
-
-function hideWebUi() {
-  if (!webUiVisible) return;
-  webUiVisible = false;
-  webui.hide();
-}
-
-async function loadWebUi() {
-  const res = await apollo.getConfig();
-  if (!apolloReachable(res) || apolloSub !== 'webui' || !$('#tab-apollo').classList.contains('active')) return;
-  webUiVisible = true;
-  placeWebUi();
-}
-
-new ResizeObserver(placeWebUi).observe($('#webui-frame'));
-window.addEventListener('resize', placeWebUi);
-$('#webui-reload').addEventListener('click', () => webui.reload());
-
 // ---- Host settings: settings --------------------------------------------------------
 
 const settingsFormEl = $('#apollo-settings-form');
 let apolloConfig = null; // what Apollo has saved
 let apolloEdits = {}; // key -> new value, not saved yet
-let apolloSection = APOLLO_SCHEMA[0].id;
 const allFields = APOLLO_SCHEMA.flatMap((s) => s.fields);
+
+// apollo-schema.js is generated from the host's own page, which lists each GPU's encoder as a section
+// of its own. Here those go under Advanced, which is sorted into groups.
+const ENCODER_SECTIONS = ['nv', 'amd', 'qsv', 'sw'];
+const ADVANCED_GROUPS = [
+  { title: 'Video formats', keys: ['hevc_mode', 'av1_mode'] },
+  { title: 'Capture and encoding', keys: ['capture', 'encoder', 'limit_framerate', 'qp', 'min_threads', 'ignore_encoder_probe_failure'] },
+  { title: 'Network', keys: ['fec_percentage'] },
+  { title: 'Compatibility', keys: ['envvar_compatibility_mode', 'legacy_ordering'] },
+];
+const SETTINGS_PAGES = (() => {
+  const pages = APOLLO_SCHEMA.filter((p) => !ENCODER_SECTIONS.includes(p.id) && p.id !== 'advanced');
+  const advanced = APOLLO_SCHEMA.find((p) => p.id === 'advanced');
+  const byKey = new Map(((advanced && advanced.fields) || []).map((f) => [f.key, f]));
+  const groups = ADVANCED_GROUPS.map((g) => ({ title: g.title, fields: g.keys.map((k) => byKey.get(k)).filter(Boolean) }));
+  const placed = new Set(ADVANCED_GROUPS.flatMap((g) => g.keys));
+  const rest = [...byKey.values()].filter((f) => !placed.has(f.key)); // settings added by a newer host
+  if (rest.length) groups.push({ title: 'Other', fields: rest });
+  for (const id of ENCODER_SECTIONS) {
+    const section = APOLLO_SCHEMA.find((p) => p.id === id);
+    if (section) groups.push({ title: section.title, fields: section.fields });
+  }
+  pages.push({ id: 'advanced', title: 'Advanced', groups: groups.filter((g) => g.fields.length) });
+  return pages;
+})();
+let apolloSection = SETTINGS_PAGES[0].id;
 
 const ON_VALUES = ['enabled', 'true', 'yes', 'on', '1'];
 
@@ -307,17 +298,21 @@ function fieldControl(field) {
 }
 
 function renderApolloSection() {
-  const section = APOLLO_SCHEMA.find((s) => s.id === apolloSection);
+  const section = SETTINGS_PAGES.find((s) => s.id === apolloSection);
   const c = currentValues();
-  const visible = section.fields.filter((f) => !f.when || f.when(c));
+  const shown = (fields) => fields.filter((f) => !f.when || f.when(c));
+  const fieldRow = (f) => el('div', { className: `field${f.key in apolloEdits ? ' changed' : ''}` },
+    el('div', { className: 'name', textContent: f.label, title: f.key }),
+    el('div', { className: 'control' }, fieldControl(f)),
+    el('div', { className: 'desc', textContent: f.desc }));
   const scroll = settingsFormEl.scrollTop;
-  settingsFormEl.replaceChildren(
-    el('h2', { textContent: section.title }),
-    ...visible.map((f) => el('div', { className: `field${f.key in apolloEdits ? ' changed' : ''}` },
-      el('div', { className: 'name', textContent: f.label, title: f.key }),
-      el('div', { className: 'control' }, fieldControl(f)),
-      el('div', { className: 'desc', textContent: f.desc }))),
-  );
+  const body = section.groups
+    ? section.groups.flatMap((g) => {
+      const fields = shown(g.fields);
+      return fields.length ? [el('h3', { className: 'settings-group', textContent: g.title }), ...fields.map(fieldRow)] : [];
+    })
+    : shown(section.fields).map(fieldRow);
+  settingsFormEl.replaceChildren(el('h2', { textContent: section.title }), ...body);
   settingsFormEl.scrollTop = scroll;
   document.querySelectorAll('#apollo-sections button').forEach((b) => {
     b.classList.toggle('active', b.dataset.section === apolloSection);
@@ -325,7 +320,7 @@ function renderApolloSection() {
 }
 
 function renderApolloSectionList() {
-  $('#apollo-sections').replaceChildren(...APOLLO_SCHEMA.map((s) => {
+  $('#apollo-sections').replaceChildren(...SETTINGS_PAGES.map((s) => {
     const b = el('button', { type: 'button', textContent: s.title });
     b.dataset.section = s.id;
     b.addEventListener('click', () => {
@@ -622,9 +617,9 @@ $('#logs-copy').addEventListener('click', () => {
   toast('Log copied.');
 });
 
-// ---- Connect: host list ----------------------------------------------------------
+// ---- Connect: the PCs behind the list ----------------------------------------------
 
-let hostsCache = [];
+let hostsCache = []; // every PC found, with its games (main.js findHosts)
 let currentHost = null;
 let loadingHosts = null;
 
@@ -632,113 +627,15 @@ function showHostList() {
   currentHost = null;
   $('#host-view').classList.add('hidden');
   $('#host-list-view').classList.remove('hidden');
-  if (!hostsCache.length) loadHosts();
 }
 
 async function loadHosts() {
-  const container = $('#hosts');
-  if (!hostsCache.length) {
-    container.replaceChildren(el('div', { className: 'empty', textContent: 'Looking for PCs…' }));
-  }
   loadingHosts ||= connect.hosts().finally(() => { loadingHosts = null; });
-  const { tailscale, hosts } = await loadingHosts;
-  hostsCache = hosts;
-  if (!hosts.length) {
-    const tip = tailscale
-      ? 'No PCs found yet. Use Add PC, or ask a friend to share their PC with you on Tailscale.'
-      : 'No PCs found yet. Use Add PC, or sign in to Tailscale to see friends’ PCs.';
-    container.replaceChildren(el('div', { className: 'empty', textContent: tip }));
-    return;
-  }
-  container.replaceChildren(...hosts.map(hostCard));
-}
-
-function hostStatus(h) {
-  if (!h.online) return { dot: '', text: 'Offline' };
-  if (h.busy) return { dot: 'busy', text: 'In a game' };
-  return { dot: 'online', text: 'Online' };
+  hostsCache = (await loadingHosts).hosts;
 }
 
 /** Reached through a direct connection (lib/tunnels.js), not a real address on a network. */
 const isDirect = (h) => Boolean(h.direct) || String(h.address || '').startsWith('127.77.');
-
-function hostCard(h) {
-  const status = hostStatus(h);
-  const badges = [];
-  if (h.moonshine) badges.push('Moonshine');
-  if (isDirect(h)) badges.push('Direct');
-  if (h.tailnetUser) badges.push(h.tailnetUser);
-  if (!h.paired && h.online) badges.push('Not paired');
-
-  const name = el('div', { className: 'name', textContent: h.name || h.address });
-  if (h.ownName && h.ownName !== h.name) name.title = `Calls itself “${h.ownName}”`;
-  const card = el('div', { className: 'card' },
-    name,
-    el('div', { className: 'status' }, el('span', { className: `dot ${status.dot}` }), status.text),
-    el('div', { className: 'badges' }, ...badges.map((b) => el('span', { className: 'badge', textContent: b }))));
-
-  let button;
-  if (!h.online) {
-    button = el('button', { className: 'secondary', textContent: 'Offline', disabled: true });
-  } else if (h.paired) {
-    button = el('button', { textContent: 'Open' });
-    button.addEventListener('click', () => openHost(h));
-  } else {
-    button = el('button', { textContent: h.moonshine ? 'Request access' : 'Pair' });
-    button.addEventListener('click', () => pairHost(h));
-  }
-  card.append(button);
-
-  const rename = el('button', { className: 'link-button neutral', textContent: 'Rename' });
-  rename.title = 'Give this PC your own name in Moonshine';
-  rename.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const input = el('input', { className: 'name-edit', value: h.name || '', maxLength: 60, placeholder: h.ownName || 'Name' });
-    let done = false;
-    const finish = async (save) => {
-      if (done) return;
-      done = true;
-      const value = input.value.trim();
-      if (save && value !== h.name) {
-        // Clearing the box goes back to the PC's own name
-        await connect.rename(h.uuid, value === h.ownName ? '' : value);
-        h.name = value || h.ownName;
-        toast(value && value !== h.ownName ? `Renamed to ${value}.` : `Back to “${h.ownName}”.`);
-      }
-      name.textContent = h.name || h.address;
-      input.replaceWith(name);
-    };
-    input.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Enter') finish(true);
-      if (ev.key === 'Escape') finish(false);
-    });
-    input.addEventListener('blur', () => finish(true));
-    name.replaceWith(input);
-    input.focus();
-    input.select();
-  });
-  const links = el('div', { className: 'card-links' }, rename);
-  card.append(links);
-
-  if (h.saved) {
-    const remove = el('button', { className: 'link-button', textContent: 'Remove' });
-    remove.title = 'Forget this PC and the pairing with it';
-    remove.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const still = h.online ? ' It’s still reachable, so it stays in the list as “Not paired”.' : '';
-      if (!confirm(`Remove ${h.name || h.address}? You’ll have to pair again to connect.${still}`)) return;
-      busy(remove, 'Removing…', async () => {
-        await connect.remove({ uuid: h.uuid, name: h.name, address: h.address });
-        toast(`Removed ${h.name || h.address}.`);
-        await loadHosts();
-      });
-    });
-    links.append(remove);
-  }
-  return card;
-}
-
-$('#refresh-hosts').addEventListener('click', (e) => busy(e.target, 'Refreshing…', loadHosts));
 
 // ---- Connect: pairing ------------------------------------------------------------
 
@@ -771,6 +668,7 @@ async function pairHost(h) {
       h.apps = await connect.apps(h);
       openHost(h);
       loadHosts();
+      friendsFullAt = 0;
     } else if (res.reason !== 'cancelled') {
       toast({
         declined: `${h.name} declined.`,
@@ -812,6 +710,17 @@ $('#add-form').addEventListener('submit', (e) => {
 
 function renderApps(h) {
   const apps = $('#apps');
+  if (!h.online || !h.paired) {
+    const text = !h.online ? 'This PC is offline.' : 'Not paired with this PC yet.';
+    const box = el('div', { className: 'empty' }, el('div', { textContent: text }));
+    if (h.online) {
+      const pair = el('button', { textContent: 'Pair' });
+      pair.addEventListener('click', () => pairHost(h));
+      box.append(pair);
+    }
+    apps.replaceChildren(box);
+    return;
+  }
   if (!h.apps.length) {
     apps.replaceChildren(el('div', { className: 'empty', textContent: 'No games listed on this PC.' }));
     return;
@@ -821,7 +730,7 @@ function renderApps(h) {
     if (a.boxArt) art.style.backgroundImage = `url("${a.boxArt}")`;
     else art.textContent = a.name.slice(0, 1).toUpperCase();
     const tile = el('button', { className: 'game', title: `Play ${a.name}` }, art, el('div', { className: 'title', textContent: a.name }));
-    tile.addEventListener('click', () => connect.stream({ name: h.name, address: h.address }, a.name));
+    tile.addEventListener('click', () => connect.stream({ uuid: h.uuid, name: h.name, address: h.address }, a.name));
     return tile;
   }));
 }
@@ -833,7 +742,16 @@ function openHost(h) {
   $('#host-view-name').textContent = h.name;
   $('#host-view-meta').textContent = [isDirect(h) ? 'Connected directly' : h.address, h.tailnetUser || h.user, h.busy ? 'A game is running' : ''].filter(Boolean).join(' · ');
   $('#quit-app').classList.toggle('hidden', !h.busy);
+  $('#remove-host').classList.toggle('hidden', !h.saved);
+  $('#refresh-apps').classList.toggle('hidden', !h.online || !h.paired);
   renderApps(h);
+  // Opened from the list before its games were looked up
+  if (h.online && h.paired && !h.apps.length) {
+    connect.apps(h).then((apps) => {
+      h.apps = apps;
+      if (currentHost === h) renderApps(h);
+    }).catch(() => {});
+  }
   const key = h.uuid || h.address;
   connect.volume(key).then((v) => { if (currentHost === h) showVolume('#host-volume', v); });
 }
@@ -868,6 +786,51 @@ connect.onVolume(({ key, value }) => {
 });
 
 $('#back-to-hosts').addEventListener('click', showHostList);
+
+// Rename a PC: its name turns into a box (Enter saves, Esc cancels, empty goes back to its own name)
+$('#rename-host').addEventListener('click', () => {
+  const h = currentHost;
+  if (!h) return;
+  const title = $('#host-view-name');
+  const input = el('input', { className: 'name-edit', value: h.name || '', maxLength: 60, placeholder: h.ownName || 'Name' });
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const value = input.value.trim();
+    if (save && value !== h.name) {
+      await connect.rename(h.uuid, value === h.ownName ? '' : value);
+      h.name = value || h.ownName || h.name;
+      toast(value && value !== h.ownName ? `Renamed to ${value}.` : `Back to “${h.ownName}”.`);
+      friendsFullAt = 0;
+    }
+    title.textContent = h.name || h.address;
+    input.replaceWith(title);
+  };
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') finish(true);
+    if (ev.key === 'Escape') finish(false);
+  });
+  input.addEventListener('blur', () => finish(true));
+  title.replaceWith(input);
+  input.focus();
+  input.select();
+});
+
+$('#remove-host').addEventListener('click', (e) => {
+  const h = currentHost;
+  if (!h) return;
+  const still = h.online ? ' It’s still reachable, so it stays in the list as not paired.' : '';
+  if (!confirm(`Remove ${h.name || h.address}? You’ll have to pair again to connect.${still}`)) return;
+  busy(e.currentTarget, 'Removing…', async () => {
+    await connect.remove({ uuid: h.uuid, name: h.name, address: h.address });
+    toast(`Removed ${h.name || h.address}.`);
+    showHostList();
+    await loadHosts();
+    friendsFullAt = 0;
+    loadFriends();
+  });
+});
 $('#refresh-apps').addEventListener('click', (e) => busy(e.target, 'Refreshing…', async () => {
   const h = currentHost;
   h.apps = await connect.apps(h);
@@ -887,6 +850,12 @@ $('#quit-app').addEventListener('click', (e) => busy(e.target, 'Closing…', asy
 
 connect.onStreamState((state) => {
   $('#stream-overlay').classList.toggle('hidden', !state.active);
+  $('#stream-label').textContent = state.reconnecting ? 'Reconnecting' : 'Streaming';
+  $('#stream-hint').textContent = state.reconnecting
+    ? `The connection dropped. Getting it back and picking up where you left off (try ${state.attempt} of ${state.attempts})…`
+    : 'The stream is full screen. If that PC asks its owner first, it starts once they allow it. Press Ctrl+Alt+Shift+Q to end it.';
+  $('#end-stream').textContent = state.reconnecting ? 'Stop reconnecting' : 'End stream';
+  $('#stream-overlay').classList.toggle('reconnecting', Boolean(state.reconnecting));
   if (state.active) {
     $('#stream-title').textContent = `${state.app} on ${state.host}`;
     streamVolumeKey = state.volumeKey || '';
@@ -958,12 +927,23 @@ function friendPcStatus(pc) {
   return { dot: 'online', text: 'Free' };
 }
 
+/** A PC's name in the list; clicking it opens the PC's page (games, rename, remove). */
+function friendPcName(pc) {
+  const name = el('button', { type: 'button', className: 'friend-pc-name', textContent: pc.name || pc.address });
+  name.title = 'Open this PC’s page';
+  name.addEventListener('click', () => {
+    const h = hostsCache.find((x) => x.uuid === pc.uuid);
+    openHost(h ? { ...h, name: pc.name || h.name } : { ...pc, apps: [], tailnetUser: pc.user });
+  });
+  return name;
+}
+
 function friendPcRow(pc) {
   const status = friendPcStatus(pc);
   const row = el('div', { className: 'friend-pc' },
     el('span', { className: `dot ${status.dot}` }),
     el('div', { className: 'friend-pc-text' },
-      el('div', { className: 'friend-pc-name', textContent: pc.name || pc.address }),
+      friendPcName(pc),
       el('div', { className: 'friend-pc-status', textContent: status.text, title: status.title || '' })));
   if (!pc.online || (pc.account && !pc.reachable && !pc.canConnectDirectly)) return row;
   // Use the full host from the Connect list, so pairing and the game list work as they do there
@@ -982,7 +962,6 @@ function friendPcRow(pc) {
       const h = await window.moonshine.friends.connect(pc.uuid);
       friendsFullAt = 0;
       if (h.paired) {
-        selectTab('connect');
         openHost(h);
       } else {
         pairHost(h);
@@ -990,10 +969,7 @@ function friendPcRow(pc) {
     }));
   } else if (pc.paired) {
     button = el('button', { textContent: 'Connect' });
-    button.addEventListener('click', () => {
-      selectTab('connect');
-      openHost(host());
-    });
+    button.addEventListener('click', () => openHost(host()));
   } else {
     button = el('button', { className: 'secondary', textContent: 'Pair' });
     if (pc.moonshine) button.title = pc.account ? 'Pairing by itself didn’t work. Try again now.' : 'Their Moonshine asks them to accept.';
@@ -1469,7 +1445,6 @@ async function loadHost(statusOnly = false) {
   $('#login-panel').classList.toggle('hidden', !s.loginNeeded);
   $('#audio-panel').classList.toggle('hidden', !s.audio);
   $('#open-webui').disabled = !serviceRunning || s.loginNeeded;
-  $('#open-webui-page').disabled = !serviceRunning;
   $('#start-at-login').checked = s.startAtLogin;
 
   // Only when the saved setting changed, so the 3-second status refresh doesn't undo unsaved picks.
@@ -1760,10 +1735,6 @@ $('#login-form').addEventListener('submit', (e) => {
 });
 
 $('#open-webui').addEventListener('click', () => selectTab('apollo'));
-$('#open-webui-page').addEventListener('click', () => {
-  apolloSub = 'webui';
-  selectTab('apollo');
-});
 $('#start-at-login').addEventListener('change', (e) => window.moonshine.setStartAtLogin(e.target.checked));
 // ---- Host: guests streaming right now, with live input and ping --------------------
 
@@ -1974,6 +1945,78 @@ async function loadBandwidth() {
   showBandwidthNote();
 }
 
+// ---- Speed test: suggests a bitrate (Settings) or an upload limit (Host), with Apply / Dismiss ----
+
+const SPEED_TEXT = {
+  download: {
+    result: (mbps, rec) => `Download: ${mbps} Mbps. Recommended bitrate: ${rec} Mbps.`,
+    note: 'The other PC’s upload matters too: a slow upload there limits what you get.',
+  },
+  upload: {
+    result: (mbps, rec) => `Upload: ${mbps} Mbps. Recommended limit: ${rec} Mbps.`,
+    note: 'Shared by everyone watching this PC.',
+  },
+};
+const roundMbps = (mbps) => (mbps >= 100 ? Math.round(mbps) : Math.round(mbps * 10) / 10);
+
+async function applySpeed(kind, recommended) {
+  if (kind === 'upload') {
+    await host.setBandwidth(recommended);
+    bandwidthMbps = recommended;
+    $('#bandwidth-limit').value = String(recommended);
+    toast(`Upload limit set to ${recommended} Mbps.`);
+  } else {
+    settingsForm.bitrateMbps.value = String(recommended);
+    settingsForm.dispatchEvent(new Event('input'));
+    settingsForm.dispatchEvent(new Event('change')); // saves, as moving the slider does
+    toast(`Bitrate set to ${recommended} Mbps.`);
+  }
+}
+
+document.querySelectorAll('.speed-test').forEach((box) => {
+  const { kind } = box.dataset;
+  const run = box.querySelector('.speed-run');
+  const result = box.querySelector('.speed-result');
+  const label = run.textContent;
+  run.addEventListener('click', async (e) => {
+    e.preventDefault();
+    run.disabled = true;
+    run.textContent = 'Testing…';
+    result.classList.add('hidden');
+    try {
+      const { mbps, recommended } = await window.moonshine.speed.test(kind);
+      const apply = el('button', { type: 'button', className: 'small-button', textContent: 'Apply' });
+      const dismiss = el('button', { type: 'button', className: 'link-button neutral', textContent: 'Dismiss' });
+      apply.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        busy(apply, 'Applying…', async () => {
+          await applySpeed(kind, recommended);
+          result.classList.add('hidden');
+        });
+      });
+      dismiss.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        result.classList.add('hidden');
+      });
+      result.replaceChildren(
+        el('div', { className: 'speed-text' },
+          el('strong', { textContent: SPEED_TEXT[kind].result(roundMbps(mbps), recommended) }),
+          el('span', { className: 'hint', textContent: SPEED_TEXT[kind].note })),
+        el('div', { className: 'speed-actions' }, apply, dismiss));
+      result.classList.remove('hidden');
+    } catch (err) {
+      toast(errorText(err));
+    } finally {
+      run.disabled = false;
+      run.textContent = label;
+    }
+  });
+});
+window.moonshine.speed.onProgress(({ kind, mbps }) => {
+  const run = document.querySelector(`.speed-test[data-kind="${kind}"] .speed-run`);
+  if (run && run.disabled && mbps > 0) run.textContent = `Testing… ${roundMbps(mbps)} Mbps`;
+});
+
 $('#bandwidth-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const value = Number($('#bandwidth-limit').value || 0);
@@ -2027,7 +2070,7 @@ function showUpdate(s) {
   box.classList.toggle('hidden', !show);
   const line = $('#app-version');
   line.disabled = s.status === 'checking' || s.status === 'downloading' || s.status === 'installing';
-  line.textContent = s.status === 'checking' ? 'Checking for updates…' : `Moonshine ${s.current} · Check for updates`;
+  line.textContent = s.status === 'checking' ? 'Checking for updates…' : `Moonshine v${s.current}`;
   if (show) {
     $('#update-title').textContent = s.status === 'installing' ? 'Installing the update…' : `Moonshine ${s.version} is available`;
     const bar = $('#update-bar');
@@ -2130,4 +2173,5 @@ $('#update-install').addEventListener('click', (e) => busy(e.currentTarget, 'Clo
 }));
 
 loadHosts();
+loadFriends(true);
 host.status().then((s) => { $('#start-at-login').checked = s.startAtLogin; });

@@ -18,6 +18,7 @@ const defaults = {
   gameOptimization: true,
   muteOnFocusLoss: false,
   quitAfter: false,
+  autoReconnect: true, // Moonshine reconnects a dropped stream by itself (not a player flag)
 };
 
 // Setting name -> Moonlight toggle flag (passed as --flag or --no-flag).

@@ -9,13 +9,9 @@
 <body>
   <nav class="sidebar">
     <div class="brand"><img src="../assets/moonshine.png" alt=""><span>Moonshine</span></div>
-    <button class="tab active" data-tab="connect">
+    <button class="tab active" data-tab="friends">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><path d="m10 8.5 4 2-4 2z" fill="currentColor"/></svg>
       <span>Connect</span>
-    </button>
-    <button class="tab" data-tab="friends">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.2a6.5 6.5 0 0 1 3 5.8"/></svg>
-      <span>Friends</span>
     </button>
     <button class="tab" data-tab="host">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1" fill="currentColor"/><path d="M2 9a14.5 14.5 0 0 1 20 0"/></svg>
@@ -23,7 +19,7 @@
     </button>
     <button class="tab" data-tab="settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
-      <span>Stream settings</span>
+      <span>Settings</span>
     </button>
     <button class="tab" data-tab="apollo">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
@@ -36,7 +32,6 @@
       <div id="update-bar" class="update-bar hidden"><div></div></div>
       <button id="update-now" type="button">Update now</button>
     </div>
-    <label class="check small"><input type="checkbox" id="start-at-login"> Start with Windows</label>
     <button id="app-version" type="button" class="version-line" title="Check for updates"></button>
   </nav>
 
@@ -51,19 +46,25 @@
       <button id="update-banner-now" type="button">Update now</button>
       <button id="update-banner-close" type="button" class="update-banner-close" title="Hide until the next version" aria-label="Hide">✕</button>
     </div>
-    <!-- Connect -->
-    <section id="tab-connect" class="page active">
-      <!-- Host list -->
+    <!-- Connect: friends, your PCs and other PCs, and one PC's games -->
+    <section id="tab-friends" class="page active">
       <div id="host-list-view">
         <header>
           <h1>Connect</h1>
           <div class="actions">
-            <button id="add-host" class="secondary">Add PC</button>
-            <button id="refresh-hosts" class="secondary">Refresh</button>
+            <button id="add-host" class="secondary" title="Add a PC by its address">Add PC</button>
+            <button id="refresh-friends" class="secondary">Refresh</button>
           </div>
         </header>
-        <p class="hint">Your PCs, PCs on your network, and friends’ PCs shared with you on Tailscale.</p>
-        <div id="hosts" class="cards"></div>
+        <div class="connect-options">
+          <label class="check small" title="Friends see the game you're playing or hosting"><input type="checkbox" id="share-game"> Share what I’m playing</label>
+          <label class="check small" title="A notification when a friend comes online or starts streaming a game"><input type="checkbox" id="friend-alerts"> Notify me</label>
+          <label class="check small" title="No notifications, and invites to play are answered “not now”. Requests to stream from this PC still ask."><input type="checkbox" id="dnd"> Do not disturb</label>
+        </div>
+        <p class="hint">Friends, your PCs and other PCs you can stream from. Add friends by username, or a PC by its address. Click a PC’s name for its games.</p>
+        <div id="friend-account" class="panel friend-account hidden"></div>
+        <div id="friend-requests" class="friend-requests hidden"></div>
+        <div id="friends" class="friends"></div>
       </div>
 
       <!-- One host's games -->
@@ -74,6 +75,8 @@
             <h1 id="host-view-name"></h1>
           </div>
           <div class="actions">
+            <button id="rename-host" class="secondary" title="Give this PC your own name in Moonshine">Rename</button>
+            <button id="remove-host" class="secondary hidden" title="Forget this PC and the pairing with it">Remove</button>
             <button id="refresh-apps" class="secondary">Refresh</button>
             <button id="quit-app" class="secondary">Close running game</button>
           </div>
@@ -90,23 +93,6 @@
       </div>
     </section>
 
-    <!-- Host settings: the host engine's settings, applications, commands and logs -->
-    <section id="tab-friends" class="page">
-      <header>
-        <h1>Friends</h1>
-        <div class="actions">
-          <label class="check small" title="Friends see the game you're playing or hosting"><input type="checkbox" id="share-game"> Share what I’m playing</label>
-          <label class="check small" title="A notification when a friend comes online or starts streaming a game"><input type="checkbox" id="friend-alerts"> Notify me</label>
-          <label class="check small" title="No notifications, and invites to play are answered “not now”. Requests to stream from this PC still ask."><input type="checkbox" id="dnd"> Do not disturb</label>
-          <button id="refresh-friends" class="secondary">Refresh</button>
-        </div>
-      </header>
-      <p class="hint">Who’s online and whether their PC is free. Add friends by username, or they appear when they share their PC with you on Tailscale. Your other PCs are listed too.</p>
-      <div id="friend-account" class="panel friend-account hidden"></div>
-      <div id="friend-requests" class="friend-requests hidden"></div>
-      <div id="friends" class="friends"></div>
-    </section>
-
     <section id="tab-apollo" class="page">
       <header>
         <h1>Host settings</h1>
@@ -118,9 +104,8 @@
         <button data-sub="settings" class="active">Settings</button>
         <button data-sub="apps">Applications</button>
         <button data-sub="commands">Commands</button>
-        <button data-sub="logs">Logs</button>
         <button data-sub="tools">Tools</button>
-        <button data-sub="webui">Web UI</button>
+        <button data-sub="logs">Logs</button>
       </nav>
 
       <div id="apollo-message" class="panel hidden">
@@ -217,15 +202,6 @@
           </div>
           <p id="host-version" class="hint"></p>
         </div>
-      </div>
-
-      <!-- The host engine's own web page, for anything Moonshine's pages don't cover -->
-      <div id="apollo-sub-webui" class="apollo-sub hidden">
-        <div class="row-actions">
-          <p class="hint">The host engine’s own page, in case something isn’t in Moonshine yet.</p>
-          <button id="webui-reload" class="secondary">Reload</button>
-        </div>
-        <div id="webui-frame" class="webui-frame"></div>
       </div>
 
       <!-- Commands run for every app, and commands devices can trigger -->
@@ -340,7 +316,12 @@
 
     <!-- Stream settings -->
     <section id="tab-settings" class="page">
-      <header><h1>Stream settings</h1></header>
+      <header><h1>Settings</h1></header>
+      <h2 class="settings-heading">Moonshine</h2>
+      <div class="panel toggles">
+        <label class="check"><input type="checkbox" id="start-at-login"> Start with Windows</label>
+      </div>
+      <h2 class="settings-heading">Streaming</h2>
       <p class="hint">Used every time you connect from Moonshine.</p>
       <form id="settings-form">
         <div class="panel grid-form">
@@ -370,6 +351,10 @@
             <div class="range-row">
               <input type="range" name="bitrateMbps" min="0" max="150" step="1">
               <span id="bitrate-label"></span>
+            </div>
+            <div class="speed-test" data-kind="download">
+              <button type="button" class="secondary small-button speed-run">Test my speed</button>
+              <div class="speed-result hidden" role="status"></div>
             </div>
           </label>
           <label>Display
@@ -426,6 +411,7 @@
           <label class="check"><input type="checkbox" name="audioOnHost"> Also play audio on the host PC</label>
           <label class="check"><input type="checkbox" name="muteOnFocusLoss"> Mute when the stream isn’t focused</label>
           <label class="check"><input type="checkbox" name="quitAfter"> Close the game on the host when I end the stream</label>
+          <label class="check"><input type="checkbox" name="autoReconnect"> Reconnect by itself if the connection drops</label>
         </div>
       </form>
       <p class="hint">To end a stream, press Ctrl+Alt+Shift+Q. Ctrl+Alt+Shift+S switches the stats between full, compact and off.</p>
@@ -438,7 +424,6 @@
         <h1>Host</h1>
         <div class="actions">
           <button id="open-webui" class="secondary">Host settings</button>
-          <button id="open-webui-page" class="secondary">Web UI</button>
         </div>
       </header>
 
@@ -490,6 +475,10 @@
           <span class="bandwidth-unit">Mbps</span>
           <button type="submit" class="secondary">Save</button>
         </form>
+        <div class="speed-test" data-kind="upload">
+          <button type="button" class="secondary small-button speed-run">Test my upload</button>
+          <div class="speed-result hidden" role="status"></div>
+        </div>
       </div>
 
       <div id="login-panel" class="panel hidden">

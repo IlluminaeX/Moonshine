@@ -6,7 +6,7 @@ One Windows app for game streaming. **Host** shares your PC, and **Connect** pla
 - **Host / Connect in one window**
   - **Connect** lists your saved PCs (shared with an installed Moonlight), PCs found on your network, and friends' PCs on Tailscale, and you can add any PC by IP.
   - It handles pairing, shows each PC's games with box art, and starts full-screen streams.
-  - Stream settings (resolution, frame rate, bitrate, codec, HDR and more) are set in Moonshine.
+  - Stream settings (resolution, frame rate, bitrate, codec, HDR and more) are on the Settings tab, with Start with Windows.
 - **You decide who streams, each time**
   - Every paired device has an **Ask before streaming** switch (on by default). When it's on, a Moonshine popup asks you to **Allow** or **Decline** each stream. This works for any device, however it was paired.
   - The popup's **Don't ask again** turns the switch off for that device.
@@ -17,17 +17,19 @@ One Windows app for game streaming. **Host** shares your PC, and **Connect** pla
   - Friends on Moonshine pair with each other's PCs by themselves, the first time each PC sees the other online. No PIN, no popup. A friend's PC that is off says it will pair once it's on; **Pair** appears only if pairing by itself didn't work.
   - Other PCs with Moonshine (on Tailscale, your network, or by IP): click **Pair**, they get one **Accept** popup, and nobody types the PIN.
   - Any other Moonlight client: Moonshine pops up a box to type the PIN that device is showing.
-- **Friends** (sign in with Discord, add friends by username)
+- **Connect** tab: friends, your PCs and other PCs in one list (sign in with Discord, add friends by username, or add a PC by its address). Click a PC's name for its games, to rename it, or to remove it.
   - The list updates live: who is online, free, hosting or in a game, and **what they're playing** (turn off **Share what I'm playing** to hide yours).
   - **Quick messages**: one-tap phrases ("Want to play?", "On my way"...) or a short note, delivered at once to friends who are online. Conversations stay on your PC.
   - **Nicknames** only you see, kept with your account.
   - A badge when a friend's Moonshine is older or newer than yours.
-  - **Do not disturb** (tray menu or Friends tab), for an hour, until morning, or until you turn it off: no notifications, and invites to play are answered "not now". Messages still arrive, unread. Requests to stream from your PC still ask.
+  - **Do not disturb** (tray menu or Connect tab), for an hour, until morning, or until you turn it off: no notifications, and invites to play are answered "not now". Messages still arrive, unread. Requests to stream from your PC still ask.
+- **Speed test**: **Test my speed** under the bitrate (Settings) measures this PC's download and suggests a stream bitrate; **Test my upload** under the upload limit (Host) measures the upload and suggests a limit. **Apply** or **Dismiss**. Uses Cloudflare's free speed test servers for a few seconds.
+- **Auto-reconnect**: if a stream's connection drops (Wi-Fi blip, a direct connection lost), Moonshine gets it back by itself and picks up the same game, which keeps running on the other PC meanwhile. Up to 5 tries over about 30 seconds; **Stop reconnecting** or the Settings switch turns it off.
 - **Volume boost**: play a PC's stream up to 10x louder, for when its owner keeps their game quiet. A slider on that PC's page and in the stream window, or Ctrl+Alt+Shift+Up/Down during the stream. Remembered per PC; loud parts are softened instead of crackling.
 - **Devices** (Host tab): rename, disconnect or remove a device, and set what it may do: keyboard, mouse, controller, touch, pen; see the app list, start apps, join a running stream; clipboard, file transfer, server commands; a fixed resolution or its own virtual display.
   - **New devices can**: what a device gets when it pairs, however it pairs. "Start apps and use a controller" by default; or full control with clipboard and files; or only watch. Devices already paired keep theirs.
 - **Host settings** tab: all of the host's settings, the applications list with an editor (including commands to run before and after an app), global commands, the logs, and **Tools** (pair by typing a PIN, one-time pairing codes, close a stuck app, reset display settings, remove all devices, set the web page's login).
-  - **Web UI** shows the host engine's own page inside Moonshine, already signed in, for anything Moonshine's pages don't cover.
+  - The settings for each GPU's encoder (NVIDIA, AMD, Intel, software) are grouped under **Advanced**.
   - The settings pages are generated from Apollo's own settings page by `scripts/gen-apollo-schema.js`, so they use the same options, defaults and wording. Run it again after updating Apollo.
 - **Per-app stream audio**: stream all system audio, everything *except* one app (e.g. `Discord.exe`), or *only* one app. This uses Windows' process-loopback capture and needs Windows 10 build 20348 or later, or Windows 11.
 
