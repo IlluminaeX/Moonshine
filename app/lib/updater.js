@@ -5,8 +5,7 @@
 // "moonshine-update-v1:<version>:<sha256>" made by scripts/release.ps1 with a private key that never
 // leaves the publisher's PC. The signature sits in the release notes as a hidden HTML comment,
 // <!-- moonshine-update-sig: <base64 of the JSON> -->, which GitHub doesn't show on the page.
-// Releases up to 0.3.3 also attached it as Moonshine-Setup.exe.sig (what 0.3.2 and older look for);
-// that file is still used when the notes have none.
+// A release can also attach it as Moonshine-Setup.exe.sig, which is used when the notes have none.
 // Moonshine only installs a download whose hash and signature check out against the public key
 // below and whose signed version is newer than its own, so a tampered or old installer is refused
 // even if someone got hold of the GitHub account.

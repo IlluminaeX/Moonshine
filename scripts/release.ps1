@@ -6,8 +6,8 @@
 #   pwsh scripts/release.ps1 -SigAsset        also attach Moonshine-Setup.exe.sig to the release
 #
 # The signature goes into the release notes as a hidden comment, which the app reads and GitHub's
-# page doesn't show; leave that line alone when editing a release's notes. Moonshine 0.3.2 and older
-# only read the attached .sig file, so a release meant for them to update to needs -SigAsset.
+# page doesn't show; leave that line alone when editing a release's notes. -SigAsset also attaches the
+# signature as a separate .sig file, which the app falls back to when the notes have none.
 #
 # Before a release: raise "version" in app/package.json, build (build-apollo, build-moonlight,
 # package.ps1), and commit. The tag is v<that version>. Needs the GitHub CLI (gh), signed in.
