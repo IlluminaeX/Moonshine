@@ -46,21 +46,28 @@ AutoCloseWindow true ; go straight from installing to the finish page
 !define TUNNEL_RULE "Moonshine direct connections"
 
 ; Moonshine's palette (app/renderer/style.css). COLORREF values are 0x00BBGGRR.
-!define BG "0B0709"
+!define BG "15101D"
 !define TEXT "F4EEEF"
-!define MUTED "A9979C"
+!define MUTED "B6A6BD"
 !define ACCENT "DC143C"
-!define SURFACE "231A1D"
-!define BG_REF 0x0009070B
-!define SURFACE_REF 0x001D1A23
+!define RING_OFF "6B5A78"
+!define SURFACE "231B2E"
+!define BG_REF 0x001D1015
+!define SURFACE_REF 0x002E1B23
 !define ACCENT_REF 0x003C14DC
 
 Var HostPlan ; fresh | update | migrate
 Var PlanText
 Var DesktopShortcut ; 1 or 0, from the tick-boxes on the first page
 Var StartShortcut
-Var DesktopBox ; the tick-box controls
-Var StartBox
+; The tick-boxes: a rounded ring, a rounded fill inside it (crimson with a tick when on), and a text line
+Var DesktopRing
+Var DesktopFill
+Var DesktopText
+Var StartRing
+Var StartFill
+Var StartText
+Var CheckFont
 Var ReadyText
 Var WinW ; the window's inside, in pixels
 Var WinH
@@ -179,6 +186,7 @@ Function InstallerFrame
 
   CreateFont $TitleFont "Segoe UI Semibold" 20 600
   CreateFont $ButtonFont "Segoe UI Semibold" 10 600
+  CreateFont $CheckFont "Segoe UI Symbol" 10 700
 
   ; Windows' own Back / Next / Cancel go off-screen (they still work when ours press them), and the
   ; wizard's header, divider lines and branding text are hidden.
@@ -220,21 +228,71 @@ Function OnOpenClick
   SendMessage $HWNDPARENT ${WM_COMMAND} 1 0
 FunctionEnd
 
-; Tick-boxes of our own, to match the buttons: a clickable line of text that starts with a box glyph.
-!define BOX_ON "${U+2611}"
-!define BOX_OFF "${U+2610}"
+; Tick-boxes of our own, to match the buttons. Off: a soft outline around a dark centre. On: filled
+; crimson with a white tick. Clicking the box or its text switches it.
+!define TICK "${U+2713}"
+
+; One row. Y is where it sits (thousandths of the window height); the three controls go in RING, FILL, TEXTCTL.
+!macro CHECK_ROW Y RING FILL TEXTCTL LABEL HANDLER
+  !insertmacro PLACE 80 ${Y} 440 60
+  IntOp $R6 $WinH * 52
+  IntOp $R6 $R6 / 1000 ; the box's size in pixels
+  IntOp $R7 $R6 / 8 ; the outline's width
+  IntOp $R8 $R6 - $R7
+  IntOp $R8 $R8 - $R7 ; the fill's size
+  ${NSD_CreateLabel} $R1 $R2 $R6 $R6 ""
+  Pop $R5
+  StrCpy ${RING} $R5
+  IntOp $R9 $R6 / 3
+  IntOp $0 $R6 + 1
+  System::Call 'gdi32::CreateRoundRectRgn(i 0, i 0, i $0, i $0, i $R9, i $R9) p .r8'
+  System::Call 'user32::SetWindowRgn(p $R5, p $8, i 1)'
+  ${NSD_OnClick} $R5 ${HANDLER}
+  IntOp $R3 $R1 + $R7
+  IntOp $R4 $R2 + $R7
+  ${NSD_CreateLabel} $R3 $R4 $R8 $R8 ""
+  Pop $R5
+  StrCpy ${FILL} $R5
+  ${NSD_AddStyle} $R5 0x201 ; centred both ways, for the tick
+  SendMessage $R5 ${WM_SETFONT} $CheckFont 0
+  IntOp $R9 $R8 / 3
+  IntOp $0 $R8 + 1
+  System::Call 'gdi32::CreateRoundRectRgn(i 0, i 0, i $0, i $0, i $R9, i $R9) p .r8'
+  System::Call 'user32::SetWindowRgn(p $R5, p $8, i 1)'
+  ${NSD_OnClick} $R5 ${HANDLER}
+  !insertmacro PLACE 80 ${Y} 440 60
+  IntOp $R3 $R1 + $R6
+  IntOp $R3 $R3 + $R6 ; a gap as wide as the box
+  IntOp $2 $WinW * 440
+  IntOp $2 $2 / 1000
+  IntOp $2 $2 - $R6
+  IntOp $2 $2 - $R6 ; the text gets what is left of the row
+  ${NSD_CreateLabel} $R3 $R2 $2 $R6 "${LABEL}"
+  Pop $R5
+  StrCpy ${TEXTCTL} $R5
+  ${NSD_AddStyle} $R5 0x200 ; text centred up and down against the box
+  SetCtlColors $R5 ${TEXT} ${BG}
+  ${NSD_OnClick} $R5 ${HANDLER}
+!macroend
+
+; Paint one box on or off.
+!macro PAINT_CHECK RING FILL STATE
+  ${If} ${STATE} == 1
+    SetCtlColors ${RING} FFFFFF ${ACCENT}
+    SetCtlColors ${FILL} FFFFFF ${ACCENT}
+    ${NSD_SetText} ${FILL} "${TICK}"
+  ${Else}
+    SetCtlColors ${RING} FFFFFF ${RING_OFF}
+    SetCtlColors ${FILL} FFFFFF ${SURFACE}
+    ${NSD_SetText} ${FILL} ""
+  ${EndIf}
+  System::Call 'user32::InvalidateRect(p ${RING}, p 0, i 1)'
+  System::Call 'user32::InvalidateRect(p ${FILL}, p 0, i 1)'
+!macroend
 
 Function ShowShortcutBoxes
-  ${If} $DesktopShortcut == 1
-    ${NSD_SetText} $DesktopBox "${BOX_ON}  Add a desktop shortcut"
-  ${Else}
-    ${NSD_SetText} $DesktopBox "${BOX_OFF}  Add a desktop shortcut"
-  ${EndIf}
-  ${If} $StartShortcut == 1
-    ${NSD_SetText} $StartBox "${BOX_ON}  Add a Start menu shortcut"
-  ${Else}
-    ${NSD_SetText} $StartBox "${BOX_OFF}  Add a Start menu shortcut"
-  ${EndIf}
+  !insertmacro PAINT_CHECK $DesktopRing $DesktopFill $DesktopShortcut
+  !insertmacro PAINT_CHECK $StartRing $StartFill $StartShortcut
 FunctionEnd
 
 Function OnDesktopBoxClick
@@ -259,12 +317,8 @@ Function WelcomePage
   !insertmacro TEXT_LABEL 80 120 480 130 ${TEXT} $TitleFont "Moonshine"
   !insertmacro TEXT_LABEL 80 280 470 60 ${TEXT} "" "Stream your games to friends, and play on theirs."
   !insertmacro TEXT_LABEL 80 380 440 200 ${MUTED} "" "$PlanText"
-  !insertmacro TEXT_LABEL 80 610 440 60 ${TEXT} "" ""
-  StrCpy $DesktopBox $R5
-  ${NSD_OnClick} $DesktopBox OnDesktopBoxClick
-  !insertmacro TEXT_LABEL 80 680 440 60 ${TEXT} "" ""
-  StrCpy $StartBox $R5
-  ${NSD_OnClick} $StartBox OnStartBoxClick
+  !insertmacro CHECK_ROW 610 $DesktopRing $DesktopFill $DesktopText "Add a desktop shortcut" OnDesktopBoxClick
+  !insertmacro CHECK_ROW 680 $StartRing $StartFill $StartText "Add a Start menu shortcut" OnStartBoxClick
   Call ShowShortcutBoxes
   !insertmacro FLAT_BUTTON 80 800 210 95 ${ACCENT} "Install" OnNextClick
   !insertmacro FLAT_BUTTON 310 800 170 95 ${SURFACE} "Cancel" OnCancelClick
@@ -464,6 +518,12 @@ Section "-Moonshine app" SEC_APP
   WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoModify" 1
   WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoRepair" 1
   DeleteRegValue HKLM "${UNINSTALL_KEY}" "ManagesApollo" ; from installers that kept Apollo separate
+
+  ; moonshine://join/... links (invites) open Moonshine, even before it has been run once
+  WriteRegStr HKCR "moonshine" "" "URL:Moonshine"
+  WriteRegStr HKCR "moonshine" "URL Protocol" ""
+  WriteRegStr HKCR "moonshine\DefaultIcon" "" "$INSTDIR\Moonshine.exe,0"
+  WriteRegStr HKCR "moonshine\shell\open\command" "" '"$INSTDIR\Moonshine.exe" "%1"'
 SectionEnd
 
 Section "-Host" SEC_HOST
@@ -495,15 +555,16 @@ SectionEnd
 
 ; Defined after the sections so it can refer to their indexes.
 Function .onInit
-  StrCpy $DesktopShortcut 1
-  StrCpy $StartShortcut 1
-  ; A silent run is an in-app update: keep the shortcuts as they are instead of re-adding deleted ones.
+  ; Both unticked on a fresh install. A silent run is an in-app update: keep the shortcuts as they are
+  ; (kept if they exist, and not re-added if deleted).
+  StrCpy $DesktopShortcut 0
+  StrCpy $StartShortcut 0
   ${If} ${Silent}
-    ${IfNot} ${FileExists} "$DESKTOP\Moonshine.lnk"
-      StrCpy $DesktopShortcut 0
+    ${If} ${FileExists} "$DESKTOP\Moonshine.lnk"
+      StrCpy $DesktopShortcut 1
     ${EndIf}
-    ${IfNot} ${FileExists} "$SMPROGRAMS\Moonshine.lnk"
-      StrCpy $StartShortcut 0
+    ${If} ${FileExists} "$SMPROGRAMS\Moonshine.lnk"
+      StrCpy $StartShortcut 1
     ${EndIf}
   ${EndIf}
   ${IfNot} ${RunningX64}
@@ -549,4 +610,5 @@ Section "Uninstall"
   Delete "$DESKTOP\Moonshine.lnk"
   RMDir /r "$INSTDIR"
   DeleteRegKey HKLM "${UNINSTALL_KEY}"
+  DeleteRegKey HKCR "moonshine"
 SectionEnd

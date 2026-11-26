@@ -4,6 +4,11 @@
 #   npx wrangler d1 execute moonshine --remote --file=schema.sql
 #   (a database made before direct connections: npx wrangler d1 execute moonshine --remote --file=migrations/0001_tunnel.sql)
 #   (one made before nicknames and messages: npx wrangler d1 execute moonshine --remote --file=migrations/0002_social.sql)
+#   (one made before the relay: npx wrangler d1 execute moonshine --remote --file=migrations/0003_relay.sql)
+#   (one made before invite links: npx wrangler d1 execute moonshine --remote --file=migrations/0004_invites.sql)
+#   Relay (Cloudflare TURN): create a TURN key in the dashboard (Realtime > TURN), then
+#   npx wrangler secret put TURN_KEY_ID        (the key's ID)
+#   npx wrangler secret put TURN_API_TOKEN     (the key's API token)
 #   npx wrangler secret put DISCORD_SECRET      (paste the Discord app's Client Secret)
 #   npx wrangler deploy
 name = "moonshine"

@@ -17,6 +17,10 @@ function start() {
   if (worker) return worker;
   const w = new Worker(path.join(__dirname, 'tunnel-worker.js'));
   w.on('message', (m) => {
+    if (m.event === 'relay-wanted') {
+      events.emit('relay-wanted', m.id);
+      return;
+    }
     if (m.event === 'closed') {
       live.delete(m.id);
       events.emit('closed', m.id, m.reason);

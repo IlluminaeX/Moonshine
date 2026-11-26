@@ -27,7 +27,8 @@ const SOURCE_PREFIX = '127.88.';
 let hooks = {
   hostInfo: async () => ({ running: false, port: 47989 }), // this PC's host engine
   inUse: () => false, // is the player using this address right now?
-  friendPc: () => null, // host uuid -> { device, port, name, username } from the friends list
+  friendPc: () => null, // host uuid -> { device, port, name, username, guest? } from the friends list (guest: { token, link } for an invite)
+  inviteOk: async () => false, // may a guest of this invite connect? (this PC made the link and it is still open)
   log: () => {},
 };
 
@@ -57,6 +58,7 @@ function remember(hostUuid, rec) {
 function friendlyError(code, name) {
   switch (code) {
     case 'not-hosting': return `${name} isn’t hosting right now.`;
+    case 'not-invited': return `${name} didn’t accept the invite. Ask for a new link.`;
     case 'busy': return `${name} has too many connections open. Try again in a minute.`;
     case 'offline': return `Moonshine on ${name} isn’t connected right now. Ask your friend to open Moonshine.`;
     case 'no-answer': return `${name} didn’t answer. Their Moonshine may have just closed.`;
@@ -66,7 +68,10 @@ function friendlyError(code, name) {
   }
 }
 
-function noPathError(name, nat) {
+function noPathError(name, nat, relay) {
+  if (relay === 'failed') {
+    return `Couldn’t connect to ${name}: no direct path, and the relay that takes over then didn’t work either. Tailscale still works for this friend.`;
+  }
   return nat === 'symmetric'
     ? `Couldn’t connect directly to ${name}: your network doesn’t allow direct connections (common on mobile and some internet providers). Tailscale still works for this friend.`
     : `Couldn’t connect directly to ${name}. Their network may not allow direct connections (common on mobile and some internet providers). Tailscale still works for this friend.`;
@@ -83,12 +88,18 @@ function connect(pc) {
   if (existing && existing.open) return Promise.resolve(existing.address);
   if (existing && existing.connecting) return existing.connecting;
 
-  const entry = { id: newId(), open: false, connecting: null };
+  // relay: 'none' until a direct path fails, then 'asked' (a relayed address was handed to the other PC)
+  // or 'failed' (couldn’t get one)
+  const guest = pc.guest || null; // joined by an invite link: its own login and live link
+  const link = guest ? guest.link : hub;
+  const asToken = guest ? guest.token : undefined;
+  const entry = { id: newId(), open: false, connecting: null, asToken, device: pc.device, name: pc.name || '', session: '', relay: 'none', relayed: false };
   clients.set(pc.hostUuid, entry);
   entry.connecting = (async () => {
     const name = pc.name || 'your friend’s PC';
-    if (!(await hub.whenConnected(5000))) throw new Error(friendlyError('no-service', name));
+    if (!(await link.whenConnected(5000))) throw new Error(friendlyError('no-service', name));
     const session = crypto.randomBytes(24).toString('base64url');
+    entry.session = session;
     const prep = await tunnel.call('prepare', { id: entry.id, role: 'client' });
     try {
       const saved = store.get('tunnelHosts')[pc.hostUuid] || {};
@@ -102,9 +113,9 @@ function connect(pc) {
       }
       remember(pc.hostUuid, { ip, offset, hostBase });
 
-      const answer = hub.waitFor((m) => m.type === 'tunnel-answer' && m.session === session, ANSWER_WAIT_MS);
+      const answer = link.waitFor((m) => m.type === 'tunnel-answer' && m.session === session, ANSWER_WAIT_MS);
       try {
-        await service.tunnelOffer({ device: pc.device, session, pub: prep.pub, cands: prep.cands });
+        await service.tunnelOffer({ device: pc.device, session, pub: prep.pub, cands: prep.cands }, asToken);
       } catch (err) {
         answer.cancel();
         throw new Error(err.status === 409 ? friendlyError('offline', name) : err.status ? err.message : friendlyError('no-service', name));
@@ -115,10 +126,12 @@ function connect(pc) {
       try {
         await tunnel.call('start', { id: entry.id, peerPub: ans.pub, peerCands: ans.cands, session });
       } catch (err) {
-        throw new Error(err.code === 'no-path' ? noPathError(name, prep.nat) : friendlyError(err.code, name));
+        throw new Error(err.code === 'no-path' ? noPathError(name, prep.nat, entry.relay === 'failed' || entry.relay === 'asked' ? 'failed' : '') : friendlyError(err.code, name));
       }
+      const info = await tunnel.call('info', { id: entry.id }).catch(() => null);
+      entry.relayed = Boolean(info && info.relayed);
       Object.assign(entry, { ip, offset, hostBase, address: `${ip}:${hostBase + offset}`, open: true, connecting: null });
-      hooks.log(`Direct connection to ${name} open`);
+      hooks.log(entry.relayed ? `Relayed connection to ${name} open` : `Direct connection to ${name} open`);
       return entry.address;
     } catch (err) {
       tunnel.call('close', { id: entry.id, reason: 'failed' }).catch(() => {});
@@ -127,6 +140,36 @@ function connect(pc) {
     }
   })();
   return entry.connecting;
+}
+
+/**
+ * No direct path after a few seconds: get a relayed address from Cloudflare's relay and hand it to the
+ * other PC, which then sends to it (the engine holds the relay; see tunnel-engine.js useRelay).
+ */
+async function askForRelay(entry) {
+  if (entry.relay !== 'none') return;
+  entry.relay = 'failed';
+  try {
+    const creds = await service.turnCredentials(entry.asToken);
+    const relayed = await tunnel.call('relay', { id: entry.id, creds });
+    await service.tunnelRelay({ device: entry.device, session: entry.session, relay: relayed }, entry.asToken);
+    entry.relay = 'asked';
+    hooks.log(`No direct path to ${entry.name || 'a friend'}; trying the relay`);
+  } catch (err) {
+    hooks.log(`No relay for ${entry.name || 'a friend'}: ${err.message}`);
+  }
+}
+
+tunnel.events.on('relay-wanted', (id) => {
+  for (const entry of clients.values()) {
+    if (entry.id === id && entry.connecting && entry.session) askForRelay(entry).catch(() => {});
+  }
+});
+
+/** Is the open connection to this host going through the relay? */
+function isRelayed(hostUuid) {
+  const e = clients.get(hostUuid);
+  return Boolean(e && e.open && e.relayed);
 }
 
 const isTunnelAddress = (address) => typeof address === 'string' && address.startsWith(LOCAL_PREFIX);
@@ -152,10 +195,28 @@ async function ensureFor(address) {
   return connect({ hostUuid: rec.hostUuid, ...pc });
 }
 
+/** Close the tunnel to one PC (leaving an invite). */
+function closeFor(hostUuid) {
+  const e = clients.get(hostUuid);
+  if (e && e.id) tunnel.call('close', { id: e.id, reason: 'closed' }).catch(() => {});
+  clients.delete(hostUuid);
+}
+
 /** The open tunnel's address for a friend's PC, if there is one. */
 function openAddress(hostUuid) {
   const e = clients.get(hostUuid);
   return e && e.open ? e.address : '';
+}
+
+/** A summary for diagnostics: counts only, no addresses or identities. */
+function diagnostics() {
+  const open = [...clients.values()].filter((e) => e.open);
+  return {
+    outgoing: open.length,
+    outgoingRelayed: open.filter((e) => e.relayed).length,
+    outgoingConnecting: [...clients.values()].filter((e) => e.connecting && !e.open).length,
+    incoming: hosts.size,
+  };
 }
 
 /**
@@ -190,11 +251,17 @@ async function onOffer(msg) {
     await answer({ error: 'not-hosting' });
     return;
   }
+  // A guest gets in only with a link this PC made and that is still open (the service says which link
+  // they used, but this PC checks it against its own list, so a service mix-up can't let a stranger in)
+  if (msg.from.guest && !(await hooks.inviteOk(Number(msg.from.invite), msg.from.device).catch(() => false))) {
+    await answer({ error: 'not-invited' });
+    return;
+  }
   const id = newId();
   const srcIp = newSourceIp();
-  const who = { srcIp, username: msg.from.username || '', name: msg.from.name || '', session: msg.session };
+  const who = { srcIp, username: msg.from.username || '', name: msg.from.name || '', session: msg.session, device: msg.from.device, invite: msg.from.guest ? Number(msg.from.invite) || 0 : 0 };
   hosts.set(id, who);
-  sources.set(srcIp, { username: who.username, name: who.name, until: Infinity });
+  sources.set(srcIp, { username: who.username, name: who.name, invite: who.invite, until: Infinity });
   try {
     const prep = await tunnel.call('prepare', { id, role: 'host', options: { hostBase: host.port, srcIp } });
     // Start punching before answering, so this side is already sending when the other side starts
@@ -206,6 +273,18 @@ async function onOffer(msg) {
   } catch {
     tunnel.call('close', { id, reason: 'failed' }).catch(() => {});
     if (hosts.has(id)) closedHost(id);
+  }
+}
+
+/** The other PC found no direct path and got a relayed address: send to it too. */
+async function onRelay(msg) {
+  if (!msg.from || !msg.relay || typeof msg.session !== 'string') return;
+  for (const [id, h] of hosts) {
+    if (h.session === msg.session && h.device === msg.from.device) {
+      await tunnel.call('addTargets', { id, cands: [{ a: String(msg.relay.a), p: Number(msg.relay.p) }] }).catch(() => {});
+      hooks.log(`Trying the relay for ${h.username || 'a friend'}`);
+      return;
+    }
   }
 }
 
@@ -226,7 +305,7 @@ function friendForSource(address) {
     sources.delete(address);
     return null;
   }
-  return { username: s.username, name: s.name };
+  return { username: s.username, name: s.name, invite: s.invite || 0 };
 }
 
 const isTunnelSource = (address) => typeof address === 'string' && address.startsWith(SOURCE_PREFIX);
@@ -245,6 +324,7 @@ tunnel.events.on('closed', (id, reason) => {
 
 hub.events.on('message', (msg) => {
   if (msg.type === 'tunnel-offer') onOffer(msg).catch(() => {});
+  if (msg.type === 'tunnel-relay') onRelay(msg).catch(() => {});
 });
 
 // Close tunnels nobody uses any more
@@ -271,6 +351,22 @@ function closeAll() {
   for (const id of [...hosts.keys()]) closedHost(id);
 }
 
+/**
+ * "Can this PC connect directly?" Asks two STUN servers what this PC's public address looks like: the
+ * same port both times means a friendly router (direct works), a different one each time means it
+ * doesn't (the relay takes over), and no answer at all means UDP is blocked. Resolves { nat }.
+ */
+async function checkNetwork() {
+  const id = newId();
+  try {
+    const prep = await tunnel.call('prepare', { id, role: 'client' });
+    return { nat: prep.nat };
+  } finally {
+    tunnel.call('close', { id, reason: 'checked' }).catch(() => {});
+  }
+}
+
 module.exports = {
-  init, connect, ensureFor, openAddress, playerEnv, isTunnelAddress, isTunnelSource, friendForSource, closeAll,
+  init, connect, ensureFor, openAddress, isRelayed, recordFor, closeFor, playerEnv, isTunnelAddress, isTunnelSource, friendForSource, closeAll,
+  diagnostics, checkNetwork,
 };

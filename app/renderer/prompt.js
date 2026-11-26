@@ -21,37 +21,13 @@ window.moonshinePrompt.onShow((s) => {
     bar.style.animationDuration = `${s.timeoutMs}ms`;
     bar.classList.add('running');
   }
-  if (s.sound === 'join') playChime();
+  if (s.sound && s.sound !== 'none') window.MoonshineSounds.play(s.sound);
   if (s.pin) {
     $('#pin').required = true;
     $('#device-name').value = s.name || '';
     $('#pin').focus();
   }
 });
-
-/** A short, friendly two-note chime (made here, so there's no sound file to ship). */
-function playChime() {
-  try {
-    const ctx = new AudioContext();
-    const notes = [[784, 0], [1175, 0.12]]; // G5 then D6
-    for (const [freq, at] of notes) {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      const t = ctx.currentTime + at;
-      gain.gain.setValueAtTime(0.0001, t);
-      gain.gain.exponentialRampToValueAtTime(0.35, t + 0.015);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.45);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(t);
-      osc.stop(t + 0.5);
-    }
-    setTimeout(() => ctx.close(), 1000);
-  } catch {
-    // no audio device: the popup still shows
-  }
-}
 
 // Only digits in the PIN box.
 $('#pin').addEventListener('input', (e) => { e.target.value = e.target.value.replace(/\D/g, ''); });

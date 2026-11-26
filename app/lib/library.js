@@ -83,6 +83,7 @@ async function removeSavedHost(uuid, key = MOONLIGHT_KEY) {
 /** Ask a host for its identity over the unauthenticated GameStream HTTP port. */
 function serverInfo(address, port = DEFAULT_PORT, timeoutMs = 1500) {
   return new Promise((resolve) => {
+    const started = Date.now();
     const host = address.includes(':') ? `[${address}]` : address;
     const req = http.get(`http://${host}:${port}/serverinfo`, { timeout: timeoutMs, agent: false }, (res) => {
       let body = '';
@@ -98,6 +99,8 @@ function serverInfo(address, port = DEFAULT_PORT, timeoutMs = 1500) {
           port,
           busy: tag('state') === 'SUNSHINE_SERVER_BUSY' || tag('currentgame') !== '0',
           runningApp: tag('currentgameuuid') || '',
+          mac: /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(tag('mac') || '') && !/^(00:){5}00$/.test(tag('mac')) ? tag('mac').toLowerCase() : '',
+          ms: Date.now() - started, // how long the host took to answer: roughly the connection's delay
         });
       });
     });

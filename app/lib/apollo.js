@@ -53,12 +53,14 @@ function request(method, path, body) {
         ...(token ? { 'X-Moonshine-Token': token } : {}),
       },
     }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; });
+      const parts = [];
+      res.on('data', (chunk) => { parts.push(chunk); });
       res.on('end', () => {
+        const raw = Buffer.concat(parts);
+        const data = raw.toString('utf8');
         let json = null;
         try { json = data ? JSON.parse(data) : null; } catch { /* not JSON */ }
-        resolve({ status: res.statusCode, headers: res.headers, json, text: data });
+        resolve({ status: res.statusCode, headers: res.headers, json, text: data, raw });
       });
     });
     req.on('timeout', () => req.destroy(new Error('Apollo did not respond')));
@@ -200,11 +202,16 @@ async function listClients() {
 /**
  * Submit a pairing PIN, naming the device. Retries until the device's pairing request has reached
  * the host (when Moonshine's own pairing flow sends the PIN ahead of it).
+ * @param {string} [requestId] Which pairing attempt this is for (pendingRequests().pairing[].id or
+ *   .offers[].id). Pass it whenever the caller knows which attempt it means: with it, the host applies
+ *   the PIN to that attempt and no other, even if another pairing attempt is also waiting. Left empty
+ *   only when there is nothing to pick from (the caller just typed a PIN by hand); the host then
+ *   requires there to be exactly one attempt waiting, rather than guessing.
  */
-async function submitPin(pin, name, timeoutMs = 20000) {
+async function submitPin(pin, name, timeoutMs = 20000, requestId = '') {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const res = await api('POST', '/api/pin', { pin, name });
+    const res = await api('POST', '/api/pin', { pin, name, id: requestId });
     if (res.status) return true;
     if (Date.now() >= deadline) return false;
     await new Promise((r) => setTimeout(r, 1000));
@@ -254,6 +261,21 @@ async function pendingRequests() {
 /** Tell a friend's Moonshine whether its pairing request (pendingRequests().offers) was accepted. */
 async function decideInvite(id, join) {
   return api('POST', '/api/moonshine/decide-invite', { id, join });
+}
+
+/** Accept or decline a file a paired device wants to send (pendingRequests().files). */
+async function decideFile(id, accept) {
+  return api('POST', '/api/moonshine/decide-file', { id, accept });
+}
+
+/** Up to 8 MB of a file that has arrived, from `offset`, as a Buffer. */
+async function fileData(id, offset) {
+  return (await apiResponse('GET', `/api/moonshine/file-data?id=${encodeURIComponent(id)}&offset=${offset}`)).raw;
+}
+
+/** The file is in Downloads now; the host deletes its copy. */
+async function fileTaken(id) {
+  return api('POST', '/api/moonshine/file-taken', { id });
 }
 
 /** Give these devices' controllers the first player numbers, in this order. */
@@ -332,6 +354,9 @@ module.exports = {
   webToken,
   decidePair,
   decideInvite,
+  decideFile,
+  fileData,
+  fileTaken,
   setPlayerOrder,
   unpairAll,
   resetDisplay,

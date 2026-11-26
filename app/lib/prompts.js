@@ -22,7 +22,8 @@ function showNext() {
   if (current || !queue.length) return;
   const { spec, resolve } = queue.shift();
   const height = 236 + (spec.checkbox ? 30 : 0) + (spec.pin ? 96 : 0);
-  const area = screen.getPrimaryDisplay().workArea;
+  // On the screen being looked at (where the mouse is), so it shows up next to a game on a second monitor
+  const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
   const win = new BrowserWindow({
     width: WIDTH,
     height,
@@ -32,12 +33,16 @@ function showNext() {
     resizable: false,
     maximizable: false,
     alwaysOnTop: true,
+    skipTaskbar: true,
+    focusable: !!spec.pin, // a notice never takes the keyboard from a game; a PIN has to be typed
     show: false,
     title: 'Moonshine',
     icon: path.join(__dirname, '..', 'assets', 'moonshine.png'),
-    backgroundColor: '#151012',
+    backgroundColor: '#231b2e',
     webPreferences: { preload: path.join(__dirname, '..', 'prompt-preload.js'), autoplayPolicy: 'no-user-gesture-required' },
   });
+  win.setAlwaysOnTop(true, "screen-saver"); // above full-screen apps, not just above other windows
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   current = { spec, resolve, win };
   win.on('closed', () => {
     if (current && current.win === win) finish({ ok: false });
@@ -47,8 +52,16 @@ function showNext() {
     // A PIN has to be typed, so that prompt takes focus; the others must not steal a keypress.
     if (spec.pin) win.show();
     else win.showInactive();
+    win.moveTop();
     win.flashFrame(true);
-    if (!spec.sound) shell.beep(); // a prompt with its own sound plays it itself
+    // A full-screen app can pull itself back to the front; keep reclaiming the top while this is up
+    const keepOnTop = setInterval(() => {
+      if (win.isDestroyed()) { clearInterval(keepOnTop); return; }
+      win.setAlwaysOnTop(true, "screen-saver");
+      win.moveTop();
+    }, 1000);
+    win.once("closed", () => clearInterval(keepOnTop));
+    if (!spec.sound) shell.beep(); // a prompt with its own sound plays it itself ('none': silent)
     // A notice that goes away by itself: count from when it's on screen, not from when it was queued
     if (spec.timeoutMs) {
       setTimeout(() => {
@@ -74,7 +87,7 @@ ipcMain.handle('prompt:respond', (event, result) => {
  * @param {string} [spec.checkbox] Label of an optional tick-box.
  * @param {boolean} [spec.pin] Ask for a 4-digit PIN and a device name (`spec.name` is the default).
  * @param {boolean} [spec.danger] Show the second button in red (e.g. Kick).
- * @param {string} [spec.sound] 'join': play a short chime instead of the system beep.
+ * @param {string} [spec.sound] A sound id (renderer/sounds.js) to play instead of the system beep; 'none' for silence.
  * @param {number} [spec.timeoutMs] Close by itself this long after showing (resolves as cancelled).
  * @returns {Promise<{ok: boolean, declined?: boolean, cancelled?: boolean, checked?: boolean, pin?: string, name?: string}>}
  *   declined: the second button was clicked (not just the window closed).

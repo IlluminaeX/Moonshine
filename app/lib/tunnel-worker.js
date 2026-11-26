@@ -20,6 +20,7 @@ parentPort.on('message', async (m) => {
       case 'prepare': {
         const t = new Tunnel(m.role, m.options || {});
         tunnels.set(m.id, t);
+        t.on('relay-wanted', () => parentPort.postMessage({ event: 'relay-wanted', id: m.id }));
         t.on('closed', (reason) => {
           tunnels.delete(m.id);
           parentPort.postMessage({ event: 'closed', id: m.id, reason });
@@ -37,6 +38,13 @@ parentPort.on('message', async (m) => {
         break;
       case 'start':
         reply(true, await get(m.id).start({ peerPub: m.peerPub, peerCands: m.peerCands, session: m.session }));
+        break;
+      case 'relay':
+        reply(true, await get(m.id).useRelay(m.creds));
+        break;
+      case 'addTargets':
+        get(m.id).addTargets(m.cands);
+        reply(true, null);
         break;
       case 'close': {
         const t = tunnels.get(m.id);

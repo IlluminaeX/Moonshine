@@ -83,7 +83,7 @@ index bec1ac95..a42d7a78 100644
      bool enable_pairing;
      bool enable_discovery;
 diff --git a/src/confighttp.cpp b/src/confighttp.cpp
-index e270dd76..272f128a 100644
+index e270dd76..e4645337 100644
 --- a/src/confighttp.cpp
 +++ b/src/confighttp.cpp
 @@ -34,6 +34,12 @@
@@ -166,7 +166,17 @@ index e270dd76..272f128a 100644
              (boost::iequals(username, config::sunshine.username) && hash == config::sunshine.password)) {
            if (newPassword.empty() || newPassword != confirmPassword)
              errors.push_back("Password Mismatch");
-@@ -1297,6 +1324,158 @@ namespace confighttp {
+@@ -1289,7 +1316,8 @@ namespace confighttp {
+       nlohmann::json output_tree;
+       std::string pin = input_tree.value("pin", "");
+       std::string name = input_tree.value("name", "");
+-      output_tree["status"] = nvhttp::pin(pin, name);
++      std::string request_id = input_tree.value("id", "");
++      output_tree["status"] = nvhttp::pin(pin, name, request_id);
+       send_response(response, output_tree);
+     } catch (std::exception &e) {
+       BOOST_LOG(warning) << "SavePin: "sv << e.what();
+@@ -1297,6 +1325,233 @@ namespace confighttp {
      }
    }
  
@@ -269,6 +279,81 @@ index e270dd76..272f128a 100644
 +  }
 +
 +  /**
++   * @brief Moonshine: accept or decline a file a paired device wants to send.
++   *
++   * @api_examples{/api/moonshine/decide-file| POST| {"id":"...","accept":true}}
++   */
++  void decideFile(resp_https_t response, req_https_t request) {
++    if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
++      return;
++    }
++
++    try {
++      std::stringstream ss;
++      ss << request->content.rdbuf();
++      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
++      nlohmann::json output_tree;
++      output_tree["status"] = nvhttp::decide_file(input_tree.value("id", ""), input_tree.value("accept", false));
++      send_response(response, output_tree);
++    } catch (std::exception &e) {
++      BOOST_LOG(warning) << "DecideFile: "sv << e.what();
++      bad_request(response, request, e.what());
++    }
++  }
++
++  /**
++   * @brief Moonshine: up to 8 MB of a file that has arrived (raw bytes), for the app to copy to Downloads.
++   *
++   * @api_examples{/api/moonshine/file-data?id=...&offset=0| GET| null}
++   */
++  void getFileData(resp_https_t response, req_https_t request) {
++    if (!authenticate(response, request)) {
++      return;
++    }
++    auto args = request->parse_query_string();
++    auto id_it = args.find("id");
++    auto offset_it = args.find("offset");
++    std::uint64_t offset = 0;
++    try {
++      offset = offset_it == args.end() ? 0 : std::stoull(offset_it->second);
++    } catch (...) {
++      bad_request(response, request, "bad offset");
++      return;
++    }
++    std::string piece;
++    if (id_it == args.end() || !nvhttp::read_file_piece(id_it->second, offset, piece)) {
++      not_found(response, request);
++      return;
++    }
++    SimpleWeb::CaseInsensitiveMultimap headers;
++    headers.emplace("Content-Type", "application/octet-stream");
++    response->write(SimpleWeb::StatusCode::success_ok, piece, headers);
++  }
++
++  /**
++   * @brief Moonshine: the app has the file; delete the host's copy.
++   *
++   * @api_examples{/api/moonshine/file-taken| POST| {"id":"..."}}
++   */
++  void fileTaken(resp_https_t response, req_https_t request) {
++    if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
++      return;
++    }
++
++    try {
++      std::stringstream ss;
++      ss << request->content.rdbuf();
++      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
++      nlohmann::json output_tree;
++      output_tree["status"] = nvhttp::file_taken(input_tree.value("id", ""));
++      send_response(response, output_tree);
++    } catch (std::exception &e) {
++      BOOST_LOG(warning) << "FileTaken: "sv << e.what();
++      bad_request(response, request, e.what());
++    }
++  }
++
++  /**
 +   * @brief Moonshine: change the upload limit shared by everyone watching, at once.
 +   *
 +   * @api_examples{/api/moonshine/bandwidth| POST| {"kbps":10000}}
@@ -325,7 +410,7 @@ index e270dd76..272f128a 100644
    /**
     * @brief Reset the display device persistence.
     * @param response The HTTP response object.
-@@ -1444,6 +1623,8 @@ namespace confighttp {
+@@ -1444,6 +1699,8 @@ namespace confighttp {
        nlohmann::json output_tree;
        nlohmann::json input_tree = nlohmann::json::parse(ss.str());
        std::string uuid = input_tree.value("uuid", "");
@@ -334,7 +419,7 @@ index e270dd76..272f128a 100644
        output_tree["status"] = nvhttp::find_and_stop_session(uuid, true);
        send_response(response, output_tree);
      } catch (std::exception &e) {
-@@ -1508,6 +1689,14 @@ namespace confighttp {
+@@ -1508,6 +1765,14 @@ namespace confighttp {
      auto port_https = net::map_port(PORT_HTTPS);
      auto address_family = net::af_from_enum_string(config::sunshine.address_family);
      https_server_t server { config::nvhttp.cert, config::nvhttp.pkey };
@@ -349,7 +434,7 @@ index e270dd76..272f128a 100644
      server.default_resource["DELETE"] = [](resp_https_t response, req_https_t request) {
        bad_request(response, request);
      };
-@@ -1531,6 +1720,13 @@ namespace confighttp {
+@@ -1531,6 +1796,16 @@ namespace confighttp {
      server.resource["^/troubleshooting/?$"]["GET"] = getTroubleshootingPage;
      server.resource["^/api/login"]["POST"] = login;
      server.resource["^/api/pin$"]["POST"] = savePin;
@@ -358,11 +443,34 @@ index e270dd76..272f128a 100644
 +    server.resource["^/api/moonshine/decide$"]["POST"] = decideStreamRequest;
 +    server.resource["^/api/moonshine/decide-pair$"]["POST"] = decidePairOffer;
 +    server.resource["^/api/moonshine/decide-invite$"]["POST"] = decideInvite;
++    server.resource["^/api/moonshine/decide-file$"]["POST"] = decideFile;
++    server.resource["^/api/moonshine/file-data$"]["GET"] = getFileData;
++    server.resource["^/api/moonshine/file-taken$"]["POST"] = fileTaken;
 +    server.resource["^/api/moonshine/bandwidth$"]["POST"] = setBandwidth;
 +    server.resource["^/api/moonshine/player-order$"]["POST"] = setPlayerOrder;
      server.resource["^/api/otp$"]["POST"] = getOTP;
      server.resource["^/api/apps$"]["GET"] = getApps;
      server.resource["^/api/apps$"]["POST"] = saveApp;
+diff --git a/src/crypto.cpp b/src/crypto.cpp
+index 0f7fbe2c..2ccd08d2 100644
+--- a/src/crypto.cpp
++++ b/src/crypto.cpp
+@@ -33,8 +33,13 @@ namespace crypto {
+       // Expired or not-yet-valid certificates are fine. Sometimes Moonlight is running on embedded devices
+       // that don't have accurate clocks (or haven't yet synchronized by the time Moonlight first runs).
+       // This behavior also matches what GeForce Experience does.
+-      // TODO: Checking for X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY is a temporary workaround to get moonlight-embedded to work on the raspberry pi
+-      case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY:
++      //
++      // Moonshine: X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY used to be accepted here too, as a
++      // workaround for moonlight-embedded on the raspberry pi. That let ANY certificate through,
++      // paired or not: a cert that doesn't chain to one of this host's trusted client certs hits this
++      // exact error, and accepting it defeated the whole check (GHSA-ph75-mgxh-mv57 / CVE-2026-32253).
++      // A cert that genuinely does match a paired client is found directly in the trust store
++      // (X509_V_FLAG_PARTIAL_CHAIN in verify() below), so it never needs this workaround to pass.
+       case X509_V_ERR_CERT_NOT_YET_VALID:
+       case X509_V_ERR_CERT_HAS_EXPIRED:
+         return 1;
 diff --git a/src/crypto.h b/src/crypto.h
 index 350bb5cc..113098e3 100644
 --- a/src/crypto.h
@@ -401,7 +509,7 @@ index 1617b7c6..bcbdfa23 100644
  
  }  // namespace mail
 diff --git a/src/input.cpp b/src/input.cpp
-index 6c03d0d3..f7fd015d 100644
+index 6c03d0d3..bc017298 100644
 --- a/src/input.cpp
 +++ b/src/input.cpp
 @@ -144,6 +144,11 @@ namespace input {
@@ -445,7 +553,97 @@ index 6c03d0d3..f7fd015d 100644
      // If this is an event for a new gamepad, create the gamepad now. Ideally, the client would
      // send a controller arrival instead of this but it's still supported for legacy clients.
      if ((packet->activeGamepadMask & (1 << packet->controllerNumber)) && gamepad.id < 0) {
-@@ -1643,6 +1654,65 @@ namespace input {
+@@ -1571,12 +1582,89 @@ namespace input {
+     }
+   }
+ 
++  /**
++   * @brief Moonshine: the smallest buffer a given input packet type can legitimately be, so a short or
++   * forged packet is dropped before anything reads fields past its actual length. Every passthrough()
++   * and batch() overload above assumes its argument is at least this big; nothing upstream of this
++   * point checked that an attacker-sent packet actually was (GHSA-6w33-pjh7-p77c out-of-bounds read,
++   * GHSA-26q2-58j6-qmvv out-of-bounds write). Returns 0 for a magic this host doesn't recognize.
++   */
++  static std::size_t minimum_size_for(std::uint32_t magic) {
++    switch (magic) {
++      case MOUSE_MOVE_REL_MAGIC_GEN5:
++        return sizeof(NV_REL_MOUSE_MOVE_PACKET);
++      case MOUSE_MOVE_ABS_MAGIC:
++        return sizeof(NV_ABS_MOUSE_MOVE_PACKET);
++      case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5:
++      case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
++        return sizeof(NV_MOUSE_BUTTON_PACKET);
++      case SCROLL_MAGIC_GEN5:
++        return sizeof(NV_SCROLL_PACKET);
++      case SS_HSCROLL_MAGIC:
++        return sizeof(SS_HSCROLL_PACKET);
++      case KEY_DOWN_EVENT_MAGIC:
++      case KEY_UP_EVENT_MAGIC:
++        return sizeof(NV_KEYBOARD_PACKET);
++      case UTF8_TEXT_EVENT_MAGIC:
++        // A packet shorter than the full struct still has a real (if truncated) character in it;
++        // the header's own declared size is clamped against the buffer where it's used, below.
++        return sizeof(NV_INPUT_HEADER) + 1;
++      case MULTI_CONTROLLER_MAGIC_GEN5:
++        return sizeof(NV_MULTI_CONTROLLER_PACKET);
++      case SS_TOUCH_MAGIC:
++        return sizeof(SS_TOUCH_PACKET);
++      case SS_PEN_MAGIC:
++        return sizeof(SS_PEN_PACKET);
++      case SS_CONTROLLER_ARRIVAL_MAGIC:
++        return sizeof(SS_CONTROLLER_ARRIVAL_PACKET);
++      case SS_CONTROLLER_TOUCH_MAGIC:
++        return sizeof(SS_CONTROLLER_TOUCH_PACKET);
++      case SS_CONTROLLER_MOTION_MAGIC:
++        return sizeof(SS_CONTROLLER_MOTION_PACKET);
++      case SS_CONTROLLER_BATTERY_MAGIC:
++        return sizeof(SS_CONTROLLER_BATTERY_PACKET);
++      default:
++        return 0;
++    }
++  }
++
+   /**
+    * @brief Called on the control stream thread to queue an input message.
+    * @param input The input context pointer.
+    * @param input_data The input message.
+    */
+   void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data, const crypto::PERM& permission) {
++    // Moonshine: nothing below this is safe to run on a packet shorter than its type's real size, or
++    // on a magic this host has never heard of (GHSA-6w33-pjh7-p77c, GHSA-26q2-58j6-qmvv). This has to
++    // come before the permission switch too, since that already reads payload->magic.
++    if (input_data.size() < sizeof(NV_INPUT_HEADER)) {
++      return;
++    }
++    {
++      auto header = (PNV_INPUT_HEADER) input_data.data();
++      auto magic = util::endian::little(header->magic);
++      auto needed = minimum_size_for(magic);
++      if (needed == 0 || input_data.size() < needed) {
++        return;
++      }
++      // The Unicode packet's text is variable-length (no padding to the struct's 32-byte max), so its
++      // declared `size` is the only way to know how many of the bytes after it are real text. It has
++      // to agree with how many bytes this packet actually has, or a client could claim more than it
++      // sent and have print()/passthrough() below read past this buffer.
++      if (magic == UTF8_TEXT_EVENT_MAGIC) {
++        auto declared_size = util::endian::big(header->size);
++        // print() and passthrough() below compute the text length as `size - sizeof(magic)`; a size
++        // smaller than that would underflow (both are unsigned) into a huge length.
++        if (declared_size < sizeof(header->magic)) {
++          return;
++        }
++        std::uint64_t declared_total = sizeof(std::uint32_t) + (std::uint64_t) declared_size;
++        if (declared_total > input_data.size()) {
++          return;
++        }
++      }
++    }
++
+     // No input permissions at all
+     if (!(permission & crypto::PERM::_all_inputs)) {
+       return;
+@@ -1643,6 +1731,65 @@ namespace input {
      task_pool.push(passthrough_next_message, input);
    }
  
@@ -553,11 +751,136 @@ index 51a59989..9b9d1773 100644
  #endif
  
    // Create signal handler after logging has been initialized
+diff --git a/src/moonshine_adaptive.h b/src/moonshine_adaptive.h
+new file mode 100644
+index 00000000..2f3402cd
+--- /dev/null
++++ b/src/moonshine_adaptive.h
+@@ -0,0 +1,119 @@
++/**
++ * @file src/moonshine_adaptive.h
++ * @brief Moonshine: adaptive video quality for one stream.
++ *
++ * The viewer's player reports lost video (frames it couldn't rebuild) back to the host. When that
++ * keeps happening the stream is asking for more than the connection carries, so the encoder bitrate
++ * is lowered a step; after a long clean stretch it is raised again, but never back to the level that
++ * just failed (that bouncing is why the player doesn't do this itself). Each change restarts the
++ * encoder, so changes are spaced out.
++ *
++ * The controller only decides: it answers with a "scale" (a share of the bitrate the viewer picked)
++ * and knows nothing about encoders, so it can be tested with a made-up clock.
++ */
++#pragma once
++
++#include <algorithm>
++#include <chrono>
++#include <deque>
++
++namespace moonshine {
++  class adaptive_controller_t {
++  public:
++    using clock = std::chrono::steady_clock;
++    using seconds = std::chrono::duration<double>;
++
++    // Tuning
++    static constexpr double grace_s = 5;  ///< ignore the stream's first seconds: starting up always loses a frame
++    static constexpr double window_s = 2;  ///< losses this close together count as one bad patch
++    static constexpr int events_to_drop = 2;  ///< losses within the window that lower the quality
++    static constexpr double drop_factor = 0.8;
++    static constexpr double min_between_drops_s = 4;
++    static constexpr double min_after_rise_s = 1;  ///< a rise that fails is undone quickly
++    static constexpr double clean_before_rise_s = 12;  ///< quiet this long (and since the last change) before going up
++    static constexpr double rise_factor = 1.12;
++    static constexpr double bad_rise_s = 20;  ///< a loss this soon after going up means that level was too high
++    static constexpr double relax_s = 60;  ///< the "too high" level is forgotten a step at a time after this long quiet
++    static constexpr double min_scale = 0.25;
++
++    explicit adaptive_controller_t(clock::time_point start):
++        start_ {start}, last_change_ {start}, last_loss_ {start}, ceiling_checked_ {start} {
++    }
++
++    /** The video player lost something it couldn't rebuild. */
++    void note_loss(clock::time_point now) {
++      if (secs(start_, now) < grace_s) {
++        return;
++      }
++      losses_.push_back(now);
++      last_loss_ = now;
++    }
++
++    /**
++     * Call often. Returns the new scale (min_scale..1) when the bitrate should change, otherwise a
++     * negative number.
++     */
++    double evaluate(clock::time_point now) {
++      while (!losses_.empty() && secs(losses_.front(), now) > window_s) {
++        losses_.pop_front();
++      }
++      const auto since_change = secs(last_change_, now);
++      const auto since_loss = secs(last_loss_, now);
++
++      // A long quiet spell: the level that failed before may work now
++      if (since_loss >= relax_s && secs(ceiling_checked_, now) >= relax_s) {
++        ceiling_ = std::min(1.0, ceiling_ + 0.1);
++        ceiling_checked_ = now;
++      }
++
++      if (static_cast<int>(losses_.size()) >= events_to_drop && since_change >= (rose_last_ ? min_after_rise_s : min_between_drops_s)) {
++        auto lower = std::max(min_scale, scale_ * drop_factor);
++        if (rose_last_ && since_change < bad_rise_s) {
++          // That level was too high: go back to the one before it, and don't try it again for a while
++          ceiling_ = std::min(ceiling_, scale_before_rise_);
++          lower = scale_before_rise_;
++        }
++        losses_.clear();
++        if (lower >= scale_ - 1e-9) {
++          return -1;  // already as low as it goes
++        }
++        scale_ = std::max(min_scale, std::min(lower, ceiling_));
++        last_change_ = now;
++        rose_last_ = false;
++        return scale_;
++      }
++
++      if (losses_.empty() && since_loss >= clean_before_rise_s && since_change >= clean_before_rise_s && scale_ < ceiling_ - 1e-9) {
++        scale_before_rise_ = scale_;
++        scale_ = std::min(ceiling_, scale_ * rise_factor);
++        last_change_ = now;
++        rose_last_ = true;
++        return scale_;
++      }
++      return -1;
++    }
++
++    double scale() const {
++      return scale_;
++    }
++
++    double ceiling() const {
++      return ceiling_;
++    }
++
++  private:
++    static double secs(clock::time_point from, clock::time_point to) {
++      return std::chrono::duration_cast<seconds>(to - from).count();
++    }
++
++    clock::time_point start_;
++    clock::time_point last_change_;
++    clock::time_point last_loss_;
++    clock::time_point ceiling_checked_;
++    std::deque<clock::time_point> losses_;
++    double scale_ = 1.0;
++    double ceiling_ = 1.0;
++    double scale_before_rise_ = 1.0;
++    bool rose_last_ = false;
++  };
++}  // namespace moonshine
 diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
-index e6df1c0b..61bc6939 100644
+index e6df1c0b..4d03cafe 100644
 --- a/src/nvhttp.cpp
 +++ b/src/nvhttp.cpp
-@@ -6,9 +6,18 @@
+@@ -6,9 +6,19 @@
  #define BOOST_BIND_GLOBAL_PLACEHOLDERS
  
  // standard includes
@@ -565,6 +888,7 @@ index e6df1c0b..61bc6939 100644
 +#include <cctype>
 +#include <condition_variable>
  #include <filesystem>
++#include <fstream>
 +#include <list>
 +#include <mutex>
  #include <string>
@@ -576,7 +900,7 @@ index e6df1c0b..61bc6939 100644
  #include <string>
  
  // lib includes
-@@ -251,6 +260,7 @@ namespace nvhttp {
+@@ -251,6 +261,7 @@ namespace nvhttp {
          named_cert_node["enable_legacy_ordering"] = named_cert_p->enable_legacy_ordering;
          named_cert_node["allow_client_commands"] = named_cert_p->allow_client_commands;
          named_cert_node["always_use_virtual_display"] = named_cert_p->always_use_virtual_display;
@@ -584,7 +908,7 @@ index e6df1c0b..61bc6939 100644
  
          // Add "do" commands if available.
          if (!named_cert_p->do_cmds.empty()) {
-@@ -330,6 +340,7 @@ namespace nvhttp {
+@@ -330,6 +341,7 @@ namespace nvhttp {
              named_cert_p->enable_legacy_ordering = true;
              named_cert_p->allow_client_commands = true;
              named_cert_p->always_use_virtual_display = false;
@@ -592,7 +916,7 @@ index e6df1c0b..61bc6939 100644
              client.named_devices.emplace_back(named_cert_p);
            }
          }
-@@ -348,6 +359,7 @@ namespace nvhttp {
+@@ -348,6 +360,7 @@ namespace nvhttp {
          named_cert_p->enable_legacy_ordering = el.value("enable_legacy_ordering", true);
          named_cert_p->allow_client_commands = el.value("allow_client_commands", true);
          named_cert_p->always_use_virtual_display = el.value("always_use_virtual_display", false);
@@ -600,7 +924,15 @@ index e6df1c0b..61bc6939 100644
          // Load command entries for "do" and "undo" keys.
          named_cert_p->do_cmds = extract_command_entries(el, "do");
          named_cert_p->undo_cmds = extract_command_entries(el, "undo");
-@@ -625,7 +637,12 @@ namespace nvhttp {
+@@ -460,6 +473,7 @@ namespace nvhttp {
+     launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
+     launch_session->virtual_display = util::from_view(get_arg(args, "virtualDisplay", "0")) || named_cert_p->always_use_virtual_display;
+     launch_session->scale_factor = util::from_view(get_arg(args, "scaleFactor", "100"));
++    launch_session->moonshine_adaptive = util::from_view(get_arg(args, "adaptiveBitrate", "0")) != 0;
+ 
+     launch_session->client_do_cmds = named_cert_p->do_cmds;
+     launch_session->client_undo_cmds = named_cert_p->undo_cmds;
+@@ -625,7 +639,12 @@ namespace nvhttp {
        named_cert_p->cert = std::move(client.cert);
        named_cert_p->uuid = uuid_util::uuid_t::generate().string();
        // If the device is the first one paired with the server, assign full permission.
@@ -614,7 +946,7 @@ index e6df1c0b..61bc6939 100644
          named_cert_p->perm = PERM::_all;
        } else {
          named_cert_p->perm = PERM::_default;
-@@ -634,6 +651,7 @@ namespace nvhttp {
+@@ -634,6 +653,7 @@ namespace nvhttp {
        named_cert_p->enable_legacy_ordering = true;
        named_cert_p->allow_client_commands = true;
        named_cert_p->always_use_virtual_display = false;
@@ -622,7 +954,7 @@ index e6df1c0b..61bc6939 100644
  
        auto it = map_id_sess.find(client.uniqueID);
        map_id_sess.erase(it);
-@@ -746,9 +764,14 @@ namespace nvhttp {
+@@ -746,9 +766,14 @@ namespace nvhttp {
          sess.client.cert = util::from_hex_vec(get_arg(args, "clientcert"), true);
  
          BOOST_LOG(debug) << sess.client.cert;
@@ -637,29 +969,52 @@ index e6df1c0b..61bc6939 100644
  
          auto it = args.find("otpauth");
          if (it != std::end(args)) {
-@@ -852,7 +875,20 @@ namespace nvhttp {
+@@ -827,7 +852,7 @@ namespace nvhttp {
+     }
+   }
+ 
+-  bool pin(std::string pin, std::string name) {
++  bool pin(std::string pin, std::string name, std::string request_id) {
+     pt::ptree tree;
+     if (map_id_sess.empty()) {
+       return false;
+@@ -852,7 +877,34 @@ namespace nvhttp {
        return false;
      }
  
 -    auto &sess = std::begin(map_id_sess)->second;
-+    // Moonshine: give the PIN to the newest attempt that is waiting for one. Attempts a device gave
-+    // up on stay in the map, and the first entry may be one of those.
-+    pair_session_t *newest = nullptr;
++    // Moonshine: used to always hand the PIN to the newest attempt waiting for one, with nothing
++    // tying it to the request the caller actually meant. With two pairing attempts open at once (an
++    // attacker can start one any time), an operator entering the PIN for their own device could have
++    // it silently applied to the attacker's instead (GHSA-36ff-frg7-492f). A caller that knows which
++    // one it means (every Moonshine pairing flow does, from /api/moonshine/pending's "pairing" list)
++    // passes its id and only that exact session is used. A caller that doesn't (hand-typed PINs from
++    // Apollo's own tools) is only let through when there's no ambiguity: exactly one attempt waiting.
++    pair_session_t *target = nullptr;
++    int waiting_count = 0;
 +    for (auto &[id, candidate] : map_id_sess) {
 +      auto &waiting = candidate.async_insert_pin.response;
 +      bool waiting_for_pin = (waiting.has_left() && waiting.left()) || (waiting.has_right() && waiting.right());
-+      if (waiting_for_pin && (!newest || candidate.created > newest->created)) {
-+        newest = &candidate;
++      if (!waiting_for_pin) {
++        continue;
++      }
++      ++waiting_count;
++      if (!request_id.empty()) {
++        if (std::to_string(candidate.created.time_since_epoch().count()) == request_id) {
++          target = &candidate;
++        }
++      } else if (!target || candidate.created > target->created) {
++        target = &candidate;
 +      }
 +    }
-+    if (!newest) {
++    if (!target || (request_id.empty() && waiting_count > 1)) {
 +      return false;
 +    }
-+    auto &sess = *newest;
++    auto &sess = *target;
      getservercert(sess, tree, pin);
  
      if (!name.empty()) {
-@@ -1025,6 +1061,7 @@ namespace nvhttp {
+@@ -1025,6 +1077,7 @@ namespace nvhttp {
        named_cert_node["enable_legacy_ordering"] = named_cert->enable_legacy_ordering;
        named_cert_node["allow_client_commands"] = named_cert->allow_client_commands;
        named_cert_node["always_use_virtual_display"] = named_cert->always_use_virtual_display;
@@ -667,7 +1022,7 @@ index e6df1c0b..61bc6939 100644
  
        // Add "do" commands if available
        if (!named_cert->do_cmds.empty()) {
-@@ -1065,6 +1102,24 @@ namespace nvhttp {
+@@ -1065,6 +1118,24 @@ namespace nvhttp {
      return named_cert_nodes;
    }
  
@@ -692,7 +1047,7 @@ index e6df1c0b..61bc6939 100644
    void applist(resp_https_t response, req_https_t request) {
      print_req<SunshineHTTPS>(request);
  
-@@ -1147,6 +1202,429 @@ namespace nvhttp {
+@@ -1147,6 +1218,730 @@ namespace nvhttp {
  
    }
  
@@ -877,6 +1232,139 @@ index e6df1c0b..61bc6939 100644
 +    return false;
 +  }
 +
++  // Moonshine: a paired device sends this PC's user a file (POST /moonshine/file/offer over HTTPS, so only
++  // a paired device with the "upload files" permission can). Moonshine on this PC asks "X wants to send
++  // you photo.png: Accept / Decline"; on Accept the sender uploads it in pieces into a holding folder, and
++  // Moonshine then copies it to the user's Downloads (the host runs as a service and can't write there).
++  namespace file_box {
++    using namespace std::chrono_literals;
++    constexpr auto WAIT_TTL = 2min;  ///< waiting for the user's answer
++    constexpr auto IDLE_TTL = 2min;  ///< accepted, but no piece arrived for this long
++    constexpr auto DONE_TTL = 15min;  ///< finished, waiting for Moonshine to take it
++    constexpr std::uint64_t MAX_SIZE = 64ull << 30;  ///< 64 GB
++    constexpr std::size_t MAX_CHUNK = 8u << 20;  ///< 8 MB per piece
++    constexpr std::uint64_t KEEP_FREE = 1ull << 30;  ///< never fill the disk: leave 1 GB
++
++    struct file_t {
++      std::string id;
++      std::string name;  ///< file name only, made safe
++      std::string from;  ///< the sending device's name
++      std::string uuid;  ///< the sending device
++      std::uint64_t size = 0;
++      std::uint64_t received = 0;
++      std::chrono::steady_clock::time_point created;
++      std::chrono::steady_clock::time_point touched;
++      int decision = 0;  // 0 waiting, 1 accepted, -1 declined
++      bool done = false;
++    };
++
++    std::mutex mtx;
++    std::list<file_t> files;
++
++    std::filesystem::path dir() {
++      return platf::appdata() / "incoming";
++    }
++
++    std::filesystem::path part(const std::string &id) {
++      return dir() / (id + ".part");
++    }
++
++    void discard(const file_t &f) {
++      std::error_code ec;
++      std::filesystem::remove(part(f.id), ec);
++    }
++
++    void prune(std::chrono::steady_clock::time_point now) {
++      files.remove_if([&](const file_t &f) {
++        const bool expired = f.decision == 0  ? now - f.created > WAIT_TTL :
++                             f.decision < 0   ? now - f.created > WAIT_TTL :
++                             f.done           ? now - f.touched > DONE_TTL :
++                                                now - f.touched > IDLE_TTL;
++        if (expired) {
++          discard(f);
++        }
++        return expired;
++      });
++    }
++
++    /** Just a file name: no folders, nothing Windows refuses, not too long. */
++    std::string safe_name(std::string name) {
++      auto slash = name.find_last_of("/\\");
++      if (slash != std::string::npos) {
++        name = name.substr(slash + 1);
++      }
++      std::string out;
++      for (unsigned char c : name) {
++        if (c < 32 || std::string_view("<>:\"/\\|?*").find((char) c) != std::string_view::npos) {
++          out += '_';
++        } else {
++          out += (char) c;
++        }
++      }
++      while (!out.empty() && (out.back() == '.' || out.back() == ' ')) {
++        out.pop_back();
++      }
++      while (!out.empty() && (out.front() == '.' || out.front() == ' ')) {
++        out.erase(out.begin());
++      }
++      if (out.size() > 180) {
++        out = out.substr(out.size() - 180);  // keep the end: the extension matters most
++      }
++      return out.empty() ? "file" : out;
++    }
++  }  // namespace file_box
++
++  bool decide_file(const std::string &id, bool accept) {
++    std::lock_guard lg {file_box::mtx};
++    for (auto &f : file_box::files) {
++      if (f.id == id && f.decision == 0) {
++        f.decision = accept ? 1 : -1;
++        f.touched = std::chrono::steady_clock::now();
++        if (accept) {
++          std::error_code ec;
++          std::filesystem::create_directories(file_box::dir(), ec);
++          std::ofstream(file_box::part(id), std::ios::binary | std::ios::trunc);
++        }
++        return true;
++      }
++    }
++    return false;
++  }
++
++  bool read_file_piece(const std::string &id, std::uint64_t offset, std::string &out) {
++    std::lock_guard lg {file_box::mtx};
++    for (auto &f : file_box::files) {
++      if (f.id == id && f.done) {
++        f.touched = std::chrono::steady_clock::now();
++        std::ifstream in(file_box::part(id), std::ios::binary);
++        if (!in || offset > f.size) {
++          return false;
++        }
++        in.seekg((std::streamoff) offset);
++        const auto n = (std::size_t) std::min<std::uint64_t>(file_box::MAX_CHUNK, f.size - offset);
++        out.resize(n);
++        in.read(out.data(), (std::streamsize) n);
++        out.resize((std::size_t) in.gcount());
++        return true;
++      }
++    }
++    return false;
++  }
++
++  bool file_taken(const std::string &id) {
++    std::lock_guard lg {file_box::mtx};
++    bool found = false;
++    file_box::files.remove_if([&](const file_box::file_t &f) {
++      if (f.id != id) {
++        return false;
++      }
++      file_box::discard(f);
++      found = true;
++      return true;
++    });
++    return found;
++  }
++
 +  nlohmann::json pending_requests() {
 +    auto now = std::chrono::steady_clock::now();
 +    auto age = [&](auto since) {
@@ -939,7 +1427,21 @@ index e6df1c0b..61bc6939 100644
 +      }
 +    }
 +
-+    return {{"streams", streams}, {"pairing", pairing}, {"offers", offers}, {"invites", invites}};
++    // Files paired devices are sending: waiting for an answer, arriving, or here and waiting to be taken
++    nlohmann::json files = nlohmann::json::array();
++    {
++      std::lock_guard lg {file_box::mtx};
++      file_box::prune(now);
++      for (const auto &f : file_box::files) {
++        if (f.decision < 0) {
++          continue;
++        }
++        const char *state = f.decision == 0 ? "waiting" : f.done ? "done" : "receiving";
++        files.push_back({{"id", f.id}, {"name", f.name}, {"from", f.from}, {"uuid", f.uuid}, {"size", f.size}, {"received", f.received}, {"state", state}, {"age", age(f.created)}});
++      }
++    }
++
++    return {{"streams", streams}, {"pairing", pairing}, {"offers", offers}, {"invites", invites}, {"files", files}};
 +  }
 +
 +  bool decide_stream_request(std::uint64_t id, bool allow) {
@@ -1119,10 +1621,164 @@ index e6df1c0b..61bc6939 100644
 +    moonshine_reply<T>(response, SimpleWeb::StatusCode::client_error_not_found, {{"error", "unknown request"}});
 +  }
 +
++  /// The device behind this HTTPS request, if it may send files to this PC; otherwise answers and returns null.
++  crypto::named_cert_t *file_sender(resp_https_t response, req_https_t request) {
++    auto named_cert_p = get_verified_cert(request);
++    if (!config::sunshine.moonshine_managed) {
++      not_found<SunshineHTTPS>(response, request);
++      return nullptr;
++    }
++    if (!named_cert_p || !(named_cert_p->perm & PERM::file_upload)) {
++      moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::client_error_forbidden, {{"error", "not-allowed"}});
++      return nullptr;
++    }
++    return named_cert_p;
++  }
++
++  /// POST /moonshine/file/offer?name=photo.png&size=12345: ask this PC's user to accept a file.
++  void moonshine_file_offer(resp_https_t response, req_https_t request) {
++    auto sender = file_sender(response, request);
++    if (!sender) {
++      return;
++    }
++    if (!moonshine_listening()) {
++      moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::server_error_service_unavailable, {{"error", "closed"}});
++      return;
++    }
++    auto args = request->parse_query_string();
++    std::uint64_t size = 0;
++    try {
++      size = std::stoull(get_arg(args, "size", "0"));
++    } catch (...) {
++      size = 0;
++    }
++    if (size == 0 || size > file_box::MAX_SIZE) {
++      moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::client_error_bad_request, {{"error", "bad-size"}});
++      return;
++    }
++    {
++      std::error_code ec;
++      std::filesystem::create_directories(file_box::dir(), ec);
++      auto space = std::filesystem::space(file_box::dir(), ec);
++      if (!ec && space.available < size + file_box::KEEP_FREE) {
++        moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::client_error_payload_too_large, {{"error", "no-space"}});
++        return;
++      }
++    }
++
++    file_box::file_t f;
++    f.id = uuid_util::uuid_t::generate().string();
++    f.name = file_box::safe_name(get_arg(args, "name", "file"));
++    f.from = sender->name;
++    f.uuid = sender->uuid;
++    f.size = size;
++    f.created = f.touched = std::chrono::steady_clock::now();
++    {
++      std::lock_guard lg {file_box::mtx};
++      file_box::prune(f.created);
++      auto mine = std::count_if(file_box::files.begin(), file_box::files.end(), [&](const auto &o) {
++        return o.uuid == f.uuid && !o.done;
++      });
++      if (mine >= 8 || file_box::files.size() >= 32) {
++        moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::client_error_too_many_requests, {{"error", "busy"}});
++        return;
++      }
++      file_box::files.push_back(f);
++    }
++    BOOST_LOG(info) << "File ["sv << f.name << "] ("sv << f.size << " bytes) from ["sv << f.from << "] is waiting for the host's user"sv;
++    moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::success_ok, {{"id", f.id}});
++  }
++
++  /// GET /moonshine/file/status?id=...: answered yet, and how much has arrived.
++  void moonshine_file_status(resp_https_t response, req_https_t request) {
++    auto sender = file_sender(response, request);
++    if (!sender) {
++      return;
++    }
++    auto id = get_arg(request->parse_query_string(), "id", "");
++    std::lock_guard lg {file_box::mtx};
++    file_box::prune(std::chrono::steady_clock::now());
++    for (const auto &f : file_box::files) {
++      if (f.id == id && f.uuid == sender->uuid) {
++        const char *status = f.decision == 0 ? "pending" : f.decision < 0 ? "declined" : f.done ? "done" : "accepted";
++        moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::success_ok, {{"status", status}, {"received", f.received}});
++        return;
++      }
++    }
++    moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::client_error_not_found, {{"error", "unknown"}});
++  }
++
++  /// POST /moonshine/file/chunk?id=...&offset=N, the piece as the body: pieces arrive in order.
++  void moonshine_file_chunk(resp_https_t response, req_https_t request) {
++    auto sender = file_sender(response, request);
++    if (!sender) {
++      return;
++    }
++    auto args = request->parse_query_string();
++    auto id = get_arg(args, "id", "");
++    std::uint64_t offset = 0;
++    try {
++      offset = std::stoull(get_arg(args, "offset", "0"));
++    } catch (...) {
++      offset = ~0ull;
++    }
++    const std::string body = request->content.string();
++    std::lock_guard lg {file_box::mtx};
++    for (auto &f : file_box::files) {
++      if (f.id != id || f.uuid != sender->uuid) {
++        continue;
++      }
++      if (f.decision != 1 || f.done) {
++        moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::client_error_conflict, {{"error", f.decision < 0 ? "declined" : "not-accepted"}});
++        return;
++      }
++      if (offset != f.received || body.empty() || body.size() > file_box::MAX_CHUNK || f.received + body.size() > f.size) {
++        moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::client_error_bad_request, {{"error", "bad-piece"}, {"received", f.received}});
++        return;
++      }
++      std::ofstream out(file_box::part(f.id), std::ios::binary | std::ios::app);
++      out.write(body.data(), (std::streamsize) body.size());
++      out.close();
++      if (!out) {
++        moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::server_error_internal_server_error, {{"error", "write-failed"}});
++        return;
++      }
++      f.received += body.size();
++      f.touched = std::chrono::steady_clock::now();
++      if (f.received == f.size) {
++        f.done = true;
++        BOOST_LOG(info) << "File ["sv << f.name << "] from ["sv << f.from << "] arrived"sv;
++      }
++      moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::success_ok, {{"received", f.received}, {"done", f.done}});
++      return;
++    }
++    moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::client_error_not_found, {{"error", "unknown"}});
++  }
++
++  /// POST /moonshine/file/cancel?id=...: the sender gave up.
++  void moonshine_file_cancel(resp_https_t response, req_https_t request) {
++    auto sender = file_sender(response, request);
++    if (!sender) {
++      return;
++    }
++    auto id = get_arg(request->parse_query_string(), "id", "");
++    std::lock_guard lg {file_box::mtx};
++    bool found = false;
++    file_box::files.remove_if([&](const file_box::file_t &f) {
++      if (f.id != id || f.uuid != sender->uuid || f.done) {
++        return false;
++      }
++      file_box::discard(f);
++      found = true;
++      return true;
++    });
++    moonshine_reply<SunshineHTTPS>(response, found ? SimpleWeb::StatusCode::success_ok : SimpleWeb::StatusCode::client_error_not_found, {{"ok", found}});
++  }
++
    void launch(bool &host_audio, resp_https_t response, req_https_t request) {
      print_req<SunshineHTTPS>(request);
  
-@@ -1702,11 +2180,15 @@ namespace nvhttp {
+@@ -1702,15 +2497,23 @@ namespace nvhttp {
      https_server.resource["^/pair$"]["GET"] = pair<SunshineHTTPS>;
      https_server.resource["^/applist$"]["GET"] = applist;
      https_server.resource["^/appasset$"]["GET"] = appasset;
@@ -1142,7 +1798,15 @@ index e6df1c0b..61bc6939 100644
      };
      https_server.resource["^/cancel$"]["GET"] = cancel;
      https_server.resource["^/actions/clipboard$"]["GET"] = getClipboard;
-@@ -1719,6 +2201,11 @@ namespace nvhttp {
+     https_server.resource["^/actions/clipboard$"]["POST"] = setClipboard;
++    https_server.resource["^/moonshine/file/offer$"]["POST"] = moonshine_file_offer;
++    https_server.resource["^/moonshine/file/status$"]["GET"] = moonshine_file_status;
++    https_server.resource["^/moonshine/file/chunk$"]["POST"] = moonshine_file_chunk;
++    https_server.resource["^/moonshine/file/cancel$"]["POST"] = moonshine_file_cancel;
+ 
+     https_server.config.reuse_address = true;
+     https_server.config.address = net::af_to_any_address_string(address_family);
+@@ -1719,6 +2522,11 @@ namespace nvhttp {
      http_server.default_resource["GET"] = not_found<SimpleWeb::HTTP>;
      http_server.resource["^/serverinfo$"]["GET"] = serverinfo<SimpleWeb::HTTP>;
      http_server.resource["^/pair$"]["GET"] = pair<SimpleWeb::HTTP>;
@@ -1154,7 +1818,7 @@ index e6df1c0b..61bc6939 100644
  
      http_server.config.reuse_address = true;
      http_server.config.address = net::af_to_any_address_string(address_family);
-@@ -1814,7 +2301,8 @@ namespace nvhttp {
+@@ -1814,7 +2622,8 @@ namespace nvhttp {
      const crypto::PERM newPerm,
      const bool enable_legacy_ordering,
      const bool allow_client_commands,
@@ -1164,7 +1828,7 @@ index e6df1c0b..61bc6939 100644
    ) {
      find_and_udpate_session_info(uuid, name, newPerm);
  
-@@ -1831,6 +2319,7 @@ namespace nvhttp {
+@@ -1831,6 +2640,7 @@ namespace nvhttp {
          named_cert_p->enable_legacy_ordering = enable_legacy_ordering;
          named_cert_p->allow_client_commands = allow_client_commands;
          named_cert_p->always_use_virtual_display = always_use_virtual_display;
@@ -1173,7 +1837,7 @@ index e6df1c0b..61bc6939 100644
          return true;
        }
 diff --git a/src/nvhttp.h b/src/nvhttp.h
-index 6d2c6e06..04112672 100644
+index 6d2c6e06..15bed2ea 100644
 --- a/src/nvhttp.h
 +++ b/src/nvhttp.h
 @@ -121,6 +121,10 @@ namespace nvhttp {
@@ -1187,7 +1851,26 @@ index 6d2c6e06..04112672 100644
      /**
       * @brief used as a security measure to prevent out of order calls
       */
-@@ -280,6 +284,45 @@ namespace nvhttp {
+@@ -188,12 +192,16 @@ namespace nvhttp {
+    * @brief Compare the user supplied pin to the Moonlight pin.
+    * @param pin The user supplied pin.
+    * @param name The user supplied name.
++   * @param request_id Moonshine: which pending pairing attempt this PIN is for, as given in
++   *                    /api/moonshine/pending's "pairing" list. Leave empty only when there is just
++   *                    one attempt waiting; with more than one waiting, an empty id is refused rather
++   *                    than guessed (see pin()'s own comment).
+    * @return `true` if the pin is correct, `false` otherwise.
+    * @examples
+-   * bool pin_status = nvhttp::pin("1234", "laptop");
++   * bool pin_status = nvhttp::pin("1234", "laptop", "");
+    * @examples_end
+    */
+-  bool pin(std::string pin, std::string name);
++  bool pin(std::string pin, std::string name, std::string request_id = "");
+ 
+   std::string request_otp(const std::string& passphrase, const std::string& deviceName);
+ 
+@@ -280,6 +288,54 @@ namespace nvhttp {
      const crypto::PERM newPerm,
      const bool enable_legacy_ordering,
      const bool allow_client_commands,
@@ -1233,6 +1916,15 @@ index 6d2c6e06..04112672 100644
 +   * @return Whether the invite was still waiting.
 +   */
 +  bool decide_invite(const std::string &id, bool join);
++
++  /** Moonshine: accept or decline a file a paired device wants to send (pending_requests().files). */
++  bool decide_file(const std::string &id, bool accept);
++
++  /** Moonshine: up to 8 MB of a file that has arrived, from `offset`. False if there is no such file. */
++  bool read_file_piece(const std::string &id, std::uint64_t offset, std::string &out);
++
++  /** Moonshine: the app copied the file to the user's Downloads; delete the host's copy. */
++  bool file_taken(const std::string &id);
  }  // namespace nvhttp
 diff --git a/src/platform/windows/audio.cpp b/src/platform/windows/audio.cpp
 index b6853e4a..db2e52c8 100644
@@ -1843,7 +2535,7 @@ index 9d182c7f..6694cd4d 100644
  WINUSERAPI HSYNTHETICPOINTERDEVICE WINAPI CreateSyntheticPointerDevice(POINTER_INPUT_TYPE pointerType, ULONG maxCount, POINTER_FEEDBACK_MODE mode);
  WINUSERAPI BOOL WINAPI InjectSyntheticPointerInput(HSYNTHETICPOINTERDEVICE device, CONST POINTER_TYPE_INFO *pointerInfo, UINT32 count);
 diff --git a/src/rtsp.cpp b/src/rtsp.cpp
-index c81687de..cff7c314 100644
+index c81687de..f7e2292e 100644
 --- a/src/rtsp.cpp
 +++ b/src/rtsp.cpp
 @@ -627,6 +627,35 @@ namespace rtsp_stream {
@@ -1905,11 +2597,12 @@ index c81687de..cff7c314 100644
  
        // Hack: Restore bitrate for warp mode
        size_t warp_factor = std::round((float)config.monitor.framerate * 1000 / session.fps);
-@@ -1130,6 +1168,10 @@ namespace rtsp_stream {
+@@ -1130,6 +1168,11 @@ namespace rtsp_stream {
        BOOST_LOG(debug) << "Final adjusted video encoding bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
        config.monitor.bitrate = configuredBitrateKbps;
      }
 +    config.moonshineBaseKbps = config.monitor.bitrate;
++    config.moonshineAdaptive = session.moonshine_adaptive;
 +    if (config.moonshineSelectedKbps <= 0) {
 +      config.moonshineSelectedKbps = config.monitor.bitrate;
 +    }
@@ -1917,7 +2610,7 @@ index c81687de..cff7c314 100644
      if (config.monitor.videoFormat == 1 && video::active_hevc_mode == 1) {
        BOOST_LOG(warning) << "HEVC is disabled, yet the client requested HEVC"sv;
 diff --git a/src/rtsp.h b/src/rtsp.h
-index c426bd93..a2173868 100644
+index c426bd93..095a194c 100644
 --- a/src/rtsp.h
 +++ b/src/rtsp.h
 @@ -8,6 +8,8 @@
@@ -1949,7 +2642,15 @@ index c426bd93..a2173868 100644
  namespace rtsp_stream {
    constexpr auto RTSP_SETUP_PORT = 21;
  
-@@ -83,6 +98,13 @@ namespace rtsp_stream {
+@@ -49,6 +64,7 @@ namespace rtsp_stream {
+     bool enable_hdr;
+     bool enable_sops;
+     bool virtual_display;
++    bool moonshine_adaptive = false;  // Moonshine: lower and raise the video bitrate by itself as the connection allows
+     uint32_t scale_factor;
+ 
+     std::optional<crypto::cipher::gcm_t> rtsp_cipher;
+@@ -83,6 +99,13 @@ namespace rtsp_stream {
    std::list<std::string>
    get_all_session_uuids();
  
@@ -1964,7 +2665,7 @@ index c426bd93..a2173868 100644
     * @brief Terminates all running streaming sessions.
     */
 diff --git a/src/stream.cpp b/src/stream.cpp
-index bceeb93d..175e7c8f 100644
+index bceeb93d..08507008 100644
 --- a/src/stream.cpp
 +++ b/src/stream.cpp
 @@ -4,9 +4,12 @@
@@ -1980,7 +2681,15 @@ index bceeb93d..175e7c8f 100644
  
  // lib includes
  #include <boost/endian/arithmetic.hpp>
-@@ -423,6 +426,14 @@ namespace stream {
+@@ -30,6 +33,7 @@ extern "C" {
+ #include "platform/common.h"
+ #include "process.h"
+ #include "stream.h"
++#include "moonshine_adaptive.h"
+ #include "sync.h"
+ #include "system_tray.h"
+ #include "thread_safe.h"
+@@ -423,6 +427,19 @@ namespace stream {
      safe::signal_t controlEnd;
  
      std::atomic<session::state_e> state;
@@ -1992,10 +2701,15 @@ index bceeb93d..175e7c8f 100644
 +    // Moonshine: the encoder bitrate this stream was last given (kbps), and where new ones arrive
 +    std::atomic<int> bitrate_kbps {0};
 +    safe::mail_raw_t::event_t<int> bitrate_events;
++
++    // Moonshine: adaptive quality. The share of the viewer's bitrate in use (read when the bitrates are shared out),
++    // and the controller that decides it (made on the first control packet; only the control thread touches it)
++    std::atomic<double> adaptive_scale {1.0};
++    std::unique_ptr<moonshine::adaptive_controller_t> adaptive;
    };
  
    /**
-@@ -561,6 +572,10 @@ namespace stream {
+@@ -561,6 +578,10 @@ namespace stream {
        return;
      }
  
@@ -2006,7 +2720,21 @@ index bceeb93d..175e7c8f 100644
      auto cb = _map_type_cb.find(type);
      if (cb == std::end(_map_type_cb)) {
        BOOST_LOG(debug)
-@@ -793,6 +808,58 @@ namespace stream {
+@@ -593,6 +614,13 @@ namespace stream {
+           {
+             net::packet_t packet {event.packet};
+ 
++            // Moonshine: a packet shorter than the type field underflowed dataLength - sizeof(type)
++            // (both unsigned) into a huge payload length, reading far past the buffer
++            // (GHSA-c428-87f8-rrv5). Anything that short carries no usable control message anyway.
++            if (packet->dataLength < sizeof(std::uint16_t)) {
++              break;
++            }
++
+             auto type = *(std::uint16_t *) packet->data;
+             std::string_view payload {(char *) packet->data + sizeof(type), packet->dataLength - sizeof(type)};
+ 
+@@ -793,6 +821,58 @@ namespace stream {
     * @param msg The message to pass.
     * @return 0 on success.
     */
@@ -2065,7 +2793,67 @@ index bceeb93d..175e7c8f 100644
    int send_feedback_msg(session_t *session, platf::gamepad_feedback_msg_t &msg) {
      if (!session->control.peer) {
        BOOST_LOG(warning) << "Couldn't send gamepad feedback data, still waiting for PING from Moonlight"sv;
-@@ -998,7 +1065,8 @@ namespace stream {
+@@ -927,9 +1007,33 @@ namespace stream {
+     return 0;
+   }
+ 
++  /**
++   * Moonshine: feed the adaptive-quality controller. `lost` says the viewer just reported lost video; every
++   * control packet also gives it the chance to act on the quiet (raising the quality again).
++   */
++  static void adaptive_step(session_t *session, bool lost) {
++    if (!session->config.moonshineAdaptive) {
++      return;
++    }
++    const auto now = moonshine::adaptive_controller_t::clock::now();
++    if (!session->adaptive) {
++      session->adaptive = std::make_unique<moonshine::adaptive_controller_t>(now);
++    }
++    if (lost) {
++      session->adaptive->note_loss(now);
++    }
++    const auto scale = session->adaptive->evaluate(now);
++    if (scale > 0) {
++      BOOST_LOG(info) << "Moonshine: adaptive quality for ["sv << session->device_name << "] is now "sv << (int) std::lround(scale * 100) << "% of what the viewer picked"sv;
++      session->adaptive_scale = scale;
++      stream::session::rebalance_bitrate();
++    }
++  }
++
+   void controlBroadcastThread(control_server_t *server) {
+     server->map(packetTypes[IDX_PERIODIC_PING], [](session_t *session, const std::string_view &payload) {
+       BOOST_LOG(verbose) << "type [IDX_PERIODIC_PING]"sv;
++      adaptive_step(session, false);
+     });
+ 
+     server->map(packetTypes[IDX_START_A], [&](session_t *session, const std::string_view &payload) {
+@@ -947,6 +1051,9 @@ namespace stream {
+ 
+       auto lastGoodFrame = stats[3];
+ 
++      // A handful of lost packets is normal (the error correction rebuilds them); a lot in one report is a bad patch
++      adaptive_step(session, count >= 8);
++
+       BOOST_LOG(verbose)
+         << "type [IDX_LOSS_STATS]"sv << std::endl
+         << "---begin stats---" << std::endl
+@@ -959,6 +1066,7 @@ namespace stream {
+     server->map(packetTypes[IDX_REQUEST_IDR_FRAME], [&](session_t *session, const std::string_view &payload) {
+       BOOST_LOG(debug) << "type [IDX_REQUEST_IDR_FRAME]"sv;
+ 
++      adaptive_step(session, true);
+       session->video.idr_events->raise(true);
+     });
+ 
+@@ -972,6 +1080,7 @@ namespace stream {
+         << "firstFrame [" << firstFrame << ']' << std::endl
+         << "lastFrame [" << lastFrame << ']';
+ 
++      adaptive_step(session, true);
+       session->video.invalidate_ref_frames_events->raise(std::make_pair(firstFrame, lastFrame));
+     });
+ 
+@@ -998,7 +1107,8 @@ namespace stream {
          std::copy(payload.end() - 16, payload.end(), std::begin(iv));
        }
  
@@ -2075,7 +2863,7 @@ index bceeb93d..175e7c8f 100644
      });
  
      server->map(packetTypes[IDX_EXEC_SERVER_CMD], [server](session_t *session, const std::string_view &payload) {
-@@ -1112,6 +1180,7 @@ namespace stream {
+@@ -1112,6 +1222,7 @@ namespace stream {
        // IDX_INPUT_DATA callback will attempt to decrypt unencrypted data, therefore we need pass it directly
        if (type == packetTypes[IDX_INPUT_DATA]) {
          plaintext.erase(std::begin(plaintext), std::begin(plaintext) + 4);
@@ -2083,7 +2871,7 @@ index bceeb93d..175e7c8f 100644
          input::passthrough(session->input, std::move(plaintext), session->permission);
        } else {
          server->call(type, session, next_payload, true);
-@@ -1956,6 +2025,27 @@ namespace stream {
+@@ -1956,6 +2067,27 @@ namespace stream {
        return session.device_uuid;
      }
  
@@ -2111,7 +2899,7 @@ index bceeb93d..175e7c8f 100644
      bool uuid_match(const session_t &session, const std::string_view& uuid) {
        return session.device_uuid == uuid;
      }
-@@ -1978,6 +2068,74 @@ namespace stream {
+@@ -1978,6 +2110,74 @@ namespace stream {
        return false;
      }
  
@@ -2153,7 +2941,7 @@ index bceeb93d..175e7c8f 100644
 +        const double wanted = std::max(1, s->config.moonshineSelectedKbps);
 +        const double fraction = std::min(1.0, share[i] / wanted);
 +        // Never below 500 kbps: an encoder starved further than that is useless to watch
-+        const int target = std::max(500, (int) std::lround(s->config.moonshineBaseKbps * fraction));
++        const int target = std::max(500, (int) std::lround(s->config.moonshineBaseKbps * fraction * s->adaptive_scale.load()));
 +        if (target != s->bitrate_kbps.load()) {
 +          BOOST_LOG(info) << "Moonshine: video bitrate for ["sv << s->device_name << "] is now "sv << target << " kbps ("sv << n << " watching, limit "sv << (int) limit << " kbps)"sv;
 +          s->bitrate_kbps = target;
@@ -2186,7 +2974,7 @@ index bceeb93d..175e7c8f 100644
      void stop(session_t &session) {
        while_starting_do_nothing(session.state);
        auto expected = state_e::RUNNING;
-@@ -1985,6 +2143,7 @@ namespace stream {
+@@ -1985,6 +2185,7 @@ namespace stream {
        if (already_stopping) {
          return;
        }
@@ -2194,7 +2982,7 @@ index bceeb93d..175e7c8f 100644
  
        session.shutdown_event->raise(true);
      }
-@@ -1996,6 +2155,7 @@ namespace stream {
+@@ -1996,6 +2197,7 @@ namespace stream {
        if (already_stopping) {
          return;
        }
@@ -2202,7 +2990,7 @@ index bceeb93d..175e7c8f 100644
  
        // reason: graceful termination
        std::uint32_t reason = 0x80030023;
-@@ -2112,6 +2272,8 @@ namespace stream {
+@@ -2112,6 +2314,8 @@ namespace stream {
  
        session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
  
@@ -2211,20 +2999,23 @@ index bceeb93d..175e7c8f 100644
        session.audioThread = std::thread {audioThread, &session};
        session.videoThread = std::thread {videoThread, &session};
  
-@@ -2171,6 +2333,8 @@ namespace stream {
+@@ -2171,6 +2375,11 @@ namespace stream {
        };
  
        session->video.idr_events = mail->event<bool>(mail::idr);
 +      session->bitrate_events = mail->event<int>(mail::bitrate);
 +      session->bitrate_kbps = config.monitor.bitrate;
++      if (config.moonshineAdaptive) {
++        BOOST_LOG(info) << "Moonshine: adaptive quality is on for ["sv << launch_session.device_name << "], starting at "sv << config.monitor.bitrate << " kbps"sv;
++      }
        session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
        session->video.lowseq = 0;
        session->video.ping_payload = launch_session.av_ping_payload;
 diff --git a/src/stream.h b/src/stream.h
-index 1aa08f42..d55c6505 100644
+index 1aa08f42..ac0490ae 100644
 --- a/src/stream.h
 +++ b/src/stream.h
-@@ -36,6 +36,11 @@ namespace stream {
+@@ -36,6 +36,13 @@ namespace stream {
      uint32_t encryptionFlagsEnabled;
  
      std::optional<int> gcmap;
@@ -2233,10 +3024,12 @@ index 1aa08f42..d55c6505 100644
 +    // bitrate that works out to, for sharing the host's upload limit between viewers
 +    int moonshineSelectedKbps = 0;
 +    int moonshineBaseKbps = 0;
++    // Moonshine: the viewer asked for the bitrate to follow what the connection carries (moonshine_adaptive.h)
++    bool moonshineAdaptive = false;
    };
  
    namespace session {
-@@ -49,6 +54,9 @@ namespace stream {
+@@ -49,6 +56,9 @@ namespace stream {
      std::shared_ptr<session_t> alloc(config_t &config, rtsp_stream::launch_session_t &launch_session);
      std::string uuid(const session_t& session);
      bool uuid_match(const session_t& session, const std::string_view& uuid);
@@ -2246,7 +3039,7 @@ index 1aa08f42..d55c6505 100644
      bool update_device_info(session_t& session, const std::string& name, const crypto::PERM& newPerm);
      int start(session_t &session, const std::string &addr_string);
      void stop(session_t &session);
-@@ -56,5 +64,8 @@ namespace stream {
+@@ -56,5 +66,8 @@ namespace stream {
      void join(session_t &session);
      state_e state(session_t &session);
      inline bool send(session_t& session, const std::string_view &payload);

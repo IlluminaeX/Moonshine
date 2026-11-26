@@ -13,6 +13,9 @@ const defaults = {
   // Host uuid -> the name you gave that PC in Moonshine (shown instead of its own name)
   pcNames: {},
   // Show a notification when a friend comes online or starts hosting
+  joinNotice: true, // show a popup when someone joins a stream on this PC
+  joinSoundOn: true, // and play a sound with it
+  joinSound: 'aurora', // which one (renderer/sounds.js)
   friendAlerts: true,
   // Tell friends what game you're playing or hosting
   shareGame: true,
@@ -26,6 +29,7 @@ const defaults = {
   // Friends' PCs reached by direct connection: host uuid -> { ip, offset, hostBase }. Keeps each one's
   // stand-in address (127.77.x.y:port) the same, so the player's saved PC stays valid.
   tunnelHosts: {},
+  updateEvery: 'day', // how often to look for a new version besides at startup: day, 3days, week or launch
   updateNotified: '', // the newest version a "new version" balloon was shown for
   // What a newly paired device may do: 'controller' (start apps, controller only), 'full', 'watch'
   newDevicePerm: 'controller',
@@ -38,8 +42,13 @@ const defaults = {
   // Do not disturb: until when (ms; -1 until turned off; 0 off)
   dndUntil: 0,
   volumeBoost: {}, // host uuid (or address) -> how much louder its stream plays, 1 to 10
+  invites: {}, // one-time invite links this PC made: id -> { id, url (until used), status, guestName, guestDevice, guestUuid, ... }
+  guestInvite: null, // the invite this PC joined as a guest: { invite, host: { device, uuid, port, name, user } } (its login is a secret)
   friendPcsPaired: {}, // friends' host uuids this PC has paired with (to tell, while they're off)
   streamSettings: {},
+  beta: {}, // beta feature id -> on (lib/beta.js)
+  hostMacs: {}, // host uuid -> network (MAC) address, learned while the PC was on this network, to wake it later
+  hostStreamSettings: {}, // host uuid (or address) -> { name, values: the stream settings that PC overrides }
   startAtLogin: false,
 };
 

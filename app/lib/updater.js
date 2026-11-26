@@ -25,8 +25,8 @@ const RELEASES_URL = process.env.MOONSHINE_UPDATE_URL || `https://api.github.com
 const ASSET = 'Moonshine-Setup.exe';
 const PUBLIC_KEY = 'MCowBQYDK2VwAyEAKduWnNJU1yHWBfhZiGxcL8yCylYs3MOzvRszwPU85m4='; // Ed25519, SPKI DER in base64 (scripts/release.ps1 -NewKey)
 const SIGNED_PREFIX = 'moonshine-update-v1';
-const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
-const FIRST_CHECK_MS = 30 * 1000;
+const TICK_MS = 60 * 60 * 1000; // how often to see whether a check is due (also catches up after sleep)
+const FIRST_CHECK_MS = 3 * 1000; // a check right as Moonshine starts
 
 const events = new EventEmitter();
 let fetchImpl = null; // electron's net.fetch (uses Windows' proxy settings); plain fetch in tests
@@ -34,6 +34,8 @@ let currentVersion = '0.0.0';
 let state = { status: 'idle' }; // idle | checking | current | available | downloading | ready | installing | error
 let checkTimer = null;
 let downloading = null;
+let lastChecked = 0; // when a check last got an answer from GitHub
+let everyMs = () => 0; // how long between automatic checks (0: only at startup)
 
 function setState(next) {
   state = { ...next, current: currentVersion };
@@ -99,6 +101,7 @@ async function check({ background = false } = {}) {
   if (!background) setState({ status: 'checking' });
   try {
     const release = await getJson(RELEASES_URL);
+    lastChecked = Date.now();
     if (!release || release.draft || release.prerelease) {
       setState({ status: 'current', checkedAt: Date.now() });
       return state;
@@ -113,6 +116,7 @@ async function check({ background = false } = {}) {
     }
     setState({
       status: 'available',
+      checkedAt: lastChecked,
       version,
       notes: String(release.body || '').replace(SIG_COMMENT, '').trim().slice(0, 4000),
       size: installer.size || 0,
@@ -253,14 +257,22 @@ async function install(quit, { appPath = process.execPath } = {}) {
   quit();
 }
 
-/** Start checking now and then (the first check shortly after startup). */
-function init({ version, fetch }) {
+/**
+ * Check right after startup, then again whenever `every()` milliseconds have passed since the last
+ * answer (0: never again until the next startup). It looks hourly whether that time is up.
+ */
+function init({ version, fetch, every }) {
   currentVersion = version;
   fetchImpl = fetch;
+  if (every) everyMs = every;
+  lastChecked = 0;
   state = { status: 'idle', current: version };
   clearInterval(checkTimer);
   setTimeout(() => check({ background: true }), FIRST_CHECK_MS);
-  checkTimer = setInterval(() => check({ background: true }), CHECK_EVERY_MS);
+  checkTimer = setInterval(() => {
+    const wait = Number(everyMs()) || 0;
+    if (wait > 0 && Date.now() - lastChecked >= wait) check({ background: true });
+  }, TICK_MS);
 }
 
 module.exports = {

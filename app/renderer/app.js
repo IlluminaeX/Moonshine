@@ -46,7 +46,8 @@ document.addEventListener('click', (e) => {
 const tabLoaders = {
   friends: () => { showHostList(); loadFriends(true); },
   host: () => loadHost(),
-  settings: () => loadSettings(),
+  beta: () => loadBeta(),
+  settings: async () => { await loadSettings(); fillPcPicker().then(loadSettings); },
   apollo: () => showApollo(),
 };
 
@@ -744,6 +745,7 @@ function openHost(h) {
   $('#quit-app').classList.toggle('hidden', !h.busy);
   $('#remove-host').classList.toggle('hidden', !h.saved);
   $('#refresh-apps').classList.toggle('hidden', !h.online || !h.paired);
+  $('#send-files').classList.toggle('hidden', !canSendTo(h));
   renderApps(h);
   // Opened from the list before its games were looked up
   if (h.online && h.paired && !h.apps.length) {
@@ -831,6 +833,90 @@ $('#remove-host').addEventListener('click', (e) => {
     loadFriends();
   });
 });
+// ---- Sending files: the PC page's button, files dropped on the page or a PC row ------------
+
+const canSendTo = (h) => Boolean(h && h.online && h.paired && h.uuid && h.address);
+const sendTarget = (h) => ({ uuid: h.uuid, name: h.name, address: h.address });
+
+$('#send-files').addEventListener('click', () => {
+  if (canSendTo(currentHost)) window.moonshine.files.pick(sendTarget(currentHost)).catch((err) => toast(err.message));
+});
+
+/** Let files be dropped on `node` to send them to the PC `pcOf()` returns (null: not now). */
+function acceptDrops(node, pcOf) {
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+  node.addEventListener('dragover', (e) => {
+    const pc = pcOf();
+    if (!hasFiles(e) || !pc) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    $('#drop-hint-name').textContent = pc.name;
+    $('#drop-hint').classList.remove('hidden');
+    node.classList.add('dropping');
+  });
+  node.addEventListener('dragleave', (e) => {
+    if (node.contains(e.relatedTarget)) return;
+    node.classList.remove('dropping');
+    $('#drop-hint').classList.add('hidden');
+  });
+  node.addEventListener('drop', (e) => {
+    node.classList.remove('dropping');
+    $('#drop-hint').classList.add('hidden');
+    const pc = pcOf();
+    if (!hasFiles(e) || !pc) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const paths = window.moonshine.files.pathsOf(e.dataTransfer.files);
+    if (paths.length) window.moonshine.files.send(sendTarget(pc), paths).catch((err) => toast(err.message));
+  });
+}
+acceptDrops($('#host-view'), () => (canSendTo(currentHost) && !$('#host-view').classList.contains('hidden') ? currentHost : null));
+// Dropping a file anywhere else must not open it in the window
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => e.preventDefault());
+
+const TRANSFER_STATES = {
+  asking: (t) => `Waiting for ${t.pc} to accept…`,
+  sending: (t) => `Sending to ${t.pc}`,
+  receiving: (t) => `Coming from ${t.pc}`,
+  saving: (t) => `Saving from ${t.pc}…`,
+  done: (t) => (t.dir === 'in' ? `From ${t.pc}` : `Sent to ${t.pc}`),
+  failed: (t) => t.error || 'Didn’t work',
+};
+
+async function renderTransfers() {
+  const list = await window.moonshine.files.list();
+  $('#transfers').classList.toggle('hidden', !list.length);
+  $('#transfers-list').replaceChildren(...list.map((t) => {
+    const pct = t.size ? Math.round((100 * (t.sent || 0)) / t.size) : 0;
+    const row = el('div', { className: `transfer ${t.state}` },
+      el('div', { className: 'transfer-name', textContent: `${t.dir === 'in' ? '↓' : '↑'} ${t.name}`, title: t.name }),
+      el('div', { className: 'transfer-state', textContent: TRANSFER_STATES[t.state](t) + (t.state === 'sending' ? ` · ${pct}%` : '') }));
+    if (t.state === 'sending' || t.state === 'asking') {
+      const bar = el('div', { className: 'transfer-bar' }, el('span'));
+      bar.firstChild.style.width = `${pct}%`;
+      row.append(bar);
+      const cancel = el('button', { className: 'secondary small', textContent: 'Cancel' });
+      cancel.addEventListener('click', () => window.moonshine.files.cancel(t.id));
+      row.append(cancel);
+    } else if (t.state === 'done' && t.path) {
+      const show = el('button', { className: 'secondary small', textContent: 'Show' });
+      show.addEventListener('click', () => window.moonshine.files.show(t.id));
+      row.append(show);
+    }
+    return row;
+  }));
+}
+let transfersQueued = false;
+window.moonshine.files.onChanged(() => {
+  // progress comes in fast: redraw at most every 200 ms
+  if (transfersQueued) return;
+  transfersQueued = true;
+  setTimeout(() => { transfersQueued = false; renderTransfers(); }, 200);
+});
+$('#transfers-clear').addEventListener('click', () => window.moonshine.files.clear());
+
 $('#refresh-apps').addEventListener('click', (e) => busy(e.target, 'Refreshing…', async () => {
   const h = currentHost;
   h.apps = await connect.apps(h);
@@ -910,13 +996,14 @@ function versionBadge(list, mine) {
     const newest = versions.reduce((a, b) => (compareVersions(a, b) >= 0 ? a : b));
     const badge = el('span', { className: 'version-badge newer', textContent: 'Update yours' });
     badge.title = `They have Moonshine ${newest}; you have ${mine}. Click to check for the update.`;
-    badge.addEventListener('click', () => $('#app-version').click());
+    badge.addEventListener('click', () => { selectTab('settings'); checkForUpdates(); });
     return badge;
   }
   return null;
 }
 
 function friendPcStatus(pc) {
+  if (pc.guest) return { dot: 'online', text: `Invited${pc.hostUser ? ` by ${pc.hostUser}` : ''} · you can play on this PC until you leave`, title: 'This PC was shared with you by an invite link. It ends when you leave or they end it.' };
   if (!pc.online) return pc.account && !pc.everPaired
     ? { dot: '', text: 'Offline · pairs by itself once it’s on', title: 'Moonshine pairs with a friend’s PC automatically the first time it sees it online. Nobody has to type a PIN.' }
     : { dot: '', text: 'Offline' };
@@ -938,6 +1025,21 @@ function friendPcName(pc) {
   return name;
 }
 
+const CONNECTION_KINDS = {
+  lan: ['Same network', 'This PC and that one are on the same network: the fastest, most stable way.'],
+  tailscale: ['Tailscale', 'Connected through Tailscale.'],
+  direct: ['Direct', 'Connected straight over the internet. No Tailscale or port forwarding needed.'],
+  relay: ['Relay', 'No direct path between the two networks, so a relay carries the stream. It works, with a little more delay.'],
+};
+
+/** How this PC reaches that one, with the delay to it, so you know what to expect before you connect. */
+function connectionBadge(pc) {
+  const kind = CONNECTION_KINDS[pc.kind];
+  if (!kind || !pc.online) return null;
+  const ms = pc.ms > 0 ? ` · ${pc.ms <= 10 ? '<20' : pc.ms} ms` : '';
+  return el('span', { className: `conn-badge ${pc.kind}`, textContent: kind[0] + ms, title: `${kind[1]}${ms ? ' The time is how long the PC takes to answer.' : ''}` });
+}
+
 function friendPcRow(pc) {
   const status = friendPcStatus(pc);
   const row = el('div', { className: 'friend-pc' },
@@ -945,9 +1047,22 @@ function friendPcRow(pc) {
     el('div', { className: 'friend-pc-text' },
       friendPcName(pc),
       el('div', { className: 'friend-pc-status', textContent: status.text, title: status.title || '' })));
+  const badge = connectionBadge(pc);
+  if (badge) row.querySelector('.friend-pc-text').append(badge);
+  if (!pc.online && pc.canWake) {
+    // Seen on this PC's own network before: a wake-on-LAN signal can start it
+    const wake = el('button', { className: 'secondary', textContent: 'Wake' });
+    wake.title = `Send a wake signal to ${pc.name}. It has to be asleep or off on this network, with wake-on-LAN turned on.`;
+    wake.addEventListener('click', () => busy(wake, 'Waking…', async () => {
+      await window.moonshine.wakePc(pc.uuid);
+      toast(`Wake signal sent to ${pc.name}. It can take a minute to start.`);
+    }));
+    row.append(wake);
+  }
   if (!pc.online || (pc.account && !pc.reachable && !pc.canConnectDirectly)) return row;
   // Use the full host from the Connect list, so pairing and the game list work as they do there
   const host = () => hostsCache.find((h) => h.uuid === pc.uuid) || { ...pc, apps: [], tailnetUser: pc.user };
+  acceptDrops(row, () => { const h = host(); return canSendTo(h) ? { ...h, name: pc.name || h.name } : null; });
   let button;
   if (pc.pairing) {
     // Pairing by itself in the background (main.js autoPairFriends)
@@ -975,16 +1090,31 @@ function friendPcRow(pc) {
     if (pc.moonshine) button.title = pc.account ? 'Pairing by itself didn’t work. Try again now.' : 'Their Moonshine asks them to accept.';
     button.addEventListener('click', () => pairHost(host()));
   }
-  if (pc.moonshine && pc.mine === false && pc.reachable && !pc.direct) {
+  // A friend's PC: invite through the friends service (any connection). Another PC: only by its address.
+  const canInvite = pc.user && pc.account ? pc.online : pc.reachable && !pc.direct;
+  if (pc.moonshine && pc.mine === false && !pc.guest && canInvite) {
     const inviteButton = el('button', { className: 'secondary invite', textContent: 'Invite' });
-    inviteButton.title = `Ask ${pc.name} to join a stream on this PC`;
+    inviteButton.title = `Ask ${pc.user || pc.name} to join a stream on this PC`;
     inviteButton.addEventListener('click', () => busy(inviteButton, 'Inviting…', async () => {
-      const { app } = await window.moonshine.friends.invite({ name: pc.name, address: pc.address });
+      const { app } = await window.moonshine.friends.invite({ name: pc.name, address: pc.address, user: pc.account ? pc.user : '', direct: pc.direct });
       toast(`Invited ${pc.name} to ${app}. They get a popup in Moonshine.`);
     }));
     row.append(inviteButton);
   }
   row.append(button);
+  if (pc.guest) {
+    const leave = el('button', { className: 'secondary', textContent: 'Leave' });
+    leave.title = 'Give up this invite. The link can’t be used again.';
+    leave.addEventListener('click', () => {
+      if (!confirm(`Leave ${pc.name}? The invite link won’t work again.`)) return;
+      busy(leave, 'Leaving…', async () => {
+        await window.moonshine.invites.leave();
+        friendsFullAt = 0;
+        await loadFriends();
+      });
+    });
+    row.append(leave);
+  }
   return row;
 }
 
@@ -1121,7 +1251,57 @@ function renderRequests(requests, service) {
   }
 }
 
-function renderFriends({ me, tailscale, pcs, alerts, shareGame, version, service }) {
+/** What an invite link in the list says. */
+function inviteRow(inv) {
+  const mins = Math.max(1, Math.round((inv.expires - Date.now()) / 60000));
+  const text = inv.status === 'open' ? `Link ready · unused · runs out in ${mins} min`
+    : inv.streaming ? `${inv.guest || 'A guest'} is connected` : `${inv.guest || 'A guest'} joined · waiting for them to stream`;
+  const row = el('div', { className: 'friend-pc invite-row' },
+    el('span', { className: `dot ${inv.status === 'open' ? 'busy' : 'hosting'}` }),
+    el('div', { className: 'friend-pc-text' },
+      el('div', { className: 'friend-pc-name', textContent: inv.status === 'open' ? 'Invite link' : 'Invite link in use' }),
+      el('div', { className: 'friend-pc-status', textContent: text })));
+  if (inv.status === 'open') {
+    const copy = el('button', { className: 'secondary', textContent: 'Copy' });
+    copy.addEventListener('click', () => busy(copy, 'Copying…', async () => {
+      await window.moonshine.invites.copy(inv.id);
+      toast('Invite link copied.');
+    }));
+    row.append(copy);
+  }
+  const end = el('button', { className: 'secondary', textContent: inv.status === 'open' ? 'Revoke' : 'End' });
+  end.title = inv.status === 'open' ? 'The link stops working' : 'Disconnect them and end the invite';
+  end.addEventListener('click', () => busy(end, '…', () => window.moonshine.invites.revoke(inv.id)));
+  row.append(end);
+  return row;
+}
+
+/** The first card: this PC, with a button (shown when you point at it) that copies a one-time invite link. */
+function selfCard(self, invites) {
+  const copy = el('button', { className: 'secondary reveal', textContent: 'Copy invite link' });
+  copy.title = 'Copies a link that lets one person stream from this PC. It works once, and for an hour if nobody opens it.';
+  copy.addEventListener('click', () => busy(copy, 'Copying…', async () => {
+    await window.moonshine.invites.create();
+    toast('Invite link copied. Send it to one person: it works once.');
+  }));
+  const row = el('div', { className: 'friend-pc self-pc' },
+    el('span', { className: `dot ${self.hosting ? 'online' : ''}` }),
+    el('div', { className: 'friend-pc-text' },
+      el('div', { className: 'friend-pc-name', textContent: self.name }),
+      el('div', { className: 'friend-pc-status', textContent: self.hosting ? 'Hosting · this PC' : 'Not hosting · turn it on in the Host tab' })),
+    copy);
+  const card = el('div', { className: 'friend self-card' },
+    el('div', { className: 'friend-head' },
+      avatarFor('this-pc', 'This PC'),
+      el('div', { className: 'friend-head-text' },
+        el('div', { className: 'friend-name', textContent: 'This PC' }),
+        el('div', { className: 'friend-summary', textContent: 'Point at it to invite someone with a one-time link' }))),
+    el('div', { className: 'friend-pcs' }, row, ...invites.map(inviteRow)));
+  card.dataset.key = 'self';
+  return card;
+}
+
+function renderFriends({ me, tailscale, pcs, alerts, shareGame, version, service, self, invites = [] }) {
   renderAccount(service);
   $('#friend-alerts').checked = Boolean(alerts);
   $('#share-game').checked = shareGame !== false;
@@ -1129,13 +1309,14 @@ function renderFriends({ me, tailscale, pcs, alerts, shareGame, version, service
   for (const pc of pcs) pc.mine = Boolean(me) && pc.user === me; // friends' PCs and other PCs can be invited
   const box = $('#friends');
   // Nothing changed since the last refresh: leave the cards alone (no flicker, buttons keep their state)
-  const view = JSON.stringify([me, tailscale, pcs, service && service.signedIn, service && service.username,
+  const showSelf = Boolean(self && service && service.signedIn);
+  const view = JSON.stringify([me, tailscale, pcs, self, invites, service && service.signedIn, service && service.username,
     ((service && service.friends) || []).map((f) => [f.username, f.online, f.nickname, f.unread]), version]);
   if (view === friendsView && box.children.length) return;
   friendsView = view;
   const shownBefore = new Set([...box.querySelectorAll('.friend[data-key]')].map((n) => n.dataset.key));
   if (!pcs.length && !(service && service.friends.length)) {
-    box.replaceChildren(el('div', { className: 'empty', textContent: service && service.signedIn && service.username
+    box.replaceChildren(...(showSelf ? [selfCard(self, invites)] : []), el('div', { className: 'empty', textContent: service && service.signedIn && service.username
       ? 'No friends yet. Add someone by their username above.'
       : tailscale
       ? 'No friends yet. Add one by username above, or a friend who shares their PC with you on Tailscale shows up here.'
@@ -1146,20 +1327,20 @@ function renderFriends({ me, tailscale, pcs, alerts, shareGame, version, service
   const groups = new Map();
   for (const f of (service && service.friends) || []) groups.set(f.username, []);
   for (const pc of pcs) {
-    const key = !pc.user ? 'other' : pc.user === me ? 'me' : pc.user;
+    const key = pc.guest ? 'invite' : !pc.user ? 'other' : pc.user === me ? 'me' : pc.user;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(pc);
   }
-  const rank = (key, list) => (key === 'me' ? 2 : key === 'other' ? 3 : list.some((p) => p.online) ? 0 : 1);
+  const rank = (key, list) => (key === 'invite' ? -1 : key === 'me' ? 2 : key === 'other' ? 3 : list.some((p) => p.online) ? 0 : 1);
   const ordered = [...groups].sort(([a, la], [b, lb]) => (rank(a, la) - rank(b, lb)) || a.localeCompare(b));
-  box.replaceChildren(...ordered.map(([key, list]) => {
+  box.replaceChildren(...(showSelf ? [selfCard(self, invites)] : []), ...ordered.map(([key, list]) => {
     list.sort((a, b) => (b.online - a.online) || (a.name || '').localeCompare(b.name || ''));
     const account = (service && service.friends || []).find((f) => f.username === key);
     const isAccount = Boolean(account);
-    const title = key === 'me' ? 'Your PCs' : key === 'other' ? 'Other PCs' : (account && account.nickname) || personName(key);
+    const title = key === 'invite' ? 'Invited' : key === 'me' ? 'Your PCs' : key === 'other' ? 'Other PCs' : (account && account.nickname) || personName(key);
     const online = list.some((p) => p.online);
     const playing = list.find((p) => p.online && p.game);
-    const summary = key === 'me' || key === 'other'
+    const summary = key === 'invite' ? 'You’re a guest on this PC' : key === 'me' || key === 'other'
       ? `${list.filter((p) => p.online).length} of ${list.length} online`
       : !online ? 'Offline'
       : playing ? `Playing ${gameLabel(playing.game)}`
@@ -1225,6 +1406,7 @@ async function loadFriends(first = false, manual = false) {
   friendsTimer = setTimeout(loadFriends, 5000);
 }
 
+window.moonshine.invites.onChanged(() => { friendsView = ''; loadFriends(); });
 $('#friend-alerts').addEventListener('change', (e) => window.moonshine.friends.setAlerts(e.target.checked));
 $('#share-game').addEventListener('change', (e) => window.moonshine.friends.setShareGame(e.target.checked));
 $('#dnd').addEventListener('change', async (e) => {
@@ -1359,6 +1541,27 @@ $('#refresh-friends').addEventListener('click', (e) => busy(e.target, 'Refreshin
   await loadFriends(false, true);
 }));
 
+// ---- Beta features ----------------------------------------------------------------
+
+async function loadBeta() {
+  const features = await window.moonshine.beta.list();
+  $('#beta-list').replaceChildren(...features.map((f) => {
+    const box = el('input', { type: 'checkbox', checked: f.on });
+    box.addEventListener('change', async () => {
+      try {
+        await window.moonshine.beta.set(f.id, box.checked);
+        toast(box.checked ? `${f.name} is on. It applies to your next stream.` : `${f.name} is off.`);
+      } catch (err) {
+        box.checked = !box.checked;
+        toast(err.message);
+      }
+    });
+    return el('div', { className: 'beta-item' },
+      el('label', { className: 'check beta-name' }, box, el('span', { textContent: f.name }), el('span', { className: 'beta-pill', textContent: 'Beta' })),
+      el('p', { className: 'hint', textContent: f.description }));
+  }));
+}
+
 // ---- Stream settings -------------------------------------------------------------
 
 const settingsForm = $('#settings-form');
@@ -1370,9 +1573,42 @@ function updateBitrateLabel() {
   $('#opacity-label').textContent = `${settingsForm.overlayOpacity.value}%`;
 }
 
+// Which PC the settings below are for: '' is the defaults, otherwise a PC's key (uuid or address)
+const PER_PC_FIELDS = ['resolution', 'fps', 'bitrateMbps', 'displayMode', 'videoCodec', 'audioConfig', 'hdr', 'virtualDisplay'];
+let settingsPc = '';
+let settingsPcNames = {}; // key -> name
+
+async function fillPcPicker() {
+  try { await loadHosts(); } catch { /* the saved ones below still show */ }
+  const names = {};
+  for (const h of hostsCache) names[h.uuid || h.address] = h.name;
+  for (const o of await window.moonshine.settings.hostsWithOverrides()) names[o.key] ||= o.name;
+  settingsPcNames = names;
+  const picker = $('#settings-pc');
+  picker.replaceChildren(el('option', { value: '', textContent: 'Everything (the defaults)' }));
+  for (const [key, name] of Object.entries(names)) picker.append(el('option', { value: key, textContent: name }));
+  if (settingsPc && !(settingsPc in names)) settingsPc = '';
+  picker.value = settingsPc;
+}
+
 async function loadSettings() {
-  const { settings: s, nativeResolution: native } = await window.moonshine.settings.get();
+  const native = (await window.moonshine.settings.get()).nativeResolution;
+  const { settings: s, overridden } = settingsPc
+    ? await window.moonshine.settings.getForHost(settingsPc)
+    : { settings: (await window.moonshine.settings.get()).settings, overridden: [] };
   nativeResolution = native;
+  // For one PC, only the settings that make sense per PC can change; the rest stay with the defaults
+  for (const field of settingsForm.elements) {
+    if (!field.name) continue;
+    field.disabled = Boolean(settingsPc) && !PER_PC_FIELDS.includes(field.name);
+    field.closest('label')?.classList.toggle('inherited', Boolean(settingsPc) && PER_PC_FIELDS.includes(field.name) && !overridden.includes(field.name));
+  }
+  $('#settings-pc-reset').classList.toggle('hidden', !overridden.length);
+  $('#settings-pc-hint').textContent = !settingsPc
+    ? 'Every PC uses these unless you give it its own. Pick a PC to remember a resolution, frame rate or bitrate just for it.'
+    : overridden.length
+      ? `${settingsPcNames[settingsPc] || 'This PC'} has its own ${overridden.length === 1 ? 'setting' : `${overridden.length} settings`}. The rest follow the defaults.`
+      : `${settingsPcNames[settingsPc] || 'This PC'} follows the defaults. Change something here to give it its own.`;
   $('#native-resolution').textContent = `This screen (${native})`;
   for (const [key, value] of Object.entries(s)) {
     const field = settingsForm.elements[key];
@@ -1389,7 +1625,7 @@ async function loadSettings() {
 }
 
 settingsForm.addEventListener('input', updateBitrateLabel);
-settingsForm.addEventListener('change', () => {
+settingsForm.addEventListener('change', async (e) => {
   const s = {};
   for (const field of settingsForm.elements) {
     if (!field.name) continue;
@@ -1397,7 +1633,22 @@ settingsForm.addEventListener('change', () => {
     else if (field.type === 'range') s[field.name] = Number(field.value);
     else s[field.name] = field.value === 'native' ? nativeResolution : field.value;
   }
-  window.moonshine.settings.set(s);
+  if (!settingsPc) { window.moonshine.settings.set(s); return; }
+  // Only the setting just changed becomes this PC's own; the others keep following the defaults
+  const name = e.target && e.target.name;
+  if (!PER_PC_FIELDS.includes(name)) return;
+  await window.moonshine.settings.setForHost(settingsPc, settingsPcNames[settingsPc] || '', { [name]: s[name] });
+  await loadSettings();
+});
+
+$('#settings-pc').addEventListener('change', async (e) => {
+  settingsPc = e.target.value;
+  await loadSettings();
+});
+$('#settings-pc-reset').addEventListener('click', async () => {
+  await window.moonshine.settings.resetForHost(settingsPc);
+  await loadSettings();
+  toast(`${settingsPcNames[settingsPc] || 'That PC'} now uses the defaults.`);
 });
 
 // ---- Host -------------------------------------------------------------------
@@ -1736,6 +1987,18 @@ $('#login-form').addEventListener('submit', (e) => {
 
 $('#open-webui').addEventListener('click', () => selectTab('apollo'));
 $('#start-at-login').addEventListener('change', (e) => window.moonshine.setStartAtLogin(e.target.checked));
+$('#network-check').addEventListener('click', (e) => busy(e.target, 'Checking…', async () => {
+  const box = $('#network-check-result');
+  box.textContent = 'Testing your network…';
+  box.className = 'hint';
+  const res = await window.moonshine.network.check();
+  box.textContent = res.summary;
+  box.className = `hint check-${res.verdict}`;
+}));
+$('#copy-diagnostics').addEventListener('click', (e) => busy(e.target, 'Copying…', async () => {
+  await window.moonshine.copyDiagnostics();
+  toast('Diagnostics copied. Safe to paste into a bug report.');
+}));
 // ---- Host: guests streaming right now, with live input and ping --------------------
 
 const ACTIVE_INPUT_MS = 350; // an icon lights up for this long after the input is used
@@ -2065,28 +2328,8 @@ function mb(bytes) { return `${(bytes / 1048576).toFixed(0)} MB`; }
 
 function showUpdate(s) {
   if (!s) return;
-  const box = $('#update-box');
-  const show = ['available', 'downloading', 'ready', 'installing'].includes(s.status);
-  box.classList.toggle('hidden', !show);
-  const line = $('#app-version');
-  line.disabled = s.status === 'checking' || s.status === 'downloading' || s.status === 'installing';
-  line.textContent = s.status === 'checking' ? 'Checking for updates…' : `Moonshine v${s.current}`;
-  if (show) {
-    $('#update-title').textContent = s.status === 'installing' ? 'Installing the update…' : `Moonshine ${s.version} is available`;
-    const bar = $('#update-bar');
-    bar.classList.toggle('hidden', s.status !== 'downloading');
-    if (s.status === 'downloading') {
-      const pct = s.total ? Math.min(100, Math.round((s.received / s.total) * 100)) : 0;
-      bar.firstElementChild.style.width = `${pct}%`;
-      $('#update-detail').textContent = s.total ? `Downloading… ${mb(s.received)} of ${mb(s.total)}` : 'Downloading…';
-    } else {
-      $('#update-detail').textContent = s.error || (s.status === 'available' && s.size ? `${mb(s.size)} download` : '');
-    }
-    const button = $('#update-now');
-    button.classList.toggle('hidden', s.status === 'installing');
-    button.disabled = s.status === 'downloading';
-    button.textContent = s.status === 'downloading' ? 'Downloading…' : s.status === 'ready' ? 'Install now' : 'Update now';
-  }
+  $('#app-version').textContent = `Moonshine v${s.current}`;
+  showUpdatesPanel(s);
   showUpdateBanner(s);
   if (checkingByHand && s.status !== 'checking') {
     checkingByHand = false;
@@ -2134,10 +2377,75 @@ $('#update-banner-close').addEventListener('click', () => {
 
 updates.onState(showUpdate);
 updates.get().then(showUpdate);
-$('#app-version').addEventListener('click', () => {
+function checkForUpdates() {
   checkingByHand = true;
   updates.check().then(showUpdate).catch((err) => { checkingByHand = false; toast(err.message); });
-});
+}
+
+// Settings > Updates: the version, what the last check found, a button to check now, and how often
+let panelState = null;
+function agoText(at) {
+  const minutes = Math.floor((Date.now() - at) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+function showUpdatesPanel(s = panelState) {
+  if (!s) return;
+  panelState = s;
+  $('#upd-version').textContent = `Moonshine v${s.current}`;
+  const busyNow = ['checking', 'downloading', 'installing'].includes(s.status);
+  let text = 'Not checked yet.';
+  if (s.status === 'checking') text = 'Checking…';
+  else if (s.status === 'current') text = `You have the latest version. Checked ${s.checkedAt ? agoText(s.checkedAt) : 'just now'}.`;
+  else if (s.status === 'available') text = s.error || `Moonshine ${s.version} is available${s.size ? ` (${mb(s.size)})` : ''}.`;
+  else if (s.status === 'downloading') {
+    text = `Downloading Moonshine ${s.version}… ${s.total ? Math.min(100, Math.round((s.received / s.total) * 100)) : 0}%`;
+  } else if (s.status === 'ready') text = `Moonshine ${s.version} is downloaded and checked. Install it when you’re ready.`;
+  else if (s.status === 'installing') text = 'Installing the update…';
+  else if (s.status === 'error') text = s.message;
+  $('#upd-status').textContent = text;
+  const bar = $('#upd-bar');
+  bar.classList.toggle('hidden', s.status !== 'downloading');
+  if (s.status === 'downloading') bar.firstElementChild.style.width = `${s.total ? Math.min(100, Math.round((s.received / s.total) * 100)) : 0}%`;
+  const check = $('#upd-check');
+  check.disabled = busyNow;
+  check.textContent = s.status === 'checking' ? 'Checking…' : 'Check for updates';
+  const install = $('#upd-install');
+  install.classList.toggle('hidden', !['available', 'downloading', 'ready'].includes(s.status));
+  install.disabled = s.status === 'downloading';
+  install.textContent = s.status === 'ready' ? 'Install now' : 'Update now';
+}
+// Join notifications: on/off, sound on/off, which sound
+(() => {
+  const sounds = window.MoonshineSounds.list;
+  $('#join-sound').replaceChildren(...sounds.map((s) => el('option', { value: s.id, textContent: s.name })));
+  const show = (n) => {
+    $('#join-notice').checked = n.notice;
+    $('#join-sound-on').checked = n.soundOn;
+    $('#join-sound').value = n.sound;
+    if ($('#join-sound').value !== n.sound) $('#join-sound').value = sounds[0].id;
+    const off = !n.notice || !n.soundOn;
+    $('#join-sound').disabled = $('#join-sound-play').disabled = !n.soundOn;
+    $('#join-sound-on').disabled = !n.notice;
+    $('#join-sound-desc').textContent = !n.notice ? 'No popup and no sound when someone joins.' : off ? 'A popup shows, with no sound.' : (sounds.find((s) => s.id === $('#join-sound').value) || {}).desc || '';
+  };
+  const load = () => window.moonshine.notifications.get().then(show);
+  load();
+  const save = (c) => window.moonshine.notifications.set(c).then(load);
+  $('#join-notice').addEventListener('change', (e) => save({ notice: e.target.checked }));
+  $('#join-sound-on').addEventListener('change', (e) => save({ soundOn: e.target.checked }));
+  $('#join-sound').addEventListener('change', (e) => { save({ sound: e.target.value }); window.MoonshineSounds.play(e.target.value); });
+  $('#join-sound-play').addEventListener('click', () => window.MoonshineSounds.play($('#join-sound').value));
+})();
+$('#upd-check').addEventListener('click', checkForUpdates);
+$('#upd-install').addEventListener('click', () => askToUpdate());
+$('#upd-every').addEventListener('change', (e) => updates.setEvery(e.target.value));
+updates.getEvery().then((v) => { $('#upd-every').value = v; });
+setInterval(() => showUpdatesPanel(), 30000); // "checked 5 minutes ago" keeps counting
 // Update now: download and check it (progress shows in the sidebar), then ask in Moonshine's own dialog
 let updateAsking = false;
 async function askToUpdate() {
@@ -2159,7 +2467,6 @@ async function askToUpdate() {
 function closeUpdateDialog() {
   $('#update-dialog').classList.add('hidden');
 }
-$('#update-now').addEventListener('click', askToUpdate);
 updates.onAsk(askToUpdate);
 $('#update-later').addEventListener('click', closeUpdateDialog);
 $('#update-dialog').addEventListener('click', (e) => { if (e.target.id === 'update-dialog') closeUpdateDialog(); });

@@ -41,9 +41,9 @@ const art = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${BASE_W} ${BA
       <stop offset="1" stop-color="#5a0618" stop-opacity="0"/>
     </radialGradient>
     <radialGradient id="moon" cx="40%" cy="38%" r="70%">
-      <stop offset="0" stop-color="#1c090e"/>
-      <stop offset="0.7" stop-color="#0b0507"/>
-      <stop offset="1" stop-color="#060304"/>
+      <stop offset="0" stop-color="#261522"/>
+      <stop offset="0.7" stop-color="#120c17"/>
+      <stop offset="1" stop-color="#0b0710"/>
     </radialGradient>
     <radialGradient id="flare" cx="50%" cy="50%" r="50%">
       <stop offset="0" stop-color="#fff2f3"/>
@@ -53,7 +53,7 @@ const art = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${BASE_W} ${BA
     </radialGradient>
     <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="3"/></filter>
   </defs>
-  <rect width="${BASE_W}" height="${BASE_H}" fill="#0b0709"/>
+  <rect width="${BASE_W}" height="${BASE_H}" fill="#15101d"/>
   ${stars.map((s) => `<circle cx="${s.x}" cy="${s.y}" r="${s.r}" fill="#f4eeef" opacity="${s.o}"/>`).join('')}
   <g opacity="0.8">
     <circle cx="436" cy="142" r="142" fill="url(#glow)"/>

@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const invoke = (channel) => (...args) => ipcRenderer.invoke(channel, ...args);
 const listen = (channel) => (cb) => ipcRenderer.on(channel, (_e, payload) => cb(payload));
@@ -66,6 +66,22 @@ contextBridge.exposeInMainWorld('moonshine', {
     onPairState: listen('pair:state'),
     onStreamState: listen('stream:state'),
   },
+  beta: {
+    list: invoke('beta:list'),
+    set: invoke('beta:set'),
+  },
+  notifications: {
+    get: invoke('notify:get'),
+    set: invoke('notify:set'),
+  },
+  invites: {
+    list: invoke('invites:list'),
+    create: invoke('invites:create'),
+    copy: invoke('invites:copy'),
+    revoke: invoke('invites:revoke'),
+    leave: invoke('invites:leave'),
+    onChanged: listen('invites:changed'),
+  },
   friends: {
     status: invoke('friends:status'),
     invite: invoke('friends:invite'),
@@ -93,12 +109,32 @@ contextBridge.exposeInMainWorld('moonshine', {
   settings: {
     get: invoke('settings:get'),
     set: invoke('settings:set'),
+    getForHost: invoke('settings:getForHost'),
+    setForHost: invoke('settings:setForHost'),
+    resetForHost: invoke('settings:resetForHost'),
+    hostsWithOverrides: invoke('settings:hostsWithOverrides'),
   },
   setStartAtLogin: invoke('app:setStartAtLogin'),
+  copyDiagnostics: invoke('app:copyDiagnostics'),
+  wakePc: invoke('pc:wake'),
+  files: {
+    list: invoke('files:list'),
+    send: invoke('files:send'),
+    pick: invoke('files:pick'),
+    cancel: invoke('files:cancel'),
+    show: invoke('files:show'),
+    clear: invoke('files:clear'),
+    onChanged: listen('files:changed'),
+    /** Paths of files dropped on the page (File objects don't carry them any more). */
+    pathsOf: (fileList) => [...fileList].map((f) => webUtils.getPathForFile(f)).filter(Boolean),
+  },
+  network: { check: invoke('network:check') },
   updates: {
     get: invoke('update:get'),
     check: invoke('update:check'),
     prepare: invoke('update:prepare'),
+    getEvery: invoke('update:getEvery'),
+    setEvery: invoke('update:setEvery'),
     install: invoke('update:install'),
     onAsk: listen('update:ask'),
     onState: listen('update:state'),

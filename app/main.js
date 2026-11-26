@@ -7,13 +7,16 @@ const { execFile } = require('child_process');
 const { pathToFileURL } = require('url');
 const {
   app, BrowserWindow, Tray, Menu, WebContentsView, ipcMain, dialog, nativeImage, nativeTheme, session, shell, protocol, net,
-  powerMonitor,
+  powerMonitor, clipboard,
 } = require('electron');
 
 const store = require('./lib/store');
 const apollo = require('./lib/apollo');
 const moonlight = require('./lib/moonlight');
 const library = require('./lib/library');
+const beta = require('./lib/beta');
+const wol = require('./lib/wol');
+const files = require('./lib/files');
 const streamSettings = require('./lib/stream-settings');
 const tailscale = require('./lib/tailscale');
 const invite = require('./lib/invite');
@@ -50,7 +53,7 @@ function createWindow() {
     minHeight: 520,
     title: 'Moonshine',
     icon,
-    backgroundColor: '#0b0709',
+    backgroundColor: '#15101d',
     autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
@@ -155,6 +158,15 @@ function wasInvited(address) {
   const until = invitedFriends.get(address);
   return Boolean(until && until > Date.now());
 }
+// Friends invited through the friends service (any connection, so no address to go by): username -> until
+const invitedUsers = new Map();
+/** Was whoever is behind this address invited to play (a friend's tunnel or Tailscale/LAN address)? */
+function wasInvitedUser(address) {
+  const src = tunnels.friendForSource(address);
+  const who = (src && src.username) || friendAddresses.get(address);
+  const until = who && invitedUsers.get(who);
+  return Boolean(until && until > Date.now());
+}
 // Addresses of Moonshine friends' PCs (Tailscale or same home network only) -> their username
 let friendAddresses = new Map();
 const openPrompts = new Set(); // request keys whose prompt is on screen or queued
@@ -194,16 +206,17 @@ async function waitForNewClient(before, timeoutMs = 10000) {
 
 /**
  * Wait for the pairing attempt that belongs to a request: one from the same address, started after
- * the request was made. The host gives a PIN to its newest waiting attempt, so sending the PIN before
- * this one arrives could hand it to an older attempt the device has given up on.
+ * the request was made. Returns its request id (for submitPin, so the PIN can only land on this exact
+ * attempt even if another pairing is also in progress), or '' if it never arrived.
  */
 async function pairingAttemptArrived(offer, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const { offers = [], pairing = [] } = await apollo.pendingRequests();
-    if (!offers.some((o) => o.id === offer.id)) return false; // expired
-    if (pairing.some((p) => p.address === offer.address && p.at >= offer.at)) return true;
-    if (Date.now() >= deadline) return false;
+    if (!offers.some((o) => o.id === offer.id)) return ''; // expired
+    const match = pairing.find((p) => p.address === offer.address && p.at >= offer.at);
+    if (match) return match.id;
+    if (Date.now() >= deadline) return '';
     await new Promise((r) => setTimeout(r, 500));
   }
 }
@@ -211,9 +224,14 @@ async function pairingAttemptArrived(offer, timeoutMs = 20000) {
 /** A friend's Moonshine asked to pair and sent its PIN along (lib/invite.js), so Accept is all it takes. */
 async function promptForOffer(offer) {
   try {
+    const src = tunnels.friendForSource(offer.address);
+    if (src && src.invite && !inviteLive(src.invite)) { // an invite that ended can't pair any more
+      await apollo.decidePair(offer.id, false);
+      return;
+    }
     const device = await tailnetDevice(offer.address);
     const name = (device && device.name) || offer.name;
-    const friend = friendAddresses.get(offer.address) || (tunnels.friendForSource(offer.address) || {}).username;
+    const friend = friendAddresses.get(offer.address) || (src || {}).username;
     const choice = wasInvited(offer.address) || friend ? { ok: true, checked: false } : await prompts.ask({
       key: `offer:${offer.id}`,
       title: `${name} wants to pair with this PC`,
@@ -229,7 +247,8 @@ async function promptForOffer(offer) {
     }
 
     const before = new Set((await apollo.listClients()).map((c) => c.uuid));
-    if (!(await pairingAttemptArrived(offer)) || !(await apollo.submitPin(offer.pin, name, 0))) {
+    const requestId = await pairingAttemptArrived(offer);
+    if (!requestId || !(await apollo.submitPin(offer.pin, name, 0, requestId))) {
       await apollo.decidePair(offer.id, false);
       notifyRenderer('app:toast', `Pairing with ${name} didn’t complete. Ask them to try again.`);
       return;
@@ -237,7 +256,9 @@ async function promptForOffer(offer) {
     const added = await waitForNewClient(before);
     if (added) {
       rememberUser(added.uuid, friend || (device && device.user));
-      await setUpNewDevice(added, choice.checked ? { require_approval: false } : {});
+      const asGuest = Boolean(src && src.invite);
+      if (asGuest) attachInviteDevice(src.invite, added.uuid);
+      await setUpNewDevice(added, choice.checked || asGuest ? { require_approval: false } : {});
     }
     await apollo.decidePair(offer.id, true);
     notifyRenderer('app:toast', `Paired with ${name}.`);
@@ -262,7 +283,7 @@ async function promptForPin(request) {
   if (!choice.ok) return;
 
   const before = new Set((await apollo.listClients()).map((c) => c.uuid));
-  await apollo.submitPin(choice.pin, choice.name, 0);
+  await apollo.submitPin(choice.pin, choice.name, 0, request.id);
   const added = await waitForNewClient(before, 8000);
   if (added) {
     rememberUser(added.uuid, device && device.user);
@@ -276,7 +297,14 @@ async function promptForPin(request) {
 
 /** A paired device set to "ask before streaming" wants to start or rejoin a stream. */
 async function promptForStream(request) {
-  if (wasInvited(request.address)) {
+  const src = tunnels.friendForSource(request.address);
+  if (src && src.invite) { // an invite guest: the link was the yes, for as long as it lasts
+    const ok = inviteLive(src.invite) && !isPaused();
+    if (ok) letIn.set(request.uuid, Date.now());
+    await apollo.decideStream(request.id, ok);
+    return;
+  }
+  if (wasInvited(request.address) || wasInvitedUser(request.address)) {
     letIn.set(request.uuid, Date.now());
     await apollo.decideStream(request.id, true);
     return;
@@ -315,6 +343,146 @@ async function promptForInvite(inv) {
   await apollo.decideInvite(inv.id, choice.ok).catch(() => {});
   if (choice.ok) joinInvite(inv).catch((err) => notifyRenderer('app:toast', err.message));
 }
+
+// ---- Sending files between PCs ---------------------------------------------------------------
+// transfers: id -> { id, dir: 'in'|'out', name, pc, size, sent, state, error, path }
+const transfers = new Map();
+const sendSignals = new Map();
+const taking = new Set();
+
+function fileSize(n) {
+  const units = ['bytes', 'KB', 'MB', 'GB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${i ? n.toFixed(n < 10 ? 1 : 0) : n} ${units[i]}`;
+}
+
+function setTransfer(t) {
+  transfers.set(t.id, { ...(transfers.get(t.id) || {}), ...t });
+  // keep the last 20
+  const ids = [...transfers.keys()];
+  for (const old of ids.slice(0, Math.max(0, ids.length - 20))) {
+    const o = transfers.get(old);
+    if (o.state === 'done' || o.state === 'failed') transfers.delete(old);
+  }
+  notifyRenderer('files:changed');
+}
+
+/**
+ * A received file's name, safe to show and save: no invisible direction marks (which can make
+ * "photo‮gnp.exe" look like "photoexe.png"), and not a name Windows reserves (CON, NUL, COM1…).
+ */
+function cleanFileName(name) {
+  let s = String(name || 'file').replace(/[​-‏‪-‮⁠-⁩﻿]/g, '').trim() || 'file';
+  if (/^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(s)) s = `_${s}`;
+  return s;
+}
+const RISKY_TYPES = /^\.(exe|msi|msix|bat|cmd|com|scr|ps1|vbs|vbe|js|jse|wsf|hta|lnk|reg|jar|dll|cpl|appx|appxbundle|iso|img|vhd|vhdx)$/i;
+
+/** Mark a saved file as downloaded from another computer, so Windows warns before running it. */
+function markDownloaded(file) {
+  try { fs.writeFileSync(`${file}:Zone.Identifier`, '[ZoneTransfer]\r\nZoneId=3\r\n'); } catch { /* not NTFS */ }
+}
+
+/** A paired device wants to send this PC's user a file. */
+async function promptForFile(f) {
+  const name = cleanFileName(f.name);
+  const ext = path.extname(name);
+  const choice = await prompts.ask({
+    key: `file:${f.id}`,
+    title: `${f.from} wants to send you a file`,
+    details: [
+      `${name} (${fileSize(f.size)})`,
+      RISKY_TYPES.test(ext) ? `This is a ${ext.toLowerCase()} file: it can run programs. Only accept it if you trust ${f.from}.`
+        : ext ? `File type: ${ext.toLowerCase()}` : 'This file has no type (extension).',
+      'It will be saved in Downloads\\Moonshine.',
+    ],
+    accept: 'Accept',
+    decline: 'Decline',
+  });
+  if (choice.cancelled) return; // the sender gave up, or it timed out
+  await apollo.decideFile(f.id, choice.ok).catch(() => {});
+  if (choice.ok) setTransfer({ id: `in:${f.id}`, dir: 'in', name, pc: f.from, size: f.size, sent: 0, state: 'receiving' });
+}
+
+/** A file has arrived on the host: copy it out to Downloads\Moonshine and let the host delete it. */
+async function takeFile(f) {
+  const tid = `in:${f.id}`;
+  if (taking.has(f.id)) return;
+  taking.add(f.id);
+  const dir = path.join(app.getPath('downloads'), 'Moonshine');
+  try {
+    await fs.promises.mkdir(dir, { recursive: true });
+    const name = cleanFileName(f.name);
+    const ext = path.extname(name);
+    const base = path.basename(name, ext);
+    let dest = path.join(dir, name);
+    for (let n = 2; fs.existsSync(dest); n++) dest = path.join(dir, `${base} (${n})${ext}`);
+    const tmp = `${dest}.moonshine-part`;
+    const fh = await fs.promises.open(tmp, 'w');
+    try {
+      let offset = 0;
+      while (offset < f.size) {
+        const piece = await apollo.fileData(f.id, offset);
+        if (!piece || !piece.length) throw new Error('The file ended early.');
+        await fh.write(piece, 0, piece.length, offset);
+        offset += piece.length;
+        setTransfer({ id: tid, dir: 'in', name: f.name, pc: f.from, size: f.size, sent: f.size, state: 'saving' });
+      }
+    } finally {
+      await fh.close();
+    }
+    await fs.promises.rename(tmp, dest);
+    markDownloaded(dest);
+    await apollo.fileTaken(f.id).catch(() => {});
+    setTransfer({ id: tid, dir: 'in', name: path.basename(dest), pc: f.from, size: f.size, sent: f.size, state: 'done', path: dest });
+    notifyRenderer('app:toast', `${f.from} sent you ${path.basename(dest)}. It’s in Downloads\\Moonshine.`);
+  } catch (err) {
+    setTransfer({ id: tid, dir: 'in', name: f.name, pc: f.from, size: f.size, state: 'failed', error: err.message });
+    taking.delete(f.id); // try again on the next poll
+    return;
+  }
+  // stays in `taking`, so a late poll doesn't copy it twice
+}
+
+/** Send files to a PC (from the PC list's button, a drop on it, or a drop onto its stream). */
+async function sendFiles(pc, paths) {
+  let address = pc.address;
+  if (tunnels.isTunnelAddress(address)) address = await tunnels.ensureFor(address);
+  for (const file of paths) {
+    const id = `out:${crypto.randomUUID()}`;
+    const signal = {};
+    sendSignals.set(id, signal);
+    const name = path.basename(file);
+    setTransfer({ id, dir: 'out', name, pc: pc.name, size: 0, sent: 0, state: 'asking' });
+    files.send({ ...pc, address }, file, ({ state, sent, size }) => setTransfer({ id, state, sent, size }), signal)
+      .catch((err) => {
+        setTransfer({ id, state: 'failed', error: err.message });
+        if (err.code !== 'declined' && !signal.cancelled) notifyRenderer('app:toast', err.message);
+      })
+      .finally(() => sendSignals.delete(id));
+  }
+}
+
+ipcMain.handle('files:list', () => [...transfers.values()].reverse());
+ipcMain.handle('files:send', (_e, pc, paths) => sendFiles(pc, (paths || []).filter(Boolean)));
+ipcMain.handle('files:pick', async (_e, pc) => {
+  const res = await dialog.showOpenDialog(mainWindow, { title: `Send files to ${pc.name}`, properties: ['openFile', 'multiSelections'] });
+  if (!res.canceled && res.filePaths.length) await sendFiles(pc, res.filePaths);
+  return !res.canceled;
+});
+ipcMain.handle('files:cancel', (_e, id) => {
+  const s = sendSignals.get(id);
+  if (s) s.cancelled = true;
+});
+ipcMain.handle('files:show', (_e, id) => {
+  const t = transfers.get(id);
+  if (t && t.path) shell.showItemInFolder(t.path);
+});
+ipcMain.handle('files:clear', () => {
+  for (const [id, t] of transfers) if (t.state === 'done' || t.state === 'failed') transfers.delete(id);
+  notifyRenderer('files:changed');
+});
 
 /** Connect to the PC that invited us: pair first if needed (they let it through), then stream. */
 async function joinInvite(inv) {
@@ -454,6 +622,14 @@ ipcMain.handle('host:setNewDevicePerm', (_e, preset) => {
   if (!NEW_DEVICE_PERMS[preset]) throw new Error('Unknown permission set.');
   store.set('newDevicePerm', preset);
 });
+ipcMain.handle('beta:list', () => beta.list());
+ipcMain.handle('beta:set', (_e, id, on) => { beta.set(String(id), on); return beta.list(); });
+ipcMain.handle('notify:get', () => ({ notice: store.get('joinNotice') !== false, soundOn: store.get('joinSoundOn') !== false, sound: store.get('joinSound') }));
+ipcMain.handle('notify:set', (_e, c) => {
+  if ('notice' in c) store.set('joinNotice', Boolean(c.notice));
+  if ('soundOn' in c) store.set('joinSoundOn', Boolean(c.soundOn));
+  if ('sound' in c && /^[a-z]{3,12}$/.test(String(c.sound))) store.set('joinSound', String(c.sound));
+});
 ipcMain.handle('app:dnd', () => dndState());
 ipcMain.handle('app:setDnd', (_e, on) => setDnd(on ? -1 : 0));
 
@@ -467,19 +643,26 @@ const leftAt = new Map(); // device uuid -> when it stopped streaming
 
 /** Someone joined a stream on this PC without being asked about: say so, with a Kick button. */
 async function noticeJoin(guest) {
+  if (store.get('joinNotice') === false) return;
   const key = `joined:${guest.uuid}:${Date.now()}`;
   const who = (store.get('pairedDevices')[guest.uuid] || {}).user;
+  const inv = inviteForDevice(guest.uuid);
   const choice = await prompts.ask({
     key,
-    title: `${guest.name || 'A device'} joined your stream`,
-    details: [who ? `${who.replace(/@.*$/, '')}’s device` : '', 'It was let in without asking, as set for this device.'],
+    title: inv ? `${guest.name || 'A guest'} joined with your invite link` : `${guest.name || 'A device'} joined your stream`,
+    details: inv ? ['They’re your guest until they leave. Kick ends the invite.', ''] : [who ? `${who.replace(/@.*$/, '')}’s device` : '', 'It was let in without asking, as set for this device.'],
     accept: 'Dismiss',
     decline: 'Kick',
     danger: true,
-    sound: isDnd() ? '' : 'join', // a chime, so it's heard over a game
+    sound: isDnd() || store.get('joinSoundOn') === false ? 'none' : store.get('joinSound'), // heard over a game
     timeoutMs: JOIN_NOTICE_MS, // counted from when it shows, with a bar running down
   });
   if (!choice.declined) return;
+  if (inv) {
+    await endInvite(inv.id, 'kicked');
+    notifyRenderer('app:toast', `Kicked ${guest.name || 'your guest'}. The invite link is finished.`);
+    return;
+  }
   await apollo.disconnectClient(guest.uuid).catch(() => {});
   // Ask before it streams again, so a kick doesn't just let it straight back in
   const client = (await apollo.listClients().catch(() => [])).find((c) => c.uuid === guest.uuid);
@@ -533,7 +716,9 @@ async function watchGuests() {
         if (changed) presenceOnce(); // friends see "Hosting · 2 connected" go back to "Free" in seconds
       }
       watching = now;
+      inviteTick(now).catch(() => {});
     } else {
+      inviteTick(new Set()).catch(() => {});
       watching = null;
       if (hostGame) { hostGame = ''; presenceOnce(); }
     }
@@ -554,13 +739,28 @@ function raisePrompt(key, show) {
 async function pollHostRequests() {
   let delay = 1000;
   try {
-    const { streams = [], pairing = [], offers = [], invites = [] } = await apollo.pendingRequests();
+    const { streams = [], pairing = [], offers = [], invites = [], files = [] } = await apollo.pendingRequests();
+    const live = new Set();
+    for (const f of files) {
+      const key = `file:${f.id}`;
+      if (f.state === 'done') { takeFile(f); continue; }
+      if (f.state !== 'waiting') continue;
+      if (isPaused() || isDnd()) {
+        if (!prompted.has(key)) {
+          prompted.add(key);
+          apollo.decideFile(f.id, false).catch(() => {});
+          if (isDnd()) notifyRenderer('app:toast', `${f.from} tried to send you ${f.name}. Do not disturb declined it.`);
+        }
+        continue;
+      }
+      live.add(key);
+      if (!prompted.has(key)) raisePrompt(key, () => promptForFile(f));
+    }
     if (!managedChecked) {
       managedChecked = true;
       apollo.ensureManaged().catch(() => { managedChecked = false; });
     }
 
-    const live = new Set();
     for (const request of streams) {
       const key = `stream:${request.id}`;
       if (isPaused()) {
@@ -626,7 +826,7 @@ async function pollHostRequests() {
 /** Pair with a PIN typed by hand, for a pairing request whose popup was missed or ignored. */
 async function pairWithPin(pin, name) {
   const before = new Set((await apollo.listClients()).map((c) => c.uuid));
-  if (!(await apollo.submitPin(pin, name, 0))) throw new Error('No device is waiting to pair. Start pairing on the device first.');
+  if (!(await apollo.submitPin(pin, name, 0))) throw new Error('No single device is waiting to pair (none at all, or more than one at once). Start pairing on just the one device, then try again.');
   const added = await waitForNewClient(before, 8000);
   if (!added) throw new Error('Pairing didn’t complete. The PIN may have been wrong; try again from that device.');
   await setUpNewDevice(added).catch(() => {});
@@ -653,7 +853,7 @@ function webUiView() {
     callback({ requestHeaders: token ? { ...details.requestHeaders, 'X-Moonshine-Token': token } : details.requestHeaders });
   });
   webUi = new WebContentsView({ webPreferences: { session: ses } });
-  webUi.setBackgroundColor('#0b0709');
+  webUi.setBackgroundColor('#15101d');
   webUi.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://') && !url.startsWith(WEB_UI_ORIGIN)) shell.openExternal(url);
     return { action: 'deny' };
@@ -816,6 +1016,71 @@ ipcMain.handle('apollo:setWebLogin', (_e, user, password) => apolloCall(() => ap
 ipcMain.handle('apollo:otp', (_e, passphrase, name) => apolloCall(() => apollo.requestOtp(passphrase, name)));
 ipcMain.handle('apollo:pairWithPin', (_e, pin, name) => apolloCall(() => pairWithPin(pin, name)));
 
+// ---- Diagnostics: one block of text covering both host and client, for pasting into a bug report ---
+// Deliberately leaves out passwords, tokens, device names, IP addresses and anyone else's identity:
+// this is meant to be safe to paste somewhere Dani or a friend doesn't control, like a support channel.
+
+const redact = (text) => text
+  .replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, 'x.x.x.x') // IPv4
+  .replace(/\[[0-9a-fA-F:]*:[0-9a-fA-F:]*\]/g, '[::x]') // IPv6, always bracketed in our own logging
+  .replace(/[A-Za-z]:\\Users\\[^\\\s]+/g, 'C:\\Users\\<you>');
+
+/** The last few error/warning lines from Apollo's log, with addresses and paths scrubbed. */
+function recentHostProblems(fullLog) {
+  const lines = fullLog.split(/\r?\n/).filter((l) => /\b(Error|Fatal|Warning):/.test(l));
+  return lines.slice(-40).map(redact).join('\n') || '(none)';
+}
+
+async function buildDiagnostics() {
+  const lines = [];
+  const push = (label, value) => lines.push(`${label}: ${value}`);
+
+  push('Moonshine', `${app.getVersion()} on ${os.platform()} ${os.release()} (${os.arch()})`);
+
+  const hostState = await apollo.serviceState().catch(() => 'unknown');
+  push('Hosting', isPaused() ? `paused${untilText(store.get('pausedUntil'))}` : hostState);
+  if (hostState === 'running') {
+    try {
+      const clients = await apollo.listClients();
+      const connected = clients.filter((c) => c.connected).length;
+      const openAccess = clients.filter((c) => c.require_approval === false).length;
+      push('Paired devices', `${clients.length} total, ${connected} connected now, ${openAccess} set to not ask`);
+      push('New devices get', store.get('newDevicePerm') || 'controller');
+    } catch { lines.push('Paired devices: (could not read)'); }
+  }
+  push('Do not disturb', isDnd() ? `on${untilText(store.get('dndUntil'))}` : 'off');
+  push('Join notifications', `${store.get('joinNotice') !== false ? 'on' : 'off'}, sound ${store.get('joinSoundOn') !== false ? 'on' : 'off'}`);
+
+  push('Friends service', service.signedIn() ? `signed in, live link ${hub.isConnected() ? 'up' : 'down'}` : 'not signed in');
+  const invites = Object.values(hostInvites());
+  push('Invite links', `${invites.filter((i) => i.status === 'open').length} unused, ${invites.filter((i) => i.status === 'claimed').length} in use`);
+  const guest = guestInfo();
+  push('Joined by invite', guest ? `yes (${guest.host.name})` : 'no');
+
+  const td = tunnels.diagnostics();
+  push('Direct connections', `${td.outgoing} open (${td.outgoingRelayed} relayed), ${td.outgoingConnecting} connecting, ${td.incoming} incoming`);
+
+  const ss = streamSettings.get();
+  push('Beta features on', beta.list().filter((f) => f.on).map((f) => f.id).join(', ') || 'none');
+  push('Stream settings', `${ss.resolution || 'default'} resolution, ${ss.fps || 'default'} fps, codec ${ss.videoCodec}, virtual display ${ss.virtualDisplay ? 'on' : 'off'}`);
+
+  const upd = updater.getState();
+  push('Updates', `checks ${store.get('updateEvery') || 'day'}, last check: ${upd.status}`);
+
+  let hostLog = '(hosting is off)';
+  if (hostState === 'running') {
+    try { hostLog = recentHostProblems(await apollo.getLogs()); } catch { hostLog = '(could not read the host log)'; }
+  }
+
+  return `${lines.join('\n')}\n\nRecent host errors/warnings:\n${hostLog}`;
+}
+
+ipcMain.handle('app:copyDiagnostics', async () => {
+  const text = await buildDiagnostics();
+  clipboard.writeText(text);
+  return text.length;
+});
+
 ipcMain.handle('apollo:browse', async (_e, kind) => {
   const filters = kind === 'image'
     ? [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }]
@@ -851,6 +1116,13 @@ function installUpdate() {
   return Promise.resolve();
 }
 
+// Besides at startup, Moonshine looks for a new version this often (Settings picks which)
+const DAY_MS = 24 * 60 * 60 * 1000;
+const UPDATE_EVERY_MS = { day: DAY_MS, '3days': 3 * DAY_MS, week: 7 * DAY_MS, launch: 0 };
+ipcMain.handle('update:getEvery', () => (store.get('updateEvery') in UPDATE_EVERY_MS ? store.get('updateEvery') : 'day'));
+ipcMain.handle('update:setEvery', (_e, value) => {
+  if (value in UPDATE_EVERY_MS) store.set('updateEvery', value);
+});
 ipcMain.handle('update:get', () => updater.getState());
 ipcMain.handle('update:check', () => updater.check());
 ipcMain.handle('update:prepare', async () => {
@@ -912,6 +1184,7 @@ async function findHosts() {
   const reach = async (address, port, addressRank, fields = {}) => {
     const info = await library.serverInfo(address, port);
     if (info) {
+      rememberMac(info, address);
       const full = info.port === library.DEFAULT_PORT ? address : `${address}:${port}`;
       merge(info.uuid, {
         name: info.name, address: full, addressRank,
@@ -1001,6 +1274,29 @@ function setVolume(key, value) {
 }
 
 /** While streaming: pick up a boost changed with the player's keys. */
+// Files dropped onto the stream window: the player appends each path to this file, and they're
+// sent to the PC being streamed (the stream itself carries no files).
+const dropFile = () => path.join(app.getPath('userData'), 'stream-drops.txt');
+let dropTarget = null;
+let dropRead = 0;
+function watchDropFile(pc) {
+  fs.unwatchFile(dropFile());
+  dropTarget = pc;
+  dropRead = 0;
+  if (!pc) return;
+  try { fs.writeFileSync(dropFile(), ''); } catch { return; }
+  fs.watchFile(dropFile(), { interval: 400 }, () => {
+    let text;
+    try { text = fs.readFileSync(dropFile(), 'utf8'); } catch { return; }
+    const fresh = text.slice(dropRead);
+    const end = fresh.lastIndexOf('\n');
+    if (end < 0) return;
+    dropRead += end + 1;
+    const paths = fresh.slice(0, end).split('\n').map((s) => s.trim()).filter(Boolean);
+    if (paths.length && dropTarget) sendFiles(dropTarget, paths).catch((err) => notifyRenderer('app:toast', err.message));
+  });
+}
+
 function watchVolumeFile(on) {
   fs.unwatchFile(volumeFile());
   if (!on) return;
@@ -1080,6 +1376,10 @@ async function startStream(host, appName, { resumed = false } = {}) {
     }
     if (streamProcess) return;
     if (endedByUser) return; // stopped while the connection was opening
+    const rec = tunnels.recordFor(requested.address);
+    if (rec && tunnels.isRelayed(rec.hostUuid)) {
+      notifyRenderer('app:toast', 'No direct path to that PC, so Moonshine is using a relay. It works, with a little more delay.');
+    }
   }
   if (!resumed) {
     const recent = store.get('recentHosts').filter((h) => h.app && !(h.address === host.address && h.app === appName));
@@ -1092,10 +1392,14 @@ async function startStream(host, appName, { resumed = false } = {}) {
   writeVolumeFile(volumeFor(streamVolumeKey));
   const reconnects = streamSettings.get().autoReconnect !== false;
   const startedAt = Date.now();
-  streamProcess = moonlight.stream(host.address, appName, streamSettings.toArgs(), {
-    ...streamSettings.toEnv(), MOONSHINE_VOLUME_FILE: volumeFile(), ...(reconnects ? { MOONSHINE_RECONNECT: '1' } : {}),
+  // This PC's own settings (if it has any) over the defaults. A direct connection's address is
+  // local, so the PC is told apart by the uuid it was asked for with.
+  const forThisPc = streamSettings.getFor(requested.uuid ? requested : host);
+  streamProcess = moonlight.stream(host.address, appName, streamSettings.toArgs(forThisPc), {
+    ...streamSettings.toEnv(forThisPc), MOONSHINE_VOLUME_FILE: volumeFile(), MOONSHINE_DROP_FILE: dropFile(), ...(reconnects ? { MOONSHINE_RECONNECT: '1' } : {}),
   });
   watchVolumeFile(true);
+  watchDropFile({ uuid: requested.uuid || host.uuid, name: host.name, address: requested.address });
   streamAddress = host.address;
   streamApp = appName;
   presenceOnce();
@@ -1105,6 +1409,7 @@ async function startStream(host, appName, { resumed = false } = {}) {
   streamProcess.on('exit', (code) => {
     streamProcess = null;
     watchVolumeFile(false);
+    watchDropFile(null);
     streamAddress = '';
     streamApp = '';
     presenceOnce();
@@ -1212,9 +1517,11 @@ async function friendsStatus(full, manual = false) {
     const m = h.address.match(/^(\[.*\]|[^:]+):(\d+)$/);
     const [address, port] = m ? [m[1].replace(/^\[|\]$/g, ''), Number(m[2])] : [h.address, library.DEFAULT_PORT];
     const info = address ? await library.serverInfo(address, port, 1500) : null;
+    if (info) rememberMac(info, address);
     const hello = info && h.moonshine ? await invite.probe(h.address) : null;
     return {
       uuid: h.uuid, name: h.name, ownName: h.ownName, user: h.tailnetUser || '', address: h.address,
+      kind: info ? connectionKind(h.address, h.uuid) : '', ms: info ? msBucket(info.ms) : 0, canWake: !info && canWake(h.uuid),
       paired: h.paired, moonshine: h.moonshine, saved: h.saved, online: Boolean(info),
       busy: Boolean(info && info.busy), guests: hello && Number.isFinite(hello.guests) ? hello.guests : null,
     };
@@ -1237,6 +1544,7 @@ async function friendsStatus(full, manual = false) {
   return {
     me, tailscale: Boolean(ts), pcs: merged, unseen, alerts: store.get('friendAlerts'), shareGame: store.get('shareGame'),
     version: app.getVersion(), service: account.service,
+    self: { name: os.hostname(), hosting: hostingSeen === true && !isPaused() }, invites: inviteList(),
   };
 }
 
@@ -1274,24 +1582,96 @@ async function serviceFriends(fresh = false) {
   }
 }
 
+/** The address without its port: "1.2.3.4", "fe80::1". */
+const bareAddress = (address) => {
+  const m = String(address || '').match(/^(\[.*\]|[^:]+):(\d+)$/);
+  return (m ? m[1] : String(address || '')).replace(/^\[|\]$/g, '');
+};
+
+/** How this PC reaches that one: 'lan' (same network), 'tailscale', 'direct' (straight over the internet) or 'relay'. */
+function connectionKind(address, hostUuid) {
+  if (!address) return '';
+  if (tunnels.isTunnelAddress(address)) return tunnels.isRelayed(hostUuid) ? 'relay' : 'direct';
+  return isTailnetAddress(bareAddress(address)) ? 'tailscale' : 'lan';
+}
+
+/** A delay in ms rounded to the nearest 10 (10 means under 20), so a list doesn't redraw for every wobble. */
+const msBucket = (ms) => (ms > 0 ? (ms < 20 ? 10 : Math.round(ms / 10) * 10) : 0);
+
+/** How long the host at this address takes to answer, in ms (0 when it doesn't). */
+async function pingMs(address) {
+  const m = String(address).match(/^(\[.*\]|[^:]+):(\d+)$/);
+  const info = await library.serverInfo(bareAddress(address), m ? Number(m[2]) : library.DEFAULT_PORT, 1500);
+  return info ? info.ms : 0;
+}
+
+/** Keep a PC's network (MAC) address while it's on this PC's own network, so it can be woken later. */
+function rememberMac(info, address) {
+  if (!info || !info.mac || !info.uuid || !wol.isLocal(bareAddress(address))) return;
+  const all = store.get('hostMacs') || {};
+  if (all[info.uuid] === info.mac) return;
+  store.set('hostMacs', { ...all, [info.uuid]: info.mac });
+}
+const canWake = (uuid) => Boolean(uuid && (store.get('hostMacs') || {})[uuid]);
+
+ipcMain.handle('pc:wake', async (_e, uuid) => {
+  const mac = (store.get('hostMacs') || {})[String(uuid)];
+  if (!mac) throw new Error('Moonshine hasn’t seen that PC on this network yet, so it can’t wake it.');
+  await wol.wake(mac);
+  return true;
+});
+
+/** The "Can I connect directly?" check: this PC's network, and what Moonshine will do about it. */
+ipcMain.handle('network:check', async () => {
+  if (!service.signedIn()) {
+    return { verdict: 'signin', summary: 'Sign in with your Moonshine account first (Connect tab). Direct connections are arranged through it.' };
+  }
+  const link = hub.isConnected();
+  let nat = 'blocked';
+  try { nat = (await tunnels.checkNetwork()).nat; } catch { /* treated as blocked */ }
+  let relay = 'unavailable';
+  try { await service.turnCredentials(); relay = 'ready'; } catch { /* no relay right now */ }
+  const backup = relay === 'ready'
+    ? 'If it can’t, Moonshine switches to a relay by itself: it works, with a little more delay.'
+    : 'The relay isn’t available right now, so Tailscale is the way around it.';
+  let verdict;
+  let summary;
+  if (nat === 'cone') {
+    verdict = 'yes';
+    summary = 'Yes. Your router allows direct connections, so friends can connect straight to you and you to them. (A friend’s network matters too.)';
+  } else if (nat === 'unknown') {
+    verdict = 'probably';
+    summary = 'Probably. Your router looks fine, but only one of the two test servers answered. ' + backup;
+  } else if (nat === 'symmetric') {
+    verdict = 'relay';
+    summary = 'Not directly. Your router uses a different address for every connection (common on mobile and some internet providers). ' + backup;
+  } else {
+    verdict = 'relay';
+    summary = 'Not directly. Your network blocks the kind of traffic direct connections use. ' + backup;
+  }
+  if (!link) summary += ' Moonshine isn’t connected to its service right now, so friends can’t reach this PC until it is.';
+  return { verdict, nat, relay, link, summary };
+});
+
 /** How to reach a friend's PC from here: the first of its addresses whose host answers. */
 async function reachFriendPc(pc) {
   const cached = reachCache.get(pc.hostUuid);
   if (cached && Date.now() - cached.at < REACH_CACHE_MS) return cached;
   const known = lastHosts.find((h) => h.uuid === pc.hostUuid && h.online);
   const direct = tunnels.openAddress(pc.hostUuid);
-  let result = { at: Date.now(), address: '', paired: false };
+  let result = { at: Date.now(), address: '', paired: false, ms: 0 };
   if (direct) {
-    result = { at: Date.now(), address: direct, paired: Boolean(await moonlight.listApps(direct)) };
+    result = { at: Date.now(), address: direct, paired: Boolean(await moonlight.listApps(direct)), ms: await pingMs(direct) };
   } else if (known) {
-    result = { at: Date.now(), address: known.address, paired: known.paired };
+    result = { at: Date.now(), address: known.address, paired: known.paired, ms: await pingMs(known.address) };
   } else {
     for (const a of pc.addrs) {
       const info = await library.serverInfo(a, pc.port, 1200);
       if (info && info.uuid === pc.hostUuid) {
         const host = a.includes(':') ? `[${a}]` : a;
         const address = pc.port === library.DEFAULT_PORT ? a : `${host}:${pc.port}`;
-        result = { at: Date.now(), address, paired: Boolean(await moonlight.listApps(address)) };
+        rememberMac(info, a);
+        result = { at: Date.now(), address, paired: Boolean(await moonlight.listApps(address)), ms: info.ms };
         break;
       }
     }
@@ -1312,7 +1692,11 @@ async function accountFriends(fresh = false) {
   const data = await serviceFriends(fresh);
   state.signedIn = service.signedIn(); // a refused token signs this PC out
   state.error = friendsCache.error;
-  if (!data) return { service: state, pcs: [] };
+  if (!data) {
+    const only = guestPc();
+    if (only) autoPairFriends([only]);
+    return { service: state, pcs: only ? [only] : [] };
+  }
   state.username = data.me ? data.me.username || '' : state.username;
   state.requests = data.friends.filter((f) => f.status !== 'accepted').map((f) => ({ username: f.username, status: f.status }));
   const unread = store.get('unread');
@@ -1338,6 +1722,9 @@ async function accountFriends(fresh = false) {
         saved: false,
         online: pc.online && pc.hosting,
         reachable: Boolean(reach.address),
+        kind: reach.address ? connectionKind(reach.address, pc.hostUuid) : '',
+        ms: reach.address ? msBucket(reach.ms) : 0,
+        canWake: !(pc.online && pc.hosting) && canWake(pc.hostUuid),
         // No shared network or Tailscale: a direct connection through both routers can still work
         direct: viaTunnel,
         canConnectDirectly: !reach.address && pc.online && pc.hosting && Boolean(pc.tunnel && pc.device) && hub.isConnected(),
@@ -1350,6 +1737,8 @@ async function accountFriends(fresh = false) {
       });
     }
   }
+  const guest = guestPc();
+  if (guest) pcs.push(guest);
   autoPairFriends(pcs);
   return { service: state, pcs };
 }
@@ -1407,7 +1796,7 @@ async function autoPairOne(pc) {
     // No shared network: open a direct connection through both routers
     const f = await friendPcByUuid(pc.uuid);
     if (!f || !f.device) return 'failed';
-    address = await tunnels.connect({ hostUuid: pc.uuid, device: f.device, port: f.port, name: pc.name });
+    address = await tunnels.connect({ hostUuid: pc.uuid, device: f.device, port: f.port, name: pc.name, guest: f.guest });
   }
   if (await moonlight.listApps(address)) {
     // Already paired (e.g. from before they were friends)
@@ -1580,6 +1969,10 @@ ipcMain.handle('friends:chatOpen', (_e, username) => { openChat = String(usernam
 
 /** A friend's online, hosting PC from the friends list: { device, port, name, username }. */
 async function friendPcByUuid(uuid) {
+  const g = guestInfo();
+  if (g && g.host.uuid === uuid) {
+    return { device: g.host.device, port: g.host.port, name: g.host.name, username: g.host.user || '', guest: { token: guestToken(), link: ensureGuestLink() } };
+  }
   const data = await serviceFriends();
   for (const f of (data && data.friends) || []) {
     if (f.status !== 'accepted') continue;
@@ -1594,7 +1987,7 @@ ipcMain.handle('friends:connect', async (_e, uuid) => {
   const pc = await friendPcByUuid(uuid);
   if (!pc || !pc.device) throw new Error('That PC isn’t hosting any more.');
   const name = store.get('pcNames')[uuid] || pc.name;
-  const address = await tunnels.connect({ hostUuid: uuid, device: pc.device, port: pc.port, name });
+  const address = await tunnels.connect({ hostUuid: uuid, device: pc.device, port: pc.port, name, guest: pc.guest });
   const apps = await moonlight.listApps(address);
   reachCache.set(uuid, { at: Date.now(), address, paired: Boolean(apps) });
   return {
@@ -1602,6 +1995,71 @@ ipcMain.handle('friends:connect', async (_e, uuid) => {
     tailnetUser: '', user: pc.username, direct: true, apps: withBoxArt(uuid, apps || []),
   };
 });
+
+// ---- "Join my game" invites through the friends service ----------------------------------------
+const playInvitesOut = new Map(); // invite id -> { who, name, timer }: invites this PC sent, waiting for an answer
+const playInvitesSeen = new Set(); // ids of invites this PC already showed
+
+/** A friend's "join my game" came in over the live link. */
+async function onPlayInvite(msg) {
+  const id = String(msg.id || '');
+  const from = msg.from || {};
+  if (!id || !from.username || playInvitesSeen.has(id)) return;
+  playInvitesSeen.add(id);
+  if (playInvitesSeen.size > 200) playInvitesSeen.delete(playInvitesSeen.values().next().value);
+  const app = String(msg.app || 'a game').slice(0, 80);
+  const host = String(msg.host || 'their PC').slice(0, 60);
+  const answer = (status) => service.answerPlayInvite({ device: from.device, id, status }).catch(() => {});
+  if (isDnd()) {
+    answer('declined');
+    notifyRenderer('app:toast', `${from.username} invited you to play ${app}. Do not disturb answered “not now”.`);
+    return;
+  }
+  const who = friendLabel(from.username);
+  const choice = await prompts.ask({
+    key: `play:${id}`,
+    title: `${who} invites you to play`,
+    details: [`${app} on ${host}`, `From your friend ${from.username}`],
+    accept: 'Join',
+    decline: 'Not now',
+  });
+  if (choice.cancelled) return;
+  await answer(choice.ok ? 'joined' : 'declined');
+  if (choice.ok) joinFriendGame(from.username, String(msg.hostUuid || ''), host, app).catch((err) => notifyRenderer('app:toast', err.message));
+}
+
+/** Join a friend's game from an invite: reach their PC (any way it can be reached), pair if needed, stream. */
+async function joinFriendGame(username, hostUuid, hostName, appName) {
+  if (streamProcess || streamStarting) throw new Error('End the stream you’re in first.');
+  const data = await serviceFriends(true);
+  const friend = ((data && data.friends) || []).find((f) => f.status === 'accepted' && f.username === username);
+  const pc = friend && friend.pcs.find((p) => p.hostUuid === hostUuid && p.online && p.hosting);
+  if (!pc) throw new Error(`${hostName} isn’t hosting any more.`);
+  const name = store.get('pcNames')[hostUuid] || pc.name;
+  reachCache.delete(hostUuid);
+  let address = (await reachFriendPc(pc)).address;
+  if (!address) {
+    if (!(pc.tunnel && pc.device) || !hub.isConnected()) throw new Error(`Couldn’t reach ${name}.`);
+    address = await tunnels.connect({ hostUuid, device: pc.device, port: pc.port, name });
+  }
+  const target = { uuid: hostUuid, name, address, moonshine: true };
+  if (!(await moonlight.listApps(address))) {
+    showWindow();
+    const res = await pairWith(target);
+    notifyRenderer('pair:state', null);
+    if (!res.ok) throw new Error(res.reason === 'cancelled' ? 'Joining cancelled.' : `Couldn’t pair with ${name}.`);
+  }
+  startStream(target, appName);
+}
+
+/** The friend answered an invite this PC sent. */
+function onPlayAnswer(msg) {
+  const out = playInvitesOut.get(String(msg.id || ''));
+  if (!out) return;
+  clearTimeout(out.timer);
+  playInvitesOut.delete(String(msg.id));
+  notifyRenderer('app:toast', msg.status === 'joined' ? `${out.name} is joining.` : `${out.name} said not now.`);
+}
 
 /** Invite a friend to join a stream on this PC. */
 ipcMain.handle('friends:invite', async (_e, pc) => {
@@ -1613,9 +2071,29 @@ ipcMain.handle('friends:invite', async (_e, pc) => {
   const desktop = list.find((a) => /^desktop$/i.test(a.name)) || list[0];
   const app = (running || desktop || { name: 'Desktop' }).name;
   const name = cfg.sunshine_name || os.hostname();
+  const port = Number(cfg.port) || library.DEFAULT_PORT;
+  // A friend with a Moonshine account: through the friends service, so it works over direct
+  // connections and the relay too. An older Moonshine there, or no live link: the PC's own address.
+  if (pc.user && hub.isConnected()) {
+    try {
+      const self = await library.serverInfo('127.0.0.1', port);
+      if (!self) throw new Error('Turn on hosting in the Host tab first.');
+      const id = crypto.randomBytes(12).toString('hex');
+      await service.sendPlayInvite({ username: pc.user, id, hostUuid: self.uuid, app, host: name });
+      invitedUsers.set(pc.user, Date.now() + INVITE_VALID_MS);
+      playInvitesOut.set(id, { who: pc.user, name: pc.name, timer: setTimeout(() => {
+        playInvitesOut.delete(id);
+        notifyRenderer('app:toast', `No answer from ${pc.name}.`);
+      }, 2 * 60 * 1000) });
+      return { app };
+    } catch (err) {
+      if (!pc.address || pc.direct || /Turn on hosting/.test(err.message)) throw err;
+      // otherwise: fall back to their address below
+    }
+  }
   let id;
   try {
-    id = await invite.sendInvite(pc.address, { name, app, port: Number(cfg.port) || library.DEFAULT_PORT });
+    id = await invite.sendInvite(pc.address, { name, app, port });
   } catch (err) {
     throw new Error({
       closed: `Moonshine isn’t open on ${pc.name}, so nobody would see the invite.`,
@@ -1759,6 +2237,18 @@ ipcMain.handle('settings:get', () => {
 
 ipcMain.handle('settings:set', (_e, settings) => streamSettings.set(settings));
 
+// Per-PC stream settings: what one PC overrides, saved and read by the PC's key (uuid, or address)
+ipcMain.handle('settings:getForHost', (_e, key) => {
+  const o = streamSettings.overridesFor(String(key));
+  return { settings: { ...streamSettings.get(), ...(o ? o.values : {}) }, overridden: o ? Object.keys(o.values) : [] };
+});
+ipcMain.handle('settings:setForHost', (_e, key, name, settings) => streamSettings.setFor(String(key), String(name || ''), settings || {}));
+ipcMain.handle('settings:resetForHost', (_e, key, field) => streamSettings.resetFor(String(key), field ? String(field) : ''));
+ipcMain.handle('settings:hostsWithOverrides', () => {
+  const all = require('./lib/store').get('hostStreamSettings') || {};
+  return Object.entries(all).map(([key, o]) => ({ key, name: o.name || key }));
+});
+
 // ---- Speed test: a suggested stream bitrate (download) and host upload limit (upload) ------------
 let speedTesting = false;
 ipcMain.handle('speed:test', async (_e, kind) => {
@@ -1779,9 +2269,255 @@ ipcMain.handle('speed:test', async (_e, kind) => {
   }
 });
 
+// ---- One-time invite links ------------------------------------------------------------------------
+// Host: the first row of the Connect list is this PC; its "Copy invite link" button makes a link
+// (lib/friends-service.js createInvite) that works once. Whoever opens it gets a guest login (no
+// account, no friends) that may reach this PC only. Clicking Copy was the permission, so the guest
+// pairs and streams without a popup (promptForOffer / promptForStream), with the join notice and its
+// Kick button still shown. The invite ends when the guest has been gone a couple of minutes, when it
+// is kicked or revoked, or after a while if they never stream.
+// Guest: opening moonshine://join/<secret> redeems the link; the host PC then shows up in the list.
+
+const INVITE_GRACE_MS = 2 * 60 * 1000; // a guest who stopped streaming can come back (auto-reconnect) this long
+const INVITE_NO_STREAM_MS = 10 * 60 * 1000; // a link used but never streamed from
+const hostInvites = () => ({ ...(store.get('invites') || {}) });
+
+function saveInvites(all) {
+  store.set('invites', all);
+  notifyRenderer('invites:changed');
+}
+
+/** Still valid on this PC: made here, used by a guest, not ended. */
+function inviteLive(id) {
+  const rec = hostInvites()[id];
+  return Boolean(rec && rec.status === 'claimed');
+}
+
+/** May this guest device connect? Checked on every offer, against this PC's own list. */
+function inviteAllowed(id, guestDevice) {
+  const rec = hostInvites()[id];
+  return Boolean(rec && rec.status === 'claimed' && rec.guestDevice === guestDevice);
+}
+
+function inviteForDevice(uuid) {
+  return Object.values(hostInvites()).find((r) => r.guestUuid === uuid) || null;
+}
+
+function attachInviteDevice(id, uuid) {
+  const all = hostInvites();
+  if (!all[id]) return;
+  all[id] = { ...all[id], guestUuid: uuid };
+  saveInvites(all);
+}
+
+function inviteList() {
+  return Object.values(hostInvites()).sort((a, b) => b.at - a.at).map((r) => ({
+    id: r.id, status: r.status, expires: r.expires, guest: r.guestName || '',
+    streaming: Boolean(r.hadStream && !r.idleSince),
+  }));
+}
+
+async function createInviteLink() {
+  if (!service.signedIn()) throw new Error('Sign in to Moonshine first (the Friends tab): invite links need it.');
+  if ((await apollo.serviceState()) !== 'running') throw new Error('Turn on hosting in the Host tab first.');
+  const made = await service.createInvite();
+  const all = hostInvites();
+  all[made.id] = { id: made.id, url: made.url, expires: made.expires, status: 'open', at: Date.now() };
+  saveInvites(all);
+  return made;
+}
+
+function onInviteClaimed(msg) {
+  const all = hostInvites();
+  const rec = all[msg.invite];
+  if (!rec) return;
+  all[msg.invite] = { ...rec, status: 'claimed', url: '', guestName: msg.guestName || 'Guest', guestDevice: msg.guestDevice, claimedAt: Date.now() };
+  saveInvites(all);
+  notifyRenderer('app:toast', `${msg.guestName || 'Someone'} opened your invite link.`);
+}
+
+/** End an invite: the guest is unpaired and disconnected, and the link stops working. */
+async function endInvite(id, reason, { tell = true } = {}) {
+  const all = hostInvites();
+  const rec = all[id];
+  if (!rec) return;
+  delete all[id];
+  saveInvites(all);
+  if (tell) await service.revokeInvite(id).catch(() => {});
+  if (rec.guestUuid) {
+    await apollo.disconnectClient(rec.guestUuid).catch(() => {});
+    await apollo.unpair(rec.guestUuid).catch(() => {});
+    const users = { ...store.get('pairedDevices') };
+    delete users[rec.guestUuid];
+    store.set('pairedDevices', users);
+    notifyRenderer('host:changed');
+  }
+  if (reason === 'left' || reason === 'guest-left') notifyRenderer('app:toast', `${rec.guestName || 'Your guest'} left. The invite link is finished.`);
+}
+
+/** Every 2 seconds, with who is streaming: end invites whose guest has gone. */
+async function inviteTick(streamingNow) {
+  const all = hostInvites();
+  const t = Date.now();
+  let changed = false;
+  for (const rec of Object.values(all)) {
+    if (rec.status !== 'claimed') {
+      if (rec.expires < t) { delete all[rec.id]; changed = true; }
+      continue;
+    }
+    if (rec.guestUuid && streamingNow.has(rec.guestUuid)) {
+      if (!rec.hadStream || rec.idleSince) { all[rec.id] = { ...rec, hadStream: true, idleSince: 0 }; changed = true; }
+    } else if (rec.hadStream) {
+      if (!rec.idleSince) { all[rec.id] = { ...rec, idleSince: t }; changed = true; } else if (t - rec.idleSince > INVITE_GRACE_MS) { await endInvite(rec.id, 'left'); }
+    } else if (t - (rec.claimedAt || rec.at) > INVITE_NO_STREAM_MS) {
+      await endInvite(rec.id, 'unused');
+    }
+  }
+  if (changed) saveInvites(all);
+}
+
+/** After a restart or reconnect: forget links the service has dropped (expired), and learn ones used meanwhile. */
+async function syncInvites() {
+  if (!service.signedIn() || !Object.keys(hostInvites()).length) return;
+  const { invites } = await service.listInvites();
+  const live = new Map(invites.map((i) => [i.id, i]));
+  for (const rec of Object.values(hostInvites())) {
+    const s = live.get(rec.id);
+    if (!s) await endInvite(rec.id, 'expired', { tell: false });
+    else if (s.status === 'claimed' && rec.status === 'open') onInviteClaimed({ invite: rec.id, guestName: s.guest, guestDevice: s.guestDevice });
+  }
+}
+
+ipcMain.handle('invites:list', () => inviteList());
+ipcMain.handle('invites:create', async () => {
+  const made = await createInviteLink();
+  clipboard.writeText(made.url);
+  return { id: made.id };
+});
+ipcMain.handle('invites:copy', (_e, id) => {
+  const rec = hostInvites()[id];
+  if (!rec || rec.status !== 'open') throw new Error('That link was already used.');
+  clipboard.writeText(rec.url);
+});
+ipcMain.handle('invites:revoke', (_e, id) => endInvite(Number(id), 'revoked'));
+
+// ---- Guest: joined by an invite link ----------------------------------------------------------
+
+let guestLink = null;
+
+function guestToken() {
+  try { return store.getSecret('guestToken'); } catch { return ''; }
+}
+
+function guestInfo() {
+  const g = store.get('guestInvite');
+  return g && g.host && guestToken() ? g : null;
+}
+
+/** The guest's own live link to the service (it has no account, only this login). */
+function ensureGuestLink() {
+  if (!guestInfo()) return null;
+  if (!guestLink) {
+    guestLink = hub.createLink(async () => {
+      try {
+        return await service.hubTicket(guestToken());
+      } catch (err) {
+        if (err.status === 401) leaveInvite('ended'); // the invite ended while this PC was off
+        throw err;
+      }
+    }, () => Boolean(guestInfo()));
+    guestLink.events.on('message', (m) => {
+      if (m.type === 'invite-ended') leaveInvite(m.reason || 'ended');
+    });
+    guestLink.start();
+  }
+  return guestLink;
+}
+
+/** The invited-to PC as a row for the Connect list. */
+function guestPc() {
+  const g = guestInfo();
+  if (!g) return null;
+  const link = ensureGuestLink();
+  const known = reachCache.get(g.host.uuid);
+  return {
+    uuid: g.host.uuid, name: g.host.name, ownName: g.host.name, user: 'invite', hostUser: g.host.user || '',
+    account: true, guest: true, invite: g.invite, address: '', paired: Boolean(known && known.paired), moonshine: true, saved: false,
+    online: true, reachable: false, direct: tunnels.isTunnelAddress((known || {}).address || ''),
+    canConnectDirectly: Boolean(link && link.isConnected()), busy: false, guests: 0, game: '', version: '',
+    everPaired: Boolean(store.get('friendPcsPaired')[g.host.uuid]), pairing: (autoPairs.get(g.host.uuid) || {}).state === 'pairing',
+  };
+}
+
+async function leaveInvite(reason = 'left') {
+  const g = guestInfo();
+  if (!g) return;
+  const token = guestToken();
+  store.set('guestInvite', null);
+  store.setSecret('guestToken', '');
+  if (guestLink) { guestLink.stop(); guestLink = null; }
+  if (reason === 'left') await service.endInvite(g.invite, token).catch(() => {});
+  const address = tunnels.openAddress(g.host.uuid);
+  if (streamProcess && address && streamAddress === address) {
+    endedByUser = true;
+    execFile('taskkill.exe', ['/PID', String(streamProcess.pid), '/T', '/F'], { windowsHide: true }, () => {});
+  }
+  tunnels.closeFor(g.host.uuid);
+  reachCache.delete(g.host.uuid);
+  autoPairs.delete(g.host.uuid);
+  const paired = { ...store.get('friendPcsPaired') };
+  delete paired[g.host.uuid];
+  store.set('friendPcsPaired', paired);
+  await library.removeSavedHost(g.host.uuid).catch(() => {});
+  friendsCache = { ...friendsCache, at: 0 };
+  notifyRenderer('friends:changed');
+  if (reason !== 'left') {
+    notifyRenderer('app:toast', reason === 'expired' ? 'That invite link ran out.' : `Your invite to ${g.host.name} has ended.`);
+  }
+}
+
+/** Someone opened an invite link (moonshine://join/<secret>): use it up and show the PC in the list. */
+async function acceptInviteLink(secret) {
+  showWindow();
+  try {
+    if (guestInfo()) await leaveInvite('left'); // a new link replaces the old invite
+    const res = await service.redeemInvite(secret, os.hostname());
+    store.setSecret('guestToken', res.token);
+    store.set('guestInvite', { invite: res.invite, host: res.host });
+    ensureGuestLink();
+    friendsCache = { ...friendsCache, at: 0 };
+    notifyRenderer('app:selectTab', 'friends');
+    notifyRenderer('friends:changed');
+    notifyRenderer('app:toast', `You’re invited to play on ${res.host.name}. Moonshine is connecting to it.`);
+  } catch (err) {
+    notifyRenderer('app:toast', err.status === 410 ? err.message : `Couldn’t use that invite link: ${err.message}`);
+  }
+}
+
+const INVITE_URL = /^moonshine:\/\/join\/([A-Za-z0-9_-]{20,64})\/?$/i;
+
+/** A link click starts Moonshine (or reaches the one running) with the address as an argument. */
+function handleInviteArgs(argv) {
+  for (const a of argv || []) {
+    const m = INVITE_URL.exec(String(a).trim());
+    if (m) { acceptInviteLink(m[1]); return; }
+  }
+}
+
+function startInvites() {
+  if (app.isPackaged) app.setAsDefaultProtocolClient('moonshine');
+  ensureGuestLink();
+  setTimeout(() => handleInviteArgs(process.argv), 1500); // after the window has loaded, so its messages show
+}
+
+ipcMain.handle('invites:leave', () => leaveInvite('left'));
+
 // ---- App lifecycle -------------------------------------------------------------
 
-app.on('second-instance', showWindow);
+app.on('second-instance', (_e, argv) => {
+  showWindow();
+  handleInviteArgs(argv);
+});
 
 app.whenReady().then(() => {
   // Moonshine is dark; this makes Apollo's embedded web UI follow suit.
@@ -1815,7 +2551,7 @@ app.whenReady().then(() => {
       showBalloon(`Moonshine ${s.version} is available`, 'Open Moonshine and choose Update now. It takes about a minute.');
     }
   });
-  updater.init({ version: app.getVersion(), fetch: (url, opts) => net.fetch(url, opts) });
+  updater.init({ version: app.getVersion(), fetch: (url, opts) => net.fetch(url, opts), every: () => UPDATE_EVERY_MS[store.get('updateEvery')] ?? UPDATE_EVERY_MS.day });
   const updated = (process.argv.find((a) => a.startsWith('--updated=')) || '').slice('--updated='.length);
   if (updated) {
     const message = {
@@ -1827,6 +2563,7 @@ app.whenReady().then(() => {
   }
 
   watchGuests();
+  startInvites();
   moonlight.setHostEnv(tunnels.playerEnv);
   tunnels.init({
     hostInfo: async () => {
@@ -1837,18 +2574,24 @@ app.whenReady().then(() => {
     inUse: (address) => Boolean(streamProcess) && streamAddress === address,
     friendPc: async (uuid) => {
       const pc = await friendPcByUuid(uuid);
-      return pc && pc.device ? { device: pc.device, port: pc.port, name: store.get('pcNames')[uuid] || pc.name } : null;
+      return pc && pc.device ? { device: pc.device, port: pc.port, name: store.get('pcNames')[uuid] || pc.name, guest: pc.guest } : null;
     },
+    inviteOk: async (id, device) => inviteAllowed(id, device),
     log: (line) => console.log(line),
   });
   // Tell friends straight away when this PC can (or can no longer) take direct connections
   hub.events.on('up', () => {
+    syncInvites().catch(() => {});
     friendsCache.at = 0;
     presenceOnce().then(() => notifyRenderer('friends:changed'));
   });
   hub.events.on('message', (msg) => {
-    if (msg.type === 'friends-changed') onFriendsChanged();
+    if (msg.type === 'invite-claimed') onInviteClaimed(msg);
+    else if (msg.type === 'invite-ended') endInvite(Number(msg.invite), msg.reason, { tell: false }).catch(() => {});
+    else if (msg.type === 'friends-changed') onFriendsChanged();
     else if (msg.type === 'message') onMessage(msg);
+    else if (msg.type === 'play-invite') onPlayInvite(msg).catch(() => {});
+    else if (msg.type === 'play-answer') onPlayAnswer(msg);
   });
   // Asleep, this PC can't be streamed from: show it offline now, and back online on waking
   powerMonitor.on('suspend', () => { hub.stop({ bye: true }); });

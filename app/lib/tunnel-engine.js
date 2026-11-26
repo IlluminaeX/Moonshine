@@ -26,6 +26,7 @@ const dns = require('dns').promises;
 const net = require('net');
 const os = require('os');
 const { EventEmitter } = require('events');
+const { TurnClient } = require('./turn');
 
 // Ports a tunnel carries, as offsets from the host's base port (47989 by default)
 const PORTS = [-5, 0, 21, 9, 10, 11]; // HTTPS, HTTP, RTSP (TCP); video, control, audio (UDP)
@@ -50,6 +51,8 @@ const STREAM_IDLE_MS = 30 * 60 * 1000; // the player can hold an HTTP connection
 
 const PUNCH_EVERY_MS = 150;
 const PUNCH_FOR_MS = 15000;
+const PUNCH_RELAY_MS = 30000; // when a relay is in play it needs a few more seconds
+const RELAY_AFTER_MS = 4000; // no direct path by now: the client side asks for a relay
 const KEEPALIVE_MS = 5000;
 const DEAD_MS = 30000;
 const TICK_MS = 50;
@@ -371,6 +374,10 @@ class Tunnel extends EventEmitter {
     this.lastUse = Date.now(); // last time the player sent or got anything (not keep-alives)
     this.stunWaits = new Map();
     this.timers = [];
+    this.turn = null; // the relay allocation, if this side asked for one
+    this.relaySock = null; // a stand-in socket that sends through it
+    this.punchFor = PUNCH_FOR_MS;
+    this.targets = []; // where to send probes: the other PC's candidate addresses
     // TCP
     this.streams = new Map();
     this.closedStreams = new Map(); // id -> { next, until }: answer late resends of a finished stream
@@ -457,7 +464,7 @@ class Tunnel extends EventEmitter {
       const started = Date.now();
       const punch = () => {
         if (this.closed || this.connected) return;
-        if (Date.now() - started > PUNCH_FOR_MS) {
+        if (Date.now() - started > this.punchFor) {
           reject(Object.assign(new Error('no direct path'), { code: 'no-path' }));
           this.close('no-path');
           return;
@@ -468,13 +475,57 @@ class Tunnel extends EventEmitter {
         for (const c of this.targets) {
           const sock = isIPv4(c.a) ? this.sock4 : this.sock6;
           if (sock) this.sendRaw(sock, this.seal(probe), c.a, c.p);
+          if (this.relaySock && this.relayable(c.a)) this.sendRaw(this.relaySock, this.seal(probe), c.a, c.p);
         }
       };
       punch();
       this.timers.push(setInterval(punch, PUNCH_EVERY_MS));
       this.timers.push(setInterval(() => this.tick(), TICK_MS));
+      if (this.role === 'client') {
+        // Nothing direct yet: tell the arranger (lib/tunnels.js) it's time to try a relay
+        this.timers.push(setTimeout(() => { if (!this.closed && !this.connected) this.emit('relay-wanted'); }, RELAY_AFTER_MS));
+      }
       this.on('closed', (reason) => reject(Object.assign(new Error(reason), { code: reason })));
     });
+  }
+
+  // ---- relay (last resort) ----
+
+  /** Is this a peer address a relay can reach (public IPv4)? */
+  relayable(address) {
+    if (!isIPv4(address)) return false;
+    if (this.opts.allowPrivateRelay) return true; // tests
+    return !/^(10.|127.|169.254.|192.168.|172.(1[6-9]|2d|3[01]).|100.(6[4-9]|[7-9]d|1[01]d|12[0-7]).)/.test(address);
+  }
+
+  /**
+   * Get a relayed address (this PC's side only; the other PC sends to it). The relay is told to accept
+   * packets from the other PC's public addresses. Resolves { a, p }.
+   */
+  async useRelay(creds) {
+    if (this.closed || this.turn) throw Object.assign(new Error('relay already in use'), { code: 'closed' });
+    const turn = new TurnClient(creds);
+    const relayed = await turn.allocate();
+    if (this.closed) { turn.close(); throw Object.assign(new Error('closed'), { code: 'closed' }); }
+    this.turn = turn;
+    this.relaySock = { relay: true, send: (msg, port, address, cb) => turn.send(address, port, msg, cb) };
+    turn.on('data', (buf, from) => this.onPacket(this.relaySock, buf, { address: from.address, port: from.port }));
+    turn.on('closed', () => {
+      // Losing the relay ends a tunnel that was using it
+      if (this.path && this.path.sock === this.relaySock) this.close('relay-lost');
+    });
+    this.punchFor = PUNCH_RELAY_MS;
+    await turn.permit(this.targets.map((c) => c.a).filter((a) => this.relayable(a)));
+    return { a: relayed.address, p: relayed.port };
+  }
+
+  /** More places to try reaching the other PC (its relayed address, once it has one). */
+  addTargets(cands) {
+    for (const c of cands || []) {
+      if (!c || !net.isIP(c.a) || !(c.p > 0 && c.p < 65536)) continue;
+      if (!this.targets.some((t) => t.a === c.a && t.p === c.p)) this.targets.push(c);
+    }
+    this.punchFor = PUNCH_RELAY_MS;
   }
 
   // ---- packets ----
@@ -551,6 +602,14 @@ class Tunnel extends EventEmitter {
       const ack = Buffer.from(frame);
       ack[0] = F.PROBE_ACK;
       this.sendRaw(sock, this.seal(ack), rinfo.address, rinfo.port);
+      if (sock.relay && !this.connected) {
+        // Through the relay the other side's real address is only learned from what it sends: probe it
+        // back there too (its own address, which may differ from the one it published), so we get an ack
+        const back = Buffer.alloc(9);
+        back[0] = F.PROBE;
+        crypto.randomFillSync(back, 1);
+        this.sendRaw(sock, this.seal(back), rinfo.address, rinfo.port);
+      }
       return;
     }
     if (type === F.PROBE_ACK) {
@@ -894,6 +953,7 @@ class Tunnel extends EventEmitter {
     for (const id of [...this.flows.keys()]) this.dropFlow(id);
     for (const s of this.servers) s.close();
     for (const u of this.udpLocal.values()) try { u.close(); } catch { /* closed */ }
+    if (this.turn) this.turn.close();
     // Let the goodbye leave before the sockets close
     setTimeout(() => {
       for (const s of [this.sock4, this.sock6]) if (s) try { s.close(); } catch { /* closed */ }
@@ -905,6 +965,7 @@ class Tunnel extends EventEmitter {
     return {
       connected: this.connected,
       path: this.path ? { address: this.path.address, port: this.path.port } : null,
+      relayed: Boolean(this.path && this.path.sock && this.path.sock.relay),
       lastUse: this.lastUse,
       streams: this.streams.size,
       flows: this.flows.size,

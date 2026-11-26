@@ -25,6 +25,14 @@
 //                                        "friends-changed" notices here; the PC sends "bye" before it quits
 //   POST /tunnel/offer {device, session, pub, cands}         ask a friend's PC for a direct connection
 //   POST /tunnel/answer {device, session, pub, cands, error}  that PC's reply
+//   POST /tunnel/relay {device, session, relay}   no direct path: this PC's relayed address, for that PC to send to
+//   POST /turn                           { urls, username, credential }: a short-lived login for the relay
+//   POST /invites                        host: make a one-time invite link { id, url, expires }
+//   GET  /invites                        host: open and in-use links
+//   POST /invites/revoke {id}            host: cancel a link, or end the guest's session
+//   POST /invites/end {id}               guest: leave (the host can use it too)
+//   POST /invites/redeem {token, name}   guest, no login: use up a link, get a guest login
+//   GET  /join/<secret>                  the page a link opens in a browser
 //
 // Direct connections: the two PCs swap their public addresses and keys through here (over the live
 // link), then connect to each other straight through their routers. Only friends (or the same person)
@@ -70,8 +78,8 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), {
 const fail = (status, error) => json({ error }, status);
 const page = (title, text, status = 200) => new Response(
   `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title>
-<body style="font:16px system-ui,sans-serif;background:#0b0709;color:#f7f1f3;display:grid;place-items:center;min-height:90vh;margin:0">
-<div style="text-align:center;max-width:420px;padding:24px"><h1 style="color:#ff5470;font-size:24px">${title}</h1><p style="color:#a8959c">${text}</p></div>`,
+<body style="font:16px system-ui,sans-serif;background:#15101d;color:#f7f1f3;display:grid;place-items:center;min-height:90vh;margin:0">
+<div style="text-align:center;max-width:420px;padding:24px"><h1 style="color:#ff5470;font-size:24px">${title}</h1><p style="color:#b6a6bd">${text}</p></div>`,
   { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } },
 );
 
@@ -104,7 +112,7 @@ async function authenticate(env, request) {
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
   if (!token) return null;
   return env.DB.prepare(
-    `SELECT d.id AS device_id, d.user_id, u.username FROM devices d JOIN users u ON u.id = d.user_id WHERE d.token_hash = ?`,
+    `SELECT d.id AS device_id, d.user_id, u.username, u.guest FROM devices d JOIN users u ON u.id = d.user_id WHERE d.token_hash = ?`,
   ).bind(await sha256(token)).first();
 }
 
@@ -356,6 +364,56 @@ async function sendMessage(env, me, body) {
   return json({ ok: true, at: now });
 }
 
+const PLAY_INVITES_SINCE = '0.3.7'; // the first Moonshine that shows "join my game" invites sent through here
+
+/**
+ * "Join my game": a friend's online PCs get a popup whatever way the two PCs can reach each other (this
+ * goes through the live link, so it works over direct connections and the relay too). Nothing is kept.
+ */
+async function playInvite(env, me, body) {
+  if (!me.username) return fail(400, 'Pick a username first.');
+  const them = await acceptedFriend(env, me, body.username);
+  if (!them) return fail(404, 'They aren’t on your friends list.');
+  const id = String(body.id || '');
+  const hostUuid = String(body.hostUuid || '');
+  if (!/^[A-Za-z0-9]{8,40}$/.test(id) || !/^[0-9A-Za-z-]{8,64}$/.test(hostUuid)) return fail(400, 'bad request');
+  const now = Date.now();
+  const sent = await env.DB.prepare('SELECT COUNT(*) AS n FROM message_log WHERE sender = ? AND at > ?').bind(me.user_id, now - 60000).first();
+  if (sent.n >= MESSAGES_PER_MINUTE) return fail(429, 'That’s a lot of invites. Wait a minute.');
+  const { results: pcs } = await env.DB.prepare('SELECT version FROM devices WHERE user_id = ? AND tunnel = 1 AND last_seen > ?')
+    .bind(them.id, now - ONLINE_MS).all();
+  if (!pcs.length) return fail(409, `${them.username} isn’t online right now.`);
+  if (!pcs.some((p) => compareVersions(p.version, PLAY_INVITES_SINCE) >= 0)) {
+    return fail(409, `${them.username}’s Moonshine is too old for invites. Ask them to update it.`);
+  }
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM message_log WHERE at < ?').bind(now - 60000),
+    env.DB.prepare('INSERT INTO message_log (sender, at) VALUES (?, ?)').bind(me.user_id, now),
+  ]);
+  const hub = env.HUB.get(env.HUB.idFromName(String(them.id)));
+  const res = await hub.fetch('https://hub/broadcast', {
+    method: 'POST',
+    body: JSON.stringify({
+      type: 'play-invite', id, hostUuid, app: cleanText(body.app, 80), host: cleanText(body.host, 60),
+      from: { username: me.username, device: me.device_id },
+    }),
+  });
+  const { sent: delivered } = await res.json();
+  if (!delivered) return fail(409, `${them.username} isn’t online right now.`);
+  return json({ ok: true });
+}
+
+/** The friend's answer to a "join my game" invite, back to the PC that sent it. */
+async function playAnswer(env, me, body) {
+  const id = String(body.id || '');
+  const status = body.status === 'joined' ? 'joined' : 'declined';
+  if (!/^[A-Za-z0-9]{8,40}$/.test(id)) return fail(400, 'bad request');
+  const target = await reachableDevice(env, me, body.device);
+  if (!target) return fail(404, 'That PC isn’t one of your friends’ PCs.');
+  const sent = await pushTo(env, target, { type: 'play-answer', id, status, from: { username: me.username || '' } });
+  return sent ? json({ ok: true }) : fail(409, 'That PC isn’t connected right now.');
+}
+
 async function listFriends(env, me, request) {
   const myIp = request.headers.get('CF-Connecting-IP') || '';
   const { results: rows } = await env.DB.prepare(
@@ -434,6 +492,15 @@ async function reachableDevice(env, me, deviceId) {
   if (!Number.isInteger(id) || id <= 0 || id === me.device_id) return null;
   const target = await env.DB.prepare('SELECT id, user_id FROM devices WHERE id = ?').bind(id).first();
   if (!target) return null;
+  if (me.guest) {
+    // A guest can only reach the one PC whose invite they used
+    const inv = await guestInvite(env, me.user_id);
+    return inv && inv.host_device === id ? target : null;
+  }
+  const hostOfGuest = await env.DB.prepare(
+    "SELECT 1 AS ok FROM invites WHERE guest_device = ? AND host_user = ? AND status = 'claimed'",
+  ).bind(id, me.user_id).first();
+  if (hostOfGuest) return target;
   if (target.user_id === me.user_id) return target;
   const friends = await env.DB.prepare(
     "SELECT 1 AS ok FROM friends WHERE status = 'accepted' AND ((a = ?1 AND b = ?2) OR (a = ?2 AND b = ?1))",
@@ -510,9 +577,12 @@ async function tunnelOffer(env, me, body) {
   const target = await reachableDevice(env, me, body.device);
   if (!target) return fail(404, 'That PC isn’t one of your friends’ PCs.');
   const mine = await env.DB.prepare('SELECT name FROM devices WHERE id = ?').bind(me.device_id).first();
+  const inv = me.guest ? await guestInvite(env, me.user_id) : null;
   const sent = await pushTo(env, target, {
     type: 'tunnel-offer',
-    from: { username: me.username || '', device: me.device_id, name: (mine && mine.name) || '' },
+    from: me.guest
+      ? { username: 'Guest', device: me.device_id, name: (mine && mine.name) || '', guest: true, invite: inv ? inv.id : 0 }
+      : { username: me.username || '', device: me.device_id, name: (mine && mine.name) || '' },
     session: body.session, pub: body.pub, cands,
   });
   if (!sent) return fail(409, 'Their Moonshine isn’t connected right now.');
@@ -533,6 +603,63 @@ async function tunnelAnswer(env, me, body) {
   });
   if (!sent) return fail(409, 'That PC isn’t connected right now.');
   return json({ ok: true });
+}
+
+const RELAY_LOGINS_PER_HOUR = 30;
+const RELAY_TTL_S = 3600;
+
+/** The other PC's address to send to when a relay carries the connection: public IPv4 only. */
+function cleanRelay(r) {
+  if (!r || typeof r.a !== 'string' || !/^\d{1,3}(\.\d{1,3}){3}$/.test(r.a)) return null;
+  const parts = r.a.split('.').map(Number);
+  if (parts.some((n) => n > 255)) return null;
+  const [a, b] = parts;
+  if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)) return null;
+  if (!Number.isInteger(r.p) || r.p < 1 || r.p > 65535) return null;
+  return { a: r.a, p: r.p };
+}
+
+async function tunnelRelay(env, me, body) {
+  const relay = cleanRelay(body.relay);
+  if (!validSession(body.session) || !relay) return fail(400, 'bad request');
+  const target = await reachableDevice(env, me, body.device);
+  if (!target) return fail(404, 'That PC isn’t one of your friends’ PCs.');
+  const sent = await pushTo(env, target, {
+    type: 'tunnel-relay',
+    from: { username: me.username || '', device: me.device_id },
+    session: body.session, relay,
+  });
+  if (!sent) return fail(409, 'That PC isn’t connected right now.');
+  return json({ ok: true });
+}
+
+/**
+ * A login for Cloudflare's relay (TURN), made when two PCs can't reach each other directly. It lasts an
+ * hour; the key that makes it never leaves this service. Limited per PC so it can't be used as a free
+ * credential tap.
+ */
+async function turnCredentials(env, me) {
+  if (!env.TURN_KEY_ID || !env.TURN_API_TOKEN) return fail(501, 'relay-not-configured');
+  const now = Date.now();
+  await env.DB.prepare('DELETE FROM turn_log WHERE at < ?').bind(now - 60 * 60 * 1000).run();
+  const used = await env.DB.prepare('SELECT COUNT(*) AS n FROM turn_log WHERE device_id = ?').bind(me.device_id).first();
+  if (used && used.n >= RELAY_LOGINS_PER_HOUR) return fail(429, 'Too many relay requests. Try again later.');
+  await env.DB.prepare('INSERT INTO turn_log (device_id, at) VALUES (?, ?)').bind(me.device_id, now).run();
+  const res = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate-ice-servers`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${env.TURN_API_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ttl: RELAY_TTL_S }),
+  });
+  if (!res.ok) {
+    console.error('turn credentials', res.status);
+    return fail(502, 'The relay isn’t available right now.');
+  }
+  const data = await res.json();
+  const servers = Array.isArray(data.iceServers) ? data.iceServers : [data.iceServers].filter(Boolean);
+  const turn = servers.find((x) => x && x.username && x.credential);
+  const urls = turn ? [].concat(turn.urls || []).filter((u) => /^turns?:/i.test(u)) : [];
+  if (!turn || !urls.length) return fail(502, 'The relay isn’t available right now.');
+  return json({ urls, username: turn.username, credential: turn.credential, ttl: RELAY_TTL_S });
 }
 
 /**
@@ -645,6 +772,147 @@ export class Hub extends DurableObject {
   }
 }
 
+// ---- One-time invite links ------------------------------------------------------------------------
+//
+// A host makes a link (POST /invites); whoever opens it (GET /join/<secret> shows a page that opens
+// Moonshine) redeems it once (POST /invites/redeem) and gets a guest login: a user with no friends that
+// may only ask for a connection to that one host PC. When the guest's session ends, the host (or the
+// guest) ends the invite and the guest login is deleted. Only a hash of the secret is stored.
+
+const INVITE_OPEN_MS = 60 * 60 * 1000; // an unused link works for an hour
+const INVITE_CLAIMED_MAX_MS = 12 * 60 * 60 * 1000; // a used one is cut off after this even if nobody ended it
+const INVITES_PER_HOST = 5;
+const RELEASES_URL = 'https://github.com/IlluminaeX/Moonshine/releases/latest';
+const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const validInviteSecret = (t) => typeof t === 'string' && /^[A-Za-z0-9_-]{20,64}$/.test(t);
+
+/** The claimed invite a guest login belongs to, or null. */
+const guestInvite = (env, userId) => env.DB.prepare(
+  "SELECT id, host_user, host_device, status FROM invites WHERE guest_user = ? AND status = 'claimed'",
+).bind(userId).first();
+
+/** End an invite: the guest login goes, and both PCs are told. */
+async function finishInvite(env, invite, reason) {
+  await env.DB.prepare("UPDATE invites SET status = 'ended' WHERE id = ?").bind(invite.id).run();
+  const message = { type: 'invite-ended', invite: invite.id, reason };
+  if (invite.guest_device) await pushTo(env, { id: invite.guest_device, user_id: invite.guest_user }, message).catch(() => {});
+  await pushTo(env, { id: invite.host_device, user_id: invite.host_user }, message).catch(() => {});
+  if (invite.guest_user) await env.DB.prepare('DELETE FROM users WHERE id = ? AND guest = 1').bind(invite.guest_user).run();
+}
+
+/** Drop what has run out: unused links, and links in use for too long. */
+async function cleanupInvites(env) {
+  const now = Date.now();
+  await env.DB.prepare("DELETE FROM invites WHERE status = 'open' AND expires < ?").bind(now).run();
+  await env.DB.prepare("DELETE FROM invites WHERE status = 'ended' AND created < ?").bind(now - 24 * 60 * 60 * 1000).run();
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM invites WHERE status = 'claimed' AND claimed < ?",
+  ).bind(now - INVITE_CLAIMED_MAX_MS).all();
+  for (const inv of results) await finishInvite(env, inv, 'expired');
+}
+
+async function createInvite(env, me, request) {
+  if (me.guest) return fail(403, 'Guests can’t make invite links.');
+  await cleanupInvites(env);
+  const dev = await env.DB.prepare('SELECT host_uuid FROM devices WHERE id = ?').bind(me.device_id).first();
+  if (!dev || !dev.host_uuid) return fail(409, 'This PC isn’t hosting yet. Start hosting, then make a link.');
+  const open = await env.DB.prepare("SELECT COUNT(*) AS n FROM invites WHERE host_user = ? AND status IN ('open', 'claimed')").bind(me.user_id).first();
+  if (open && open.n >= INVITES_PER_HOST) return fail(429, `You already have ${INVITES_PER_HOST} invite links open. Revoke one first.`);
+  const secret = randomToken(24);
+  const now = Date.now();
+  const row = await env.DB.prepare(
+    "INSERT INTO invites (token_hash, host_user, host_device, created, expires, status) VALUES (?, ?, ?, ?, ?, 'open') RETURNING id",
+  ).bind(await sha256(secret), me.user_id, me.device_id, now, now + INVITE_OPEN_MS).first();
+  return json({ id: row.id, url: `${new URL(request.url).origin}/join/${secret}`, expires: now + INVITE_OPEN_MS });
+}
+
+async function listInvites(env, me) {
+  if (me.guest) return fail(403, 'Not available to guests.');
+  await cleanupInvites(env);
+  const { results } = await env.DB.prepare(
+    `SELECT i.id, i.status, i.created, i.expires, i.claimed, i.guest_device, d.name AS guest_name
+       FROM invites i LEFT JOIN devices d ON d.id = i.guest_device
+      WHERE i.host_user = ? AND i.status IN ('open', 'claimed') ORDER BY i.created DESC`,
+  ).bind(me.user_id).all();
+  return json({ invites: results.map((r) => ({
+    id: r.id, status: r.status, created: r.created, expires: r.expires, claimed: r.claimed || 0, guest: r.guest_name || '', guestDevice: r.guest_device || 0,
+  })) });
+}
+
+/** Host: revoke an invite (unused or in use). Guest: leave. Either way it's over. */
+async function endInvite(env, me, body) {
+  const id = Number(body.id);
+  if (!Number.isInteger(id)) return fail(400, 'bad request');
+  const inv = await env.DB.prepare(
+    me.guest
+      ? "SELECT * FROM invites WHERE id = ? AND guest_user = ? AND status != 'ended'"
+      : "SELECT * FROM invites WHERE id = ? AND host_user = ? AND status != 'ended'",
+  ).bind(id, me.user_id).first();
+  if (!inv) return json({ ok: true }); // already over
+  await finishInvite(env, inv, me.guest ? 'guest-left' : 'revoked');
+  return json({ ok: true });
+}
+
+/** Someone opened a link: use it up and give them a guest login. No sign-in needed. */
+async function redeemInvite(env, body) {
+  if (!validInviteSecret(body.token)) return fail(400, 'bad request');
+  await cleanupInvites(env);
+  const now = Date.now();
+  const inv = await env.DB.prepare(
+    "UPDATE invites SET status = 'claimed', claimed = ? WHERE token_hash = ? AND status = 'open' AND expires > ? RETURNING id, host_user, host_device",
+  ).bind(now, await sha256(body.token), now).first();
+  if (!inv) return fail(410, 'This invite link was already used or has expired. Ask for a new one.');
+  const host = await env.DB.prepare(
+    'SELECT d.id, d.host_uuid, d.port, d.name, u.username FROM devices d JOIN users u ON u.id = d.user_id WHERE d.id = ?',
+  ).bind(inv.host_device).first();
+  if (!host || !host.host_uuid) {
+    await env.DB.prepare("UPDATE invites SET status = 'ended' WHERE id = ?").bind(inv.id).run();
+    return fail(410, 'That PC isn’t available any more. Ask for a new link.');
+  }
+  const token = randomToken();
+  const user = await env.DB.prepare("INSERT INTO users (discord_id, created, guest) VALUES (?, ?, 1) RETURNING id")
+    .bind(`guest:${randomToken(16)}`, now).first();
+  const guestName = cleanText(body.name, 40) || 'Guest';
+  const device = await env.DB.prepare(
+    'INSERT INTO devices (user_id, token_hash, name, created, last_seen) VALUES (?, ?, ?, ?, ?) RETURNING id',
+  ).bind(user.id, await sha256(token), guestName, now, now).first();
+  await env.DB.prepare('UPDATE invites SET guest_user = ?, guest_device = ? WHERE id = ?').bind(user.id, device.id, inv.id).run();
+  await pushTo(env, { id: inv.host_device, user_id: inv.host_user }, {
+    type: 'invite-claimed', invite: inv.id, guestDevice: device.id, guestName,
+  }).catch(() => {});
+  return json({
+    token, invite: inv.id,
+    host: { device: host.id, uuid: host.host_uuid, port: host.port, name: host.name, user: host.username || '' },
+  });
+}
+
+/** The page a link opens in the browser: who invited you, and a button that opens Moonshine. It does not use the link up. */
+async function joinPage(env, secret) {
+  const style = 'font:16px system-ui,sans-serif;background:#15101d;color:#f7f1f3;display:grid;place-items:center;min-height:90vh;margin:0';
+  const wrap = (inner) => new Response(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Moonshine invite</title>
+<body style="${style}"><div style="text-align:center;max-width:440px;padding:24px">${inner}</div>`,
+    { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } },
+  );
+  const button = 'display:inline-block;margin:6px;padding:12px 22px;border-radius:12px;font-weight:600;text-decoration:none;';
+  if (!validInviteSecret(secret)) return wrap('<h1 style="color:#ff5470;font-size:24px">Invite not found</h1><p style="color:#b6a6bd">This link isn’t right. Ask for a new one.</p>');
+  const row = await env.DB.prepare(
+    `SELECT i.status, i.expires, u.username FROM invites i JOIN users u ON u.id = i.host_user WHERE i.token_hash = ?`,
+  ).bind(await sha256(secret)).first();
+  if (!row || row.status !== 'open' || row.expires < Date.now()) {
+    return wrap('<h1 style="color:#ff5470;font-size:24px">This invite is used up</h1><p style="color:#b6a6bd">An invite link works once, and only for a little while. Ask for a new one.</p>');
+  }
+  const who = row.username ? esc(row.username) : 'Someone';
+  return wrap(`<h1 style="color:#ff5470;font-size:24px">${who} invited you to play</h1>
+<p style="color:#b6a6bd">Moonshine streams a game from their PC to yours. This link works once.</p>
+<p><a href="moonshine://join/${secret}" style="${button}background:#e5193f;color:#fff">Open in Moonshine</a></p>
+<p style="color:#b6a6bd;font-size:14px">Don’t have Moonshine yet?</p>
+<p><a href="${RELEASES_URL}" style="${button}background:#34283f;color:#f7f1f3">Get Moonshine</a></p>
+<p style="color:#b6a6bd;font-size:13px">Install it, then open this page again and press Open in Moonshine.</p>`);
+}
+
+const GUEST_ROUTES = new Set(['GET /me', 'POST /hub/ticket', 'POST /tunnel/offer', 'POST /tunnel/answer', 'POST /tunnel/relay', 'POST /turn', 'POST /invites/end']);
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -656,12 +924,17 @@ export default {
         case 'GET /auth/discord/callback': return await discordCallback(env, url);
         case 'GET /auth/dev': return await devLogin(env, url);
         case 'GET /auth/poll': return await pollLogin(env, url);
+        case 'POST /invites/redeem': return await redeemInvite(env, await readJson(request));
         case 'GET /hub': return await hubConnect(env, request, url);
         default: break;
       }
 
+      if (request.method === 'GET' && url.pathname.startsWith('/join/')) return await joinPage(env, url.pathname.slice(6));
+
       const me = await authenticate(env, request);
       if (!me) return fail(401, 'Sign in again.');
+      // A guest (joined by an invite link) can only ask for a connection to the PC that invited them
+      if (me.guest && !GUEST_ROUTES.has(route)) return fail(403, 'Not available to guests.');
       const body = request.method === 'POST' ? await readJson(request) : {};
       switch (route) {
         case 'POST /auth/signout':
@@ -676,9 +949,17 @@ export default {
         case 'POST /friends/remove': return await removeFriend(env, ctx, me, body);
         case 'POST /friends/nickname': return await setNickname(env, ctx, me, body);
         case 'POST /messages/send': return await sendMessage(env, me, body);
+        case 'POST /friends/play-invite': return await playInvite(env, me, body);
+        case 'POST /friends/play-answer': return await playAnswer(env, me, body);
         case 'POST /hub/ticket': return await hubTicket(env, me);
         case 'POST /tunnel/offer': return await tunnelOffer(env, me, body);
         case 'POST /tunnel/answer': return await tunnelAnswer(env, me, body);
+        case 'POST /tunnel/relay': return await tunnelRelay(env, me, body);
+        case 'POST /turn': return await turnCredentials(env, me);
+        case 'POST /invites': return await createInvite(env, me, request);
+        case 'GET /invites': return await listInvites(env, me);
+        case 'POST /invites/revoke': return await endInvite(env, me, body);
+        case 'POST /invites/end': return await endInvite(env, me, body);
         default: return fail(404, 'not found');
       }
     } catch (err) {

@@ -1,14 +1,14 @@
 :root {
-  /* The icon's palette (assets/moonshine.svg): near-black with a red cast, and crimson. */
-  --bg: #08050a;
-  --surface: rgb(28 18 24 / 0.72);
-  --surface-solid: #170f14;
-  --surface-2: #2a1c23;
-  --surface-3: #36242d;
-  --border: rgb(255 255 255 / 0.07);
-  --border-strong: rgb(255 255 255 / 0.13);
+  /* The icon's palette (assets/moonshine.svg): a dark midnight plum (not pure black), and crimson. */
+  --bg: #15101d;
+  --surface: rgb(44 32 56 / 0.72);
+  --surface-solid: #231b2e;
+  --surface-2: #34283f;
+  --surface-3: #43354f;
+  --border: rgb(255 255 255 / 0.09);
+  --border-strong: rgb(255 255 255 / 0.16);
   --text: #f7f1f3;
-  --muted: #a8959c;
+  --muted: #b6a6bd;
   --accent: #e5193f;
   --accent-bright: #ff5470; /* crimson that stays readable as text on the dark background */
   --accent-text: #ffffff;
@@ -53,7 +53,7 @@ body {
   width: 212px;
   flex-shrink: 0;
   padding: 18px 12px 16px;
-  background: linear-gradient(180deg, rgb(36 14 22 / 0.85), rgb(14 8 11 / 0.9));
+  background: linear-gradient(180deg, rgb(52 26 46 / 0.85), rgb(28 19 36 / 0.92));
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -116,22 +116,26 @@ body {
 .spacer { flex: 1; }
 
 /* Sidebar: a new version, and the version line that checks for one */
-.update-box { margin: 0 4px 12px; padding: 12px; border-radius: 10px; background: rgb(229 25 63 / 0.12); border: 1px solid rgb(229 25 63 / 0.35); display: flex; flex-direction: column; gap: 6px; }
-.update-title { font-size: 13px; font-weight: 600; }
-.update-detail { font-size: 12px; color: var(--muted); }
-.update-detail:empty { display: none; }
 .update-bar { height: 5px; border-radius: 3px; background: rgb(255 255 255 / 0.1); overflow: hidden; }
 .update-bar > div { height: 100%; width: 0; background: var(--accent, #e5193f); transition: width 0.2s; }
-.update-box button { padding: 7px 10px; font-size: 13px; }
-.version-line { background: none; border: none; padding: 10px 4px 2px; margin: 0; font-size: 11px; font-weight: 500; letter-spacing: 0.02em; color: var(--muted); opacity: 0.75; text-align: left; cursor: pointer; box-shadow: none; transition: opacity 0.15s, color 0.15s; }
-.version-line:hover { color: var(--text); opacity: 1; background: none; }
-.version-line:disabled { cursor: default; }
+.version-line { padding: 10px 4px 2px; margin: 0; font-size: 11px; font-weight: 500; letter-spacing: 0.02em; color: var(--muted); opacity: 0.75; text-align: center; cursor: default; user-select: none; }
+
+/* Settings > Updates */
+.updates-panel { display: flex; flex-direction: column; gap: 16px; }
+.updates-panel .hint { margin: 0; }
+.updates-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.updates-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 240px; }
+.updates-version { font-size: 15px; font-weight: 650; }
+.updates-info .update-bar { margin-top: 4px; }
+.updates-buttons { display: flex; gap: 10px; flex-shrink: 0; }
 
 /* Top of the window: a new version */
+/* Outside the scrolling page, so it stays put on every tab */
+.content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .update-banner {
-  position: sticky; top: 0; z-index: 5;
+  flex-shrink: 0;
   display: flex; align-items: center; gap: 14px;
-  max-width: 900px; margin: -8px 0 22px; padding: 12px 12px 12px 16px;
+  width: calc(100% - 72px); max-width: 900px; box-sizing: border-box; margin: 16px 36px 0; padding: 12px 12px 12px 16px;
   border-radius: 12px;
   background: linear-gradient(90deg, rgb(229 25 63 / 0.28), rgb(229 25 63 / 0.1)), var(--surface-solid);
   border: 1px solid rgb(229 25 63 / 0.45);
@@ -889,6 +893,10 @@ body.prompt { display: flex; flex-direction: column; background: radial-gradient
 .friend-pc-name { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .friend-pc-status { font-size: 11.5px; color: var(--muted); }
 .friend-pc button { padding: 6px 12px; font-size: 12px; }
+/* The invite button on the "This PC" row appears when you point at the row (or tab to it) */
+.friend-pc .reveal { opacity: 0; transition: opacity 0.15s; }
+.friend-pc:hover .reveal, .friend-pc .reveal:focus-visible { opacity: 1; }
+.self-card .friend-pc.self-pc .friend-pc-name { cursor: default; }
 .dot.hosting { background: #b07cff; box-shadow: 0 0 8px #b07cff; }
 
 /* Guests: player numbers, presets */
@@ -904,7 +912,7 @@ body.prompt { display: flex; flex-direction: column; background: radial-gradient
   letter-spacing: 0.02em;
   color: #fff;
   background: var(--accent-fill);
-  box-shadow: 0 0 0 2px var(--bg, #0b0709), 0 0 10px -2px var(--accent);
+  box-shadow: 0 0 0 2px var(--bg, #15101d), 0 0 10px -2px var(--accent);
   white-space: nowrap;
 }
 .player-badge.hidden, .guest-player.hidden { display: none; }
@@ -1036,3 +1044,52 @@ button.friend-pc-name:hover { background: none; color: var(--accent-bright); tex
 .bandwidth-panel { flex-wrap: wrap; }
 .grid-form .speed-result { flex-direction: column; align-items: flex-start; gap: 10px; }
 .speed-text strong { color: var(--text); font-weight: 600; }
+
+/* Notifications settings: the sound picker with its Play button */
+.notify-panel .sound-row { display: flex; align-items: flex-end; gap: 10px; margin-top: 10px; }
+.notify-panel .sound-row label { flex: 1; max-width: 320px; }
+.notify-panel .sound-row button { padding: 9px 18px; }
+
+/* "Copy diagnostics" row under Start with Windows */
+.diagnostics-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 14px; border-top: 1px solid rgb(255 255 255 / 0.06); }
+.diagnostics-title { font-size: 13.5px; font-weight: 500; }
+.diagnostics-row .hint { margin: 2px 0 0; }
+
+/* Stream settings for one PC: the settings it follows from the defaults look dimmer */
+.pc-settings { margin-bottom: 14px; }
+.pc-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.pc-settings-row .hint { margin: 0; font-size: 12.5px; }
+#settings-form label.inherited { opacity: 0.6; }
+#settings-form label.check:has(input:disabled), #settings-form label:has(select:disabled) { opacity: 0.4; }
+
+/* How a PC is reached: same network, Tailscale, direct or relay */
+.conn-badge { display: inline-block; margin-top: 4px; padding: 1px 8px; border-radius: 999px; font-size: 11px; line-height: 17px; color: var(--muted); border: 1px solid rgb(255 255 255 / 0.1); background: rgb(255 255 255 / 0.04); }
+.conn-badge.lan { color: #8fd6a8; border-color: rgb(143 214 168 / 0.3); }
+.conn-badge.direct { color: #9ec5ff; border-color: rgb(158 197 255 / 0.3); }
+.conn-badge.relay { color: #f0c47d; border-color: rgb(240 196 125 / 0.3); }
+/* The "Can I connect directly?" answer */
+#network-check-result.check-yes { color: #8fd6a8; }
+#network-check-result.check-probably { color: #9ec5ff; }
+#network-check-result.check-relay, #network-check-result.check-signin { color: #f0c47d; }
+
+/* Beta tab */
+.beta-list { display: flex; flex-direction: column; gap: 14px; }
+.beta-item .hint { margin: 4px 0 0 26px; font-size: 12.5px; }
+.beta-name { font-weight: 500; display: flex; align-items: center; gap: 8px; }
+.beta-pill { font-size: 10.5px; padding: 0 7px; line-height: 16px; border-radius: 999px; color: #f0c47d; border: 1px solid rgb(240 196 125 / 0.35); background: rgb(240 196 125 / 0.08); font-weight: 500; }
+
+/* Sending files: drop target, and the transfers panel */
+.dropping { outline: 2px dashed var(--accent); outline-offset: -4px; border-radius: 12px; }
+.drop-hint { position: fixed; inset: auto 0 76px 0; z-index: 31; display: flex; justify-content: center; pointer-events: none; }
+.drop-hint > div { background: rgb(40 26 33 / 0.95); border: 1px solid var(--accent); padding: 10px 18px; border-radius: 12px; box-shadow: 0 18px 40px -12px rgb(0 0 0 / 0.8); }
+.transfers { position: fixed; right: 16px; bottom: 16px; z-index: 25; width: min(340px, calc(100vw - 32px)); max-height: 46vh; overflow-y: auto; background: rgb(32 22 28 / 0.96); border: 1px solid var(--border-strong); border-radius: 12px; padding: 10px 12px; box-shadow: 0 18px 40px -12px rgb(0 0 0 / 0.8); }
+.transfers-head { display: flex; justify-content: space-between; align-items: center; font-weight: 500; margin-bottom: 6px; }
+.transfer { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; align-items: center; padding: 7px 0; border-top: 1px solid rgb(255 255 255 / 0.06); }
+.transfer-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.transfer-state { grid-column: 1; font-size: 12px; color: var(--muted); }
+.transfer.failed .transfer-state { color: #f0a0a0; }
+.transfer.done .transfer-state { color: #8fd6a8; }
+.transfer > button { grid-column: 2; grid-row: 1 / span 2; }
+.transfer-bar { grid-column: 1; height: 4px; border-radius: 2px; background: rgb(255 255 255 / 0.08); overflow: hidden; }
+.transfer-bar > span { display: block; height: 100%; background: var(--accent); transition: width 0.2s; }
+.transfers button.small { padding: 3px 10px; font-size: 12px; }

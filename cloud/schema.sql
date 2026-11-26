@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS users (
   discord_id TEXT NOT NULL UNIQUE,
   username TEXT,
   username_lower TEXT UNIQUE,
-  created INTEGER NOT NULL
+  created INTEGER NOT NULL,
+  guest INTEGER NOT NULL DEFAULT 0 -- a login made by an invite link: no friends, reaches one PC
 );
 
 -- A PC signed in as that person. Authenticates with a random token (only its hash is kept here).
@@ -72,3 +73,27 @@ CREATE TABLE IF NOT EXISTS hub_tickets (
   user_id INTEGER NOT NULL,
   created INTEGER NOT NULL
 );
+
+-- Relay logins handed out (to limit how many a PC can ask for), kept for an hour.
+CREATE TABLE IF NOT EXISTS turn_log (
+  device_id INTEGER NOT NULL,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS turn_log_device ON turn_log(device_id, at);
+
+-- One-time invite links. Only a hash of the link's secret is kept. 'open' until used, 'claimed' while the
+-- guest is in, then 'ended'.
+CREATE TABLE IF NOT EXISTS invites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash TEXT NOT NULL UNIQUE,
+  host_user INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  host_device INTEGER NOT NULL,
+  created INTEGER NOT NULL,
+  expires INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  claimed INTEGER,
+  guest_user INTEGER,
+  guest_device INTEGER
+);
+CREATE INDEX IF NOT EXISTS invites_host ON invites(host_user, status);
+CREATE INDEX IF NOT EXISTS invites_guest ON invites(guest_user);

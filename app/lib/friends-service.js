@@ -27,8 +27,9 @@ function signedIn() {
   return Boolean(token());
 }
 
-async function call(method, path, body) {
-  const t = token();
+// `asToken`: a guest's login (joined by invite link) instead of this PC's own account
+async function call(method, path, body, asToken) {
+  const t = asToken || token();
   const res = await fetch(SERVICE_URL + path, {
     method,
     headers: { ...(t ? { Authorization: `Bearer ${t}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
@@ -37,7 +38,7 @@ async function call(method, path, body) {
   });
   let json = null;
   try { json = await res.json(); } catch { /* not JSON */ }
-  if (res.status === 401 && t && path !== '/auth/poll') {
+  if (res.status === 401 && t && !asToken && path !== '/auth/poll') {
     // The service forgot this PC (signed out elsewhere, or the account went away)
     store.set('serviceToken', '');
     store.set('serviceUsername', '');
@@ -119,16 +120,32 @@ const respond = (username, accept) => call('POST', '/friends/respond', { usernam
 const remove = (username) => call('POST', '/friends/remove', { username });
 const setNickname = (username, nickname) => call('POST', '/friends/nickname', { username, nickname });
 const sendMessage = (username, text) => call('POST', '/messages/send', { username, text });
+// "Join my game" invites, carried by the live link so they work however two PCs are connected
+const sendPlayInvite = (body) => call('POST', '/friends/play-invite', body);
+const answerPlayInvite = (body) => call('POST', '/friends/play-answer', body);
 
 // Direct connections (lib/tunnels.js): a one-time pass for the live link (lib/hub.js), and the
 // offer and answer two PCs swap to connect straight to each other.
-const hubTicket = async () => (await call('POST', '/hub/ticket')).ticket;
-const tunnelOffer = (offer) => call('POST', '/tunnel/offer', offer);
-const tunnelAnswer = (answer) => call('POST', '/tunnel/answer', answer);
+const hubTicket = async (asToken) => (await call('POST', '/hub/ticket', undefined, asToken)).ticket;
+const tunnelOffer = (offer, asToken) => call('POST', '/tunnel/offer', offer, asToken);
+const tunnelAnswer = (answer, asToken) => call('POST', '/tunnel/answer', answer, asToken);
+const tunnelRelay = (relay, asToken) => call('POST', '/tunnel/relay', relay, asToken);
+/** A login for the relay: { urls, username, credential }. */
+const turnCredentials = (asToken) => call('POST', '/turn', {}, asToken);
+
+// One-time invite links (see cloud/src/index.js)
+const createInvite = () => call('POST', '/invites', {});
+const listInvites = () => call('GET', '/invites');
+const revokeInvite = (id) => call('POST', '/invites/revoke', { id });
+/** The guest leaves, or the host ends it: the link is dead from now on. */
+const endInvite = (id, asToken) => call('POST', '/invites/end', { id }, asToken);
+/** A guest opens a link: no login needed. Resolves { token, invite, host: { device, uuid, port, name, user } }. */
+const redeemInvite = (token, name) => call('POST', '/invites/redeem', { token, name });
 
 module.exports = {
   configured, signedIn, signIn, cancelSignIn, signOut, setUsername, reportPresence, friends, request, respond, remove,
-  setNickname, sendMessage,
-  hubTicket, tunnelOffer, tunnelAnswer, SERVICE_URL,
+  setNickname, sendMessage, sendPlayInvite, answerPlayInvite,
+  hubTicket, tunnelOffer, tunnelAnswer, tunnelRelay, turnCredentials, SERVICE_URL,
+  createInvite, listInvites, revokeInvite, endInvite, redeemInvite,
   username: () => store.get('serviceUsername') || '',
 };
