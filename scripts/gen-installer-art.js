@@ -29,37 +29,37 @@ const stars = Array.from({ length: 90 }, () => ({
 const art = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${BASE_W} ${BASE_H}">
   <defs>
     <radialGradient id="glow" cx="50%" cy="50%" r="50%">
-      <stop offset="0" stop-color="#dc143c" stop-opacity="0.30"/>
-      <stop offset="0.6" stop-color="#dc143c" stop-opacity="0.10"/>
-      <stop offset="0.88" stop-color="#dc143c" stop-opacity="0.02"/>
-      <stop offset="1" stop-color="#dc143c" stop-opacity="0"/>
+      <stop offset="0" stop-color="#cf3a5a" stop-opacity="0.30"/>
+      <stop offset="0.6" stop-color="#cf3a5a" stop-opacity="0.10"/>
+      <stop offset="0.88" stop-color="#cf3a5a" stop-opacity="0.02"/>
+      <stop offset="1" stop-color="#cf3a5a" stop-opacity="0"/>
     </radialGradient>
     <radialGradient id="corona" cx="50%" cy="50%" r="50%">
-      <stop offset="0.6" stop-color="#dc143c"/>
-      <stop offset="0.72" stop-color="#a50e2d" stop-opacity="0.7"/>
-      <stop offset="0.86" stop-color="#6e0a1f" stop-opacity="0.25"/>
-      <stop offset="1" stop-color="#5a0618" stop-opacity="0"/>
+      <stop offset="0.6" stop-color="#cf3a5a"/>
+      <stop offset="0.72" stop-color="#972847" stop-opacity="0.7"/>
+      <stop offset="0.86" stop-color="#611a33" stop-opacity="0.25"/>
+      <stop offset="1" stop-color="#4f1228" stop-opacity="0"/>
     </radialGradient>
     <radialGradient id="moon" cx="40%" cy="38%" r="70%">
-      <stop offset="0" stop-color="#261522"/>
-      <stop offset="0.7" stop-color="#120c17"/>
-      <stop offset="1" stop-color="#0b0710"/>
+      <stop offset="0" stop-color="#1d1019"/>
+      <stop offset="0.7" stop-color="#0c0810"/>
+      <stop offset="1" stop-color="#08050c"/>
     </radialGradient>
     <radialGradient id="flare" cx="50%" cy="50%" r="50%">
       <stop offset="0" stop-color="#fff2f3"/>
-      <stop offset="0.25" stop-color="#ff6070"/>
-      <stop offset="0.6" stop-color="#dc143c" stop-opacity="0.5"/>
-      <stop offset="1" stop-color="#dc143c" stop-opacity="0"/>
+      <stop offset="0.25" stop-color="#f27b93"/>
+      <stop offset="0.6" stop-color="#cf3a5a" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#cf3a5a" stop-opacity="0"/>
     </radialGradient>
     <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="3"/></filter>
   </defs>
-  <rect width="${BASE_W}" height="${BASE_H}" fill="#15101d"/>
+  <rect width="${BASE_W}" height="${BASE_H}" fill="#0e0a14"/>
   ${stars.map((s) => `<circle cx="${s.x}" cy="${s.y}" r="${s.r}" fill="#f4eeef" opacity="${s.o}"/>`).join('')}
   <g opacity="0.8">
     <circle cx="436" cy="142" r="142" fill="url(#glow)"/>
     <circle cx="436" cy="142" r="140" fill="url(#corona)"/>
-    <circle cx="436" cy="142" r="103" fill="none" stroke="#e01a3f" stroke-width="7" filter="url(#soft)"/>
-    <circle cx="436" cy="142" r="101" fill="none" stroke="#ff4a5f" stroke-width="2.2"/>
+    <circle cx="436" cy="142" r="103" fill="none" stroke="#d63f60" stroke-width="7" filter="url(#soft)"/>
+    <circle cx="436" cy="142" r="101" fill="none" stroke="#f06f89" stroke-width="2.2"/>
   </g>
   <circle cx="440" cy="146" r="100" fill="url(#moon)"/>
   <circle cx="365" cy="71" r="24" fill="url(#flare)" opacity="0.9"/>

@@ -23,7 +23,7 @@ const foreground = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108
 /** A TV banner: the logo and the name on Moonshine's background. */
 const banner = (w, h) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}">${defs}
   <defs><radialGradient id="bannerBg" cx="30%" cy="50%" r="90%">
-    <stop offset="0" stop-color="#34283f"/><stop offset="0.6" stop-color="#231b2e"/><stop offset="1" stop-color="#15101d"/>
+    <stop offset="0" stop-color="#271e30"/><stop offset="0.6" stop-color="#19131f"/><stop offset="1" stop-color="#0e0a14"/>
   </radialGradient></defs>
   <rect width="${w}" height="${h}" fill="url(#bannerBg)"/>
   <g transform="translate(${h * 0.08} ${h * 0.08}) scale(${(h * 0.84) / 256})">${body}</g>

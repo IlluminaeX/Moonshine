@@ -136,31 +136,6 @@ async function loadApolloTools() {
   $('#host-version').textContent = `Host engine: Apollo ${res.data.version || ''} with Moonshine’s changes.`;
 }
 
-$('#pin-form').addEventListener('submit', (e) => {
-  e.preventDefault();
-  apolloAction(e.submitter, 'Pairing…', async () => {
-    const res = await apollo.pairWithPin($('#pin-code').value, $('#pin-name').value.trim());
-    if (res.ok) {
-      toast(`Paired with ${res.data}. It will ask before each stream.`);
-      e.target.reset();
-    }
-    return res;
-  });
-});
-
-$('#otp-form').addEventListener('submit', (e) => {
-  e.preventDefault();
-  apolloAction(e.submitter, 'Creating…', async () => {
-    const res = await apollo.otp($('#otp-pass').value, $('#otp-name').value.trim());
-    if (res.ok) {
-      const out = $('#otp-result');
-      out.replaceChildren('Code: ', el('strong', { textContent: res.data.otp }), ' · valid for 3 minutes, with your passphrase.');
-      out.classList.remove('hidden');
-    }
-    return res;
-  });
-});
-
 $('#tool-close-app').addEventListener('click', (e) => apolloAction(e.target, 'Closing…', async () => {
   const res = await apollo.closeApp();
   if (res.ok) toast('Closed the running app.');
@@ -688,24 +663,6 @@ async function pairHost(h) {
 
 connect.onPairState(showPairDialog);
 $('#pair-cancel').addEventListener('click', () => connect.cancelPair());
-
-// ---- Connect: add a PC by address -----------------------------------------------
-
-$('#add-host').addEventListener('click', () => {
-  $('#add-dialog').classList.remove('hidden');
-  $('#add-address').value = '';
-  $('#add-address').focus();
-});
-$('#add-cancel').addEventListener('click', () => $('#add-dialog').classList.add('hidden'));
-$('#add-form').addEventListener('submit', (e) => {
-  e.preventDefault();
-  busy(e.submitter, 'Looking…', async () => {
-    const h = await connect.add($('#add-address').value);
-    $('#add-dialog').classList.add('hidden');
-    if (h.paired) openHost(h);
-    else pairHost(h);
-  });
-});
 
 // ---- Connect: one host's games ---------------------------------------------------
 
@@ -1319,12 +1276,13 @@ function selfCard(self, invites, photo) {
 }
 
 function renderFriends({ me, tailscale, pcs, alerts, shareGame, discordStatus, version, service, self, invites = [] }) {
+  showGate(service, pcs.some((p) => p.guest));
   renderAccount(service);
   $('#friend-alerts').checked = Boolean(alerts);
   $('#share-game').checked = shareGame !== false;
   $('#discord-status').checked = discordStatus !== false;
   lastFriendsService = service;
-  for (const pc of pcs) pc.mine = Boolean(me) && pc.user === me; // friends' PCs and other PCs can be invited
+  for (const pc of pcs) pc.mine = pc.own || (Boolean(me) && pc.user === me); // friends' PCs and other PCs can be invited
   const box = $('#friends');
   // Nothing changed since the last refresh: leave the cards alone (no flicker, buttons keep their state)
   const showSelf = Boolean(self && service && service.signedIn);
@@ -1346,7 +1304,7 @@ function renderFriends({ me, tailscale, pcs, alerts, shareGame, discordStatus, v
   const groups = new Map();
   for (const f of (service && service.friends) || []) groups.set(f.username, []);
   for (const pc of pcs) {
-    const key = pc.guest ? 'invite' : !pc.user ? 'other' : pc.user === me ? 'me' : pc.user;
+    const key = pc.guest ? 'invite' : pc.own ? 'me' : !pc.user ? 'other' : pc.user === me ? 'me' : pc.user;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(pc);
   }
@@ -1423,6 +1381,7 @@ async function loadFriends(first = false, manual = false) {
     }
   } catch (err) {
     if (first) toast(errorText(err));
+    if (!gateKnown) $('#gate').classList.add('hidden'); // can't tell yet: don't lock the app
   }
   friendsTimer = setTimeout(loadFriends, 5000);
 }
@@ -2516,5 +2475,38 @@ $('#update-install').addEventListener('click', (e) => busy(e.currentTarget, 'Clo
 }));
 
 loadHosts();
+// ---- Sign-in gate: nothing but this shows until the person has signed in -------------------------
+
+var gateKnown = false;
+function showGate(service, hasGuest = false) {
+  const gate = $('#gate');
+  const needed = Boolean(service && service.configured && !service.signedIn && !hasGuest);
+  gateKnown = true;
+  gate.classList.toggle('hidden', !needed);
+  $('#gate-actions').classList.toggle('hidden', !needed);
+}
+
+$('#gate-signin').addEventListener('click', async (e) => {
+  const button = e.currentTarget;
+  button.disabled = true;
+  button.textContent = 'Waiting for Discord…';
+  $('#gate-note').textContent = 'Finish signing in in your browser, then come back here.';
+  $('#gate-cancel').classList.remove('hidden');
+  try {
+    const res = await window.moonshine.account.signIn();
+    toast(res.username ? `Signed in as ${res.username}.` : 'Signed in. Now pick a username.');
+    friendsFullAt = 0;
+    await loadFriends();
+  } catch (err) {
+    toast(errorText(err));
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Sign in with Discord';
+    $('#gate-note').textContent = 'Moonshine uses your Discord account only to know it’s you.';
+    $('#gate-cancel').classList.add('hidden');
+  }
+});
+$('#gate-cancel').addEventListener('click', () => window.moonshine.account.cancelSignIn());
+
 loadFriends(true);
 host.status().then((s) => { $('#start-at-login').checked = s.startAtLogin; });

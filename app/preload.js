@@ -38,8 +38,6 @@ contextBridge.exposeInMainWorld('moonshine', {
     unpairAll: invoke('apollo:unpairAll'),
     resetDisplay: invoke('apollo:resetDisplay'),
     setWebLogin: invoke('apollo:setWebLogin'),
-    otp: invoke('apollo:otp'),
-    pairWithPin: invoke('apollo:pairWithPin'),
   },
   webui: {
     show: invoke('webui:show'),
@@ -52,7 +50,6 @@ contextBridge.exposeInMainWorld('moonshine', {
   },
   connect: {
     hosts: invoke('connect:hosts'),
-    add: invoke('connect:add'),
     pair: invoke('connect:pair'),
     cancelPair: invoke('connect:cancelPair'),
     remove: invoke('connect:remove'),

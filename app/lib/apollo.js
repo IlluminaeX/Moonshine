@@ -309,11 +309,6 @@ async function setWebLogin(user, password) {
   authCookie = '';
 }
 
-/** A one-time code for clients that pair with one (Artemis). Valid for 3 minutes. */
-async function requestOtp(passphrase, deviceName) {
-  return api('POST', '/api/otp', { passphrase, deviceName });
-}
-
 /** Allow or decline a waiting stream request. */
 async function decideStream(id, allow) {
   return api('POST', '/api/moonshine/decide', { id, allow });
@@ -367,7 +362,6 @@ module.exports = {
   unpairAll,
   resetDisplay,
   setWebLogin,
-  requestOtp,
   serviceState,
   setService,
   ensureCredentials,

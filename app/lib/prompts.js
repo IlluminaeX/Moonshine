@@ -38,7 +38,7 @@ function showNext() {
     show: false,
     title: 'Moonshine',
     icon: path.join(__dirname, '..', 'assets', 'moonshine.png'),
-    backgroundColor: '#231b2e',
+    backgroundColor: '#19131f',
     webPreferences: { preload: path.join(__dirname, '..', 'prompt-preload.js'), autoplayPolicy: 'no-user-gesture-required' },
   });
   win.setAlwaysOnTop(true, "screen-saver"); // above full-screen apps, not just above other windows

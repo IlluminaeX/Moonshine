@@ -7,6 +7,20 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- Signed out: nothing else shows until the person signs in -->
+  <div id="gate" class="gate">
+    <div class="gate-box">
+      <img src="../assets/moonshine.png" alt="" class="gate-logo">
+      <h1>Moonshine</h1>
+      <p class="gate-tag">Play your own PC from anywhere.<br>Your friends’ PCs too.</p>
+      <div id="gate-actions" class="gate-actions hidden">
+        <button id="gate-signin" class="gate-button">Sign in with Discord</button>
+        <p id="gate-note" class="hint">Moonshine uses your Discord account only to know it’s you.</p>
+        <button id="gate-cancel" class="link-button neutral hidden">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <nav class="sidebar">
     <div class="brand"><img src="../assets/moonshine.png" alt=""><span>Moonshine</span></div>
     <button class="tab active" data-tab="friends">
@@ -51,7 +65,6 @@
         <header>
           <h1>Connect</h1>
           <div class="actions">
-            <button id="add-host" class="secondary" title="Add a PC by its address">Add PC</button>
             <button id="refresh-friends" class="secondary">Refresh</button>
           </div>
         </header>
@@ -61,7 +74,7 @@
           <label class="check small" title="A notification when a friend comes online or starts streaming a game"><input type="checkbox" id="friend-alerts"> Notify me</label>
           <label class="check small" title="No notifications, and invites to play are answered “not now”. Requests to stream from this PC still ask."><input type="checkbox" id="dnd"> Do not disturb</label>
         </div>
-        <p class="hint">Friends, your PCs and other PCs you can stream from. Add friends by username, or a PC by its address. Click a PC’s name for its games.</p>
+        <p class="hint">Your PCs and your friends’ PCs. Add friends by username. Click a PC’s name for its games.</p>
         <div id="friend-account" class="panel friend-account hidden"></div>
         <div id="friend-requests" class="friend-requests hidden"></div>
         <div id="friends" class="friends"></div>
@@ -148,27 +161,10 @@
         <pre id="apollo-logs" class="logs"></pre>
       </div>
 
-      <!-- Tools: pairing by hand, troubleshooting, the web page's login -->
+      <!-- Tools: troubleshooting -->
       <div id="apollo-sub-tools" class="apollo-sub hidden">
         <div class="scroll">
           <div class="panel first">
-            <h2>Pair a device by hand</h2>
-            <p class="hint">Moonshine shows a popup when a device asks to pair. If you missed it, type the PIN the device is showing.</p>
-            <form id="pin-form" class="inline">
-              <input id="pin-code" placeholder="PIN" inputmode="numeric" maxlength="4" pattern="\d{4}" required>
-              <input id="pin-name" placeholder="Name for the device" maxlength="60" required>
-              <button type="submit">Pair</button>
-            </form>
-            <h3>One-time code</h3>
-            <p class="hint">For apps that pair with a code instead of a PIN (Artemis). Pick a passphrase, then enter the code and the passphrase on the device within 3 minutes.</p>
-            <form id="otp-form" class="inline">
-              <input id="otp-pass" placeholder="Passphrase (4 or more characters)" minlength="4" required>
-              <input id="otp-name" placeholder="Name for the device" maxlength="60">
-              <button type="submit">Create code</button>
-            </form>
-            <p id="otp-result" class="otp hidden"></p>
-          </div>
-          <div class="panel">
             <h2>Troubleshooting</h2>
             <div class="row">
               <div>
@@ -610,7 +606,6 @@
     </div>
   </div>
 
-  <!-- Add a PC -->
   <!-- Installing an update -->
   <div id="update-dialog" class="overlay hidden">
     <div class="dialog update-dialog">
@@ -653,18 +648,6 @@
       <div class="actions end">
         <button type="button" id="nick-cancel" class="secondary">Cancel</button>
         <button type="submit" id="nick-save">Save</button>
-      </div>
-    </form>
-  </div>
-
-  <div id="add-dialog" class="overlay hidden">
-    <form id="add-form" class="dialog">
-      <h2>Add a PC</h2>
-      <p class="hint">Enter the PC’s IP address or hostname. It needs Moonshine, Apollo or Sunshine running.</p>
-      <input id="add-address" placeholder="192.168.1.20 or my-pc" required>
-      <div class="actions end">
-        <button type="button" id="add-cancel" class="secondary">Cancel</button>
-        <button type="submit">Add</button>
       </div>
     </form>
   </div>

@@ -17,7 +17,7 @@ One Windows app for game streaming. **Host** shares your PC, and **Connect** pla
   - Friends on Moonshine pair with each other's PCs by themselves, the first time each PC sees the other online. No PIN, no popup. A friend's PC that is off says it will pair once it's on; **Pair** appears only if pairing by itself didn't work.
   - Other PCs with Moonshine (on Tailscale, your network, or by IP): click **Pair**, they get one **Accept** popup, and nobody types the PIN.
   - Any other Moonlight client: Moonshine pops up a box to type the PIN that device is showing.
-- **Connect** tab: friends, your PCs and other PCs in one list (sign in with Discord, add friends by username, or add a PC by its address). Click a PC's name for its games, to rename it, or to remove it.
+- **Connect** tab: your PCs and your friends' PCs in one list (you sign in with Discord first, and add friends by username). Click a PC's name for its games, to rename it, or to remove it.
   - The list updates live: who is online, free, hosting or in a game, and **what they're playing** (turn off **Share what I'm playing** to hide yours).
   - **Quick messages**: one-tap phrases ("Want to play?", "On my way"...) or a short note, delivered at once to friends who are online. Conversations stay on your PC.
   - **Nicknames** only you see, kept with your account.

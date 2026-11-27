@@ -78,8 +78,8 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), {
 const fail = (status, error) => json({ error }, status);
 const page = (title, text, status = 200) => new Response(
   `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title>
-<body style="font:16px system-ui,sans-serif;background:#15101d;color:#f7f1f3;display:grid;place-items:center;min-height:90vh;margin:0">
-<div style="text-align:center;max-width:420px;padding:24px"><h1 style="color:#ff5470;font-size:24px">${title}</h1><p style="color:#b6a6bd">${text}</p></div>`,
+<body style="font:16px system-ui,sans-serif;background:#0e0a14;color:#f7f1f3;display:grid;place-items:center;min-height:90vh;margin:0">
+<div style="text-align:center;max-width:420px;padding:24px"><h1 style="color:#f0708c;font-size:24px">${title}</h1><p style="color:#b6a6bd">${text}</p></div>`,
   { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } },
 );
 
@@ -929,26 +929,26 @@ async function redeemInvite(env, body) {
 
 /** The page a link opens in the browser: who invited you, and a button that opens Moonshine. It does not use the link up. */
 async function joinPage(env, secret) {
-  const style = 'font:16px system-ui,sans-serif;background:#15101d;color:#f7f1f3;display:grid;place-items:center;min-height:90vh;margin:0';
+  const style = 'font:16px system-ui,sans-serif;background:#0e0a14;color:#f7f1f3;display:grid;place-items:center;min-height:90vh;margin:0';
   const wrap = (inner) => new Response(
     `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Moonshine invite</title>
 <body style="${style}"><div style="text-align:center;max-width:440px;padding:24px">${inner}</div>`,
     { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } },
   );
   const button = 'display:inline-block;margin:6px;padding:12px 22px;border-radius:12px;font-weight:600;text-decoration:none;';
-  if (!validInviteSecret(secret)) return wrap('<h1 style="color:#ff5470;font-size:24px">Invite not found</h1><p style="color:#b6a6bd">This link isn’t right. Ask for a new one.</p>');
+  if (!validInviteSecret(secret)) return wrap('<h1 style="color:#f0708c;font-size:24px">Invite not found</h1><p style="color:#b6a6bd">This link isn’t right. Ask for a new one.</p>');
   const row = await env.DB.prepare(
     `SELECT i.status, i.expires, u.username FROM invites i JOIN users u ON u.id = i.host_user WHERE i.token_hash = ?`,
   ).bind(await sha256(secret)).first();
   if (!row || row.status !== 'open' || row.expires < Date.now()) {
-    return wrap('<h1 style="color:#ff5470;font-size:24px">This invite is used up</h1><p style="color:#b6a6bd">An invite link works once, and only for a little while. Ask for a new one.</p>');
+    return wrap('<h1 style="color:#f0708c;font-size:24px">This invite is used up</h1><p style="color:#b6a6bd">An invite link works once, and only for a little while. Ask for a new one.</p>');
   }
   const who = row.username ? esc(row.username) : 'Someone';
-  return wrap(`<h1 style="color:#ff5470;font-size:24px">${who} invited you to play</h1>
+  return wrap(`<h1 style="color:#f0708c;font-size:24px">${who} invited you to play</h1>
 <p style="color:#b6a6bd">Moonshine streams a game from their PC to yours. This link works once.</p>
-<p><a href="moonshine://join/${secret}" style="${button}background:#e5193f;color:#fff">Open in Moonshine</a></p>
+<p><a href="moonshine://join/${secret}" style="${button}background:#d6405f;color:#fff">Open in Moonshine</a></p>
 <p style="color:#b6a6bd;font-size:14px">Don’t have Moonshine yet?</p>
-<p><a href="${RELEASES_URL}" style="${button}background:#34283f;color:#f7f1f3">Get Moonshine</a></p>
+<p><a href="${RELEASES_URL}" style="${button}background:#271e30;color:#f7f1f3">Get Moonshine</a></p>
 <p style="color:#b6a6bd;font-size:13px">Install it, then open this page again and press Open in Moonshine.</p>`);
 }
 

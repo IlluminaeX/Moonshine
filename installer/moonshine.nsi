@@ -47,15 +47,15 @@ AutoCloseWindow true ; go straight from installing to the finish page
 !define TUNNEL_RULE "Moonshine direct connections"
 
 ; Moonshine's palette (app/renderer/style.css). COLORREF values are 0x00BBGGRR.
-!define BG "15101D"
+!define BG "0E0A14"
 !define TEXT "F4EEEF"
 !define MUTED "B6A6BD"
-!define ACCENT "DC143C"
+!define ACCENT "D6405F"
 !define RING_OFF "6B5A78"
-!define SURFACE "231B2E"
-!define BG_REF 0x001D1015
-!define SURFACE_REF 0x002E1B23
-!define ACCENT_REF 0x003C14DC
+!define SURFACE "19131F"
+!define BG_REF 0x00140A0E
+!define SURFACE_REF 0x001F1319
+!define ACCENT_REF 0x005F40D6
 
 Var HostPlan ; fresh | update | migrate
 Var ProgressFile ; in-app updates: where to report progress (/PROGRESS="..."), empty otherwise

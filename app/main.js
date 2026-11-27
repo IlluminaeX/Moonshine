@@ -58,7 +58,7 @@ function createWindow() {
     minHeight: 520,
     title: 'Moonshine',
     icon,
-    backgroundColor: '#15101d',
+    backgroundColor: '#0e0a14',
     autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
@@ -931,17 +931,6 @@ async function pollHostRequests() {
   setTimeout(pollHostRequests, delay);
 }
 
-/** Pair with a PIN typed by hand, for a pairing request whose popup was missed or ignored. */
-async function pairWithPin(pin, name) {
-  const before = new Set((await apollo.listClients()).map((c) => c.uuid));
-  if (!(await apollo.submitPin(pin, name, 0))) throw new Error('No single device is waiting to pair (none at all, or more than one at once). Start pairing on just the one device, then try again.');
-  const added = await waitForNewClient(before, 8000);
-  if (!added) throw new Error('Pairing didn’t complete. The PIN may have been wrong; try again from that device.');
-  await setUpNewDevice(added).catch(() => {});
-  notifyRenderer('host:changed');
-  return added.name;
-}
-
 // ---- Host: the host engine's own web page, shown inside the window --------------------------
 // Kept for anything Moonshine's own pages don't cover. It is a separate view laid over the page, so
 // the renderer tells us where to put it and hides it whenever something else needs the space.
@@ -961,7 +950,7 @@ function webUiView() {
     callback({ requestHeaders: token ? { ...details.requestHeaders, 'X-Moonshine-Token': token } : details.requestHeaders });
   });
   webUi = new WebContentsView({ webPreferences: { session: ses } });
-  webUi.setBackgroundColor('#15101d');
+  webUi.setBackgroundColor('#0e0a14');
   webUi.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://') && !url.startsWith(WEB_UI_ORIGIN)) shell.openExternal(url);
     return { action: 'deny' };
@@ -1139,8 +1128,6 @@ ipcMain.handle('apollo:unpairAll', () => apolloCall(async () => {
 }));
 ipcMain.handle('apollo:resetDisplay', () => apolloCall(() => apollo.resetDisplay()));
 ipcMain.handle('apollo:setWebLogin', (_e, user, password) => apolloCall(() => apollo.setWebLogin(user, password)));
-ipcMain.handle('apollo:otp', (_e, passphrase, name) => apolloCall(() => apollo.requestOtp(passphrase, name)));
-ipcMain.handle('apollo:pairWithPin', (_e, pin, name) => apolloCall(() => pairWithPin(pin, name)));
 
 // ---- Diagnostics: one block of text covering both host and client, for pasting into a bug report ---
 // Deliberately leaves out passwords, tokens, device names, IP addresses and anyone else's identity:
@@ -1622,18 +1609,6 @@ async function pairWith(host, { quiet = false } = {}) {
 
 ipcMain.handle('connect:hosts', async () => ({ tailscale: Boolean(await tailscale.status()), hosts: await findHosts() }));
 
-ipcMain.handle('connect:add', async (_e, input) => {
-  const [address, port] = input.trim().replace(/^\[|\]$/g, '').split(/:(?=\d+$)/);
-  const info = await library.serverInfo(address, Number(port) || library.DEFAULT_PORT, 4000);
-  if (!info) throw new Error(`No streaming host answered at ${input.trim()}`);
-  const apps = await moonlight.listApps(address);
-  return {
-    uuid: info.uuid, name: info.name, address: input.trim(), online: true, busy: info.busy, saved: false,
-    paired: Boolean(apps), moonshine: Boolean(await invite.probe(input.trim())), tailnetUser: '',
-    apps: withBoxArt(info.uuid, apps || []),
-  };
-});
-
 ipcMain.handle('connect:pair', async (_e, host) => {
   const res = await withPairLock(() => pairWith(host)); // after any pairing running in the background
   if (res.ok) markFriendPcPaired(host.uuid);
@@ -1678,7 +1653,7 @@ async function friendsStatus(full, manual = false) {
   const account = await accountFriends(manual || (full && !hub.isConnected()));
   // A PC that's both a Moonshine friend's and on Tailscale is listed once, under the friend
   const accountUuids = new Set(account.pcs.map((p) => p.uuid));
-  const merged = [...pcs.filter((p) => !accountUuids.has(p.uuid)), ...account.pcs];
+  const merged = [...pcs.filter((p) => !accountUuids.has(p.uuid) && p.user), ...account.pcs];
   return {
     me, tailscale: Boolean(ts), pcs: merged, unseen, alerts: store.get('friendAlerts'), shareGame: store.get('shareGame'), discordStatus: store.get('discordStatus'),
     version: app.getVersion(), service: account.service,
@@ -1851,7 +1826,10 @@ async function accountFriends(fresh = false) {
   }));
   const names = store.get('pcNames');
   const pcs = [];
-  for (const f of data.friends.filter((x) => x.status === 'accepted')) {
+  // Your own other PCs first (the service lists them as `mine`), then each friend's
+  const owners = [{ username: state.username, own: true, pcs: data.mine || [] },
+    ...data.friends.filter((x) => x.status === 'accepted')];
+  for (const f of owners) {
     for (const pc of f.pcs) {
       const reach = pc.online && pc.hosting ? await reachFriendPc(pc) : { address: '', paired: false };
       if (reach.paired) markFriendPcPaired(pc.hostUuid);
@@ -1861,6 +1839,7 @@ async function accountFriends(fresh = false) {
         name: names[pc.hostUuid] || pc.name,
         ownName: pc.name,
         user: f.username,
+        own: Boolean(f.own),
         account: true,
         address: reach.address,
         paired: reach.paired,
