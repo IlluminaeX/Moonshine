@@ -8,6 +8,7 @@ const store = require('./store');
 
 const SERVICE_URL = (process.env.MOONSHINE_SERVICE_URL || 'https://moonshine.moonshine-streaming.workers.dev').replace(/\/$/, '');
 const LOGIN_WAIT_MS = 10 * 60 * 1000;
+const AVATAR_MAX_BYTES = 512 * 1024;
 
 let loginAttempt = null; // { session, cancelled }
 
@@ -142,9 +143,21 @@ const endInvite = (id, asToken) => call('POST', '/invites/end', { id }, asToken)
 /** A guest opens a link: no login needed. Resolves { token, invite, host: { device, uuid, port, name, user } }. */
 const redeemInvite = (token, name) => call('POST', '/invites/redeem', { token, name });
 
+/** A profile picture (this account's or an accepted friend's) as { type, buf }, or null if there isn't one. */
+async function avatar(username) {
+  const res = await fetch(`${SERVICE_URL}/friends/avatar?username=${encodeURIComponent(username)}`, {
+    headers: { Authorization: `Bearer ${token()}` },
+    signal: AbortSignal.timeout(8000),
+  });
+  const type = (res.headers.get('content-type') || '').split(';')[0];
+  if (!res.ok || !/^image\/(png|jpeg|webp|gif)$/.test(type)) return null;
+  const buf = Buffer.from(await res.arrayBuffer());
+  return buf.length <= AVATAR_MAX_BYTES ? { type, buf } : null;
+}
+
 module.exports = {
   configured, signedIn, signIn, cancelSignIn, signOut, setUsername, reportPresence, friends, request, respond, remove,
-  setNickname, sendMessage, sendPlayInvite, answerPlayInvite,
+  setNickname, sendMessage, sendPlayInvite, answerPlayInvite, avatar,
   hubTicket, tunnelOffer, tunnelAnswer, tunnelRelay, turnCredentials, SERVICE_URL,
   createInvite, listInvites, revokeInvite, endInvite, redeemInvite,
   username: () => store.get('serviceUsername') || '',

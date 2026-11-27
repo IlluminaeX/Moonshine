@@ -171,7 +171,7 @@ index 84e7d9de..58504eb0 100644
          SdlGamepadKeyNavigation.enable()
      }
 diff --git a/app/main.cpp b/app/main.cpp
-index 2b701d71..120688c5 100644
+index 2b701d71..dc7131c3 100644
 --- a/app/main.cpp
 +++ b/app/main.cpp
 @@ -1,3 +1,4 @@
@@ -189,16 +189,22 @@ index 2b701d71..120688c5 100644
  
  #define WIN32_LEAN_AND_MEAN
  #include <Windows.h>
-@@ -431,6 +434,8 @@ int main(int argc, char *argv[])
-     QCoreApplication::setOrganizationName("Moonlight Game Streaming Project");
+@@ -428,9 +431,12 @@ int main(int argc, char *argv[])
+     // Set these here to allow us to use the default QSettings constructor.
+     // These also ensure that our cache directory is named correctly. As such,
+     // it is critical that these be called before Path::initialize().
+-    QCoreApplication::setOrganizationName("Moonlight Game Streaming Project");
++    // Moonshine: its own names, so its saved PCs, pairings and cache are kept apart from a Moonlight
++    // install (registry HKCU\Software\Moonshine\Moonshine, %LOCALAPPDATA%\Moonshine\Moonshine).
++    QCoreApplication::setOrganizationName("Moonshine");
      QCoreApplication::setOrganizationDomain("moonlight-stream.com");
-     QCoreApplication::setApplicationName("Moonlight");
-+    // Moonshine: what people see (window titles); the names above stay so saved PCs are shared with Moonlight
+-    QCoreApplication::setApplicationName("Moonlight");
++    QCoreApplication::setApplicationName("Moonshine");
 +    QGuiApplication::setApplicationDisplayName("Moonshine Player");
  
      if (QFile(QDir::currentPath() + "/portable.dat").exists()) {
          QSettings::setDefaultFormat(QSettings::IniFormat);
-@@ -504,7 +509,9 @@ int main(int argc, char *argv[])
+@@ -504,7 +510,9 @@ int main(int argc, char *argv[])
      }
  #endif
  
@@ -209,7 +215,7 @@ index 2b701d71..120688c5 100644
      // Force AntiHooking.dll to be statically imported and loaded
      // by ntdll on Win32 platforms by calling a dummy function.
      AntiHookingDummyImport();
-@@ -601,7 +608,8 @@ int main(int argc, char *argv[])
+@@ -601,7 +609,8 @@ int main(int argc, char *argv[])
      // because this API must be called before the first swapchain (which Qt will
      // create when the window is displayed). This is supported on Win11 22H2+.
      auto fnDXGIDisableVBlankVirtualization =
@@ -219,7 +225,7 @@ index 2b701d71..120688c5 100644
                                                                     "DXGIDisableVBlankVirtualization");
      if (fnDXGIDisableVBlankVirtualization) {
          fnDXGIDisableVBlankVirtualization();
-@@ -715,8 +723,8 @@ int main(int argc, char *argv[])
+@@ -715,8 +724,8 @@ int main(int argc, char *argv[])
      // Set our app name for SDL to use with PulseAudio and PipeWire. This matches what we
      // provide as our app name to libsoundio too. On SDL 2.0.18+, SDL_APP_NAME is also used
      // for screensaver inhibitor reporting.
@@ -230,7 +236,7 @@ index 2b701d71..120688c5 100644
  
      // SDL will try to lock the mouse cursor on Wayland if it's not visible in order to
      // support applications that assume they can warp the cursor (which isn't possible
-@@ -970,8 +978,15 @@ int main(int argc, char *argv[])
+@@ -970,8 +979,15 @@ int main(int argc, char *argv[])
      qputenv("QT_QUICK_CONTROLS_MATERIAL_THEME", "Dark");
  
      // These are defaults that we allow the user to override
@@ -247,7 +253,7 @@ index 2b701d71..120688c5 100644
      }
      if (!qEnvironmentVariableIsSet("QT_QUICK_CONTROLS_MATERIAL_VARIANT")) {
          qputenv("QT_QUICK_CONTROLS_MATERIAL_VARIANT", "Dense");
-@@ -980,7 +995,7 @@ int main(int argc, char *argv[])
+@@ -980,7 +996,7 @@ int main(int argc, char *argv[])
          // Qt 6.9 began to use a different shade of Material.Indigo when we use a dark theme
          // (which is all the time). The new color looks washed out, so manually specify the
          // old primary color unless the user overrides it themselves.
@@ -256,7 +262,7 @@ index 2b701d71..120688c5 100644
      }
  
      QQmlApplicationEngine engine;
-@@ -1044,6 +1059,15 @@ int main(int argc, char *argv[])
+@@ -1044,6 +1060,15 @@ int main(int argc, char *argv[])
  
      int err = app.exec();
  

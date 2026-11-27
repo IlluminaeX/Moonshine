@@ -942,6 +942,7 @@ body.prompt { display: flex; flex-direction: column; background: radial-gradient
 /* Friends: Moonshine account and requests */
 .friend-account { display: flex; align-items: center; gap: 18px; justify-content: space-between; flex-wrap: wrap; margin-bottom: 16px; }
 .friend-account.hidden, .friend-requests.hidden { display: none; }
+.friend-account > .avatar { width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; font-size: 18px; font-weight: 750; color: #fff; flex-shrink: 0; box-shadow: 0 0 0 2px rgb(255 255 255 / 0.12); }
 .account-text { min-width: 220px; flex: 1; }
 .account-title { font-size: 16px; font-weight: 700; }
 .account-name { color: var(--accent-bright); }

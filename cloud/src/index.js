@@ -112,18 +112,20 @@ async function authenticate(env, request) {
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
   if (!token) return null;
   return env.DB.prepare(
-    `SELECT d.id AS device_id, d.user_id, u.username, u.guest FROM devices d JOIN users u ON u.id = d.user_id WHERE d.token_hash = ?`,
+    `SELECT d.id AS device_id, d.user_id, u.username, u.avatar, u.guest FROM devices d JOIN users u ON u.id = d.user_id WHERE d.token_hash = ?`,
   ).bind(await sha256(token)).first();
 }
 
 /** Finish a sign-in: find or make the user, give this PC a token, and hand it to the waiting app. */
-async function completeLogin(env, session, externalId) {
+async function completeLogin(env, session, externalId, avatar = '') {
   const now = Date.now();
   let user = await env.DB.prepare('SELECT id, username FROM users WHERE discord_id = ?').bind(externalId).first();
   if (!user) {
     user = await env.DB.prepare('INSERT INTO users (discord_id, created) VALUES (?, ?) RETURNING id, username')
       .bind(externalId, now).first();
   }
+  // Discord's picture hash is letters a-f, digits and an optional animated prefix ("a_"); anything else is no picture
+  await env.DB.prepare('UPDATE users SET avatar = ? WHERE id = ?').bind(AVATAR_HASH.test(avatar || '') ? avatar : '', user.id).run();
   const token = randomToken();
   await env.DB.batch([
     env.DB.prepare('INSERT INTO devices (user_id, token_hash, created, last_seen) VALUES (?, ?, ?, ?)')
@@ -182,7 +184,7 @@ async function discordCallback(env, url) {
     await env.DB.prepare('UPDATE logins SET error = ? WHERE session = ?').bind('discord', session).run();
     return page('Discord sign-in failed', 'Close this tab and try again from Moonshine.', 502);
   }
-  await completeLogin(env, session, `discord:${discordUser.id}`);
+  await completeLogin(env, session, `discord:${discordUser.id}`, discordUser.avatar || '');
   return page('You’re signed in', 'Go back to Moonshine. You can close this tab.');
 }
 
@@ -364,6 +366,7 @@ async function sendMessage(env, me, body) {
   return json({ ok: true, at: now });
 }
 
+const AVATAR_HASH = /^(a_)?[a-f0-9]{32}$/;
 const PLAY_INVITES_SINCE = '0.3.7'; // the first Moonshine that shows "join my game" invites sent through here
 
 /**
@@ -394,7 +397,7 @@ async function playInvite(env, me, body) {
   const res = await hub.fetch('https://hub/broadcast', {
     method: 'POST',
     body: JSON.stringify({
-      type: 'play-invite', id, hostUuid, app: cleanText(body.app, 80), host: cleanText(body.host, 60),
+      type: 'play-invite', id, hostUuid, app: cleanText(body.app, 80), game: cleanText(body.game, 80), host: cleanText(body.host, 60),
       from: { username: me.username, device: me.device_id },
     }),
   });
@@ -414,10 +417,28 @@ async function playAnswer(env, me, body) {
   return sent ? json({ ok: true }) : fail(409, 'That PC isn’t connected right now.');
 }
 
+/**
+ * A profile picture: the signed-in person's own, or an accepted friend's. The service fetches it from
+ * Discord's picture server, so friends never see the Discord account number in its address.
+ */
+async function avatarPicture(env, me, url) {
+  const name = url.searchParams.get('username') || '';
+  const who = name.toLowerCase() === String(me.username || '').toLowerCase() ? { id: me.user_id } : await acceptedFriend(env, me, name);
+  if (!who) return fail(404, 'No picture.');
+  const row = await env.DB.prepare('SELECT discord_id, avatar FROM users WHERE id = ?').bind(who.id).first();
+  const discordId = row && /^discord:(\d{5,25})$/.exec(row.discord_id);
+  if (!discordId || !AVATAR_HASH.test(row.avatar || '')) return fail(404, 'No picture.');
+  const cdn = (env.AVATAR_CDN || 'https://cdn.discordapp.com').replace(/\/$/, '');
+  const res = await fetch(`${cdn}/avatars/${discordId[1]}/${row.avatar}.png?size=128`, { cf: { cacheTtl: 86400, cacheEverything: true } });
+  const type = res.headers.get('Content-Type') || '';
+  if (!res.ok || !type.startsWith('image/')) return fail(404, 'No picture.');
+  return new Response(res.body, { headers: { 'Content-Type': type, 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff' } });
+}
+
 async function listFriends(env, me, request) {
   const myIp = request.headers.get('CF-Connecting-IP') || '';
   const { results: rows } = await env.DB.prepare(
-    `SELECT f.a, f.b, f.status, u.id AS other, u.username, n.nick FROM friends f
+    `SELECT f.a, f.b, f.status, u.id AS other, u.username, u.avatar, n.nick FROM friends f
      JOIN users u ON u.id = CASE WHEN f.a = ?1 THEN f.b ELSE f.a END
      LEFT JOIN nicknames n ON n.owner = ?1 AND n.friend = u.id
      WHERE f.a = ?1 OR f.b = ?1`,
@@ -457,11 +478,11 @@ async function listFriends(env, me, request) {
   }
 
   return json({
-    me: { username: me.username },
+    me: { username: me.username, avatar: me.avatar || '' },
     friends: rows.map((r) => {
       const status = r.status === 'accepted' ? 'accepted' : r.a === me.user_id ? 'outgoing' : 'incoming';
       const pcs = status === 'accepted' ? (devices.get(r.other) || []).filter((p) => p.name) : [];
-      return { username: r.username, nickname: r.nick || '', status, online: pcs.some((p) => p.online), pcs };
+      return { username: r.username, nickname: r.nick || '', avatar: status === 'accepted' ? r.avatar || '' : '', status, online: pcs.some((p) => p.online), pcs };
     }).filter((f) => f.username),
   });
 }
@@ -944,6 +965,7 @@ export default {
         case 'POST /me/username': return await setUsername(env, ctx, me, body);
         case 'POST /presence': return await presence(env, ctx, me, body, request);
         case 'GET /friends': return await listFriends(env, me, request);
+        case 'GET /friends/avatar': return await avatarPicture(env, me, url);
         case 'POST /friends/request': return await requestFriend(env, ctx, me, body);
         case 'POST /friends/respond': return await respondFriend(env, ctx, me, body);
         case 'POST /friends/remove': return await removeFriend(env, ctx, me, body);

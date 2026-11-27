@@ -4,8 +4,8 @@ const os = require('os');
 const { execFile, spawn } = require('child_process');
 const { moonlightExe } = require('./paths');
 
-// Run from the home folder, never Moonlight's own folder: a portable.dat next to the
-// current directory would switch Moonlight to a separate, portable settings store.
+// Run from the home folder, never the player's own folder: a portable.dat next to the
+// current directory would switch the player to a separate, portable settings store.
 const spawnOptions = { cwd: os.homedir(), windowsHide: true };
 
 // Extra environment for the player per host address (lib/tunnels.js: a direct connection's stand-in

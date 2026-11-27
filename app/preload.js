@@ -85,6 +85,7 @@ contextBridge.exposeInMainWorld('moonshine', {
   friends: {
     status: invoke('friends:status'),
     invite: invoke('friends:invite'),
+    avatar: invoke('friends:avatar'),
     connect: invoke('friends:connect'),
     setAlerts: invoke('friends:setAlerts'),
     onChanged: listen('friends:changed'),

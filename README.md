@@ -4,7 +4,7 @@ One Windows app for game streaming. **Host** shares your PC, and **Connect** pla
 
 ## Features
 - **Host / Connect in one window**
-  - **Connect** lists your saved PCs (shared with an installed Moonlight), PCs found on your network, and friends' PCs on Tailscale, and you can add any PC by IP.
+  - **Connect** lists your saved PCs (Moonshine's own list, separate from Moonlight's), PCs found on your network, and friends' PCs on Tailscale, and you can add any PC by IP.
   - It handles pairing, shows each PC's games with box art, and starts full-screen streams.
   - Stream settings (resolution, frame rate, bitrate, codec, HDR and more) are on the Settings tab, with Start with Windows.
 - **You decide who streams, each time**
@@ -24,8 +24,11 @@ One Windows app for game streaming. **Host** shares your PC, and **Connect** pla
   - A badge when a friend's Moonshine is older or newer than yours.
   - **Do not disturb** (tray menu or Connect tab), for an hour, until morning, or until you turn it off: no notifications, and invites to play are answered "not now". Messages still arrive, unread. Requests to stream from your PC still ask.
 - **Beta tab**: new features that haven't had much real-world use, each off until you turn it on.
-  - **Auto-tuned quality**: while you stream, the host lowers the video bitrate a step when your connection can't keep up and raises it again after a calm stretch, never above the bitrate you chose. It works from the loss reports the player already sends, so a stream on a good connection is left alone. Changes are spaced out, because each one restarts the encoder for a moment, and a level that just failed isn't tried again for a minute.
+  - **Auto-tuned quality**: while you stream, the host lowers the video bitrate a step when your connection can't keep up and raises it again after a calm stretch, never above the bitrate you chose. It reacts to two things: the loss reports the player already sends, and the delay to your PC suddenly climbing (data piling up in a queue, which often happens with almost no loss), so a stream on a good connection is left alone. Changes are spaced out, because each one restarts the encoder for a moment, and a level that just failed isn't tried again for a minute.
+  - **Steadier Wi-Fi**: while you stream, your Wi-Fi card is asked not to leave the channel to scan for other networks, a common cause of the delay jumping for a few seconds. Windows undoes it as soon as the stream ends, or if Moonshine closes. It does nothing on a cable, and how much it helps depends on the Wi-Fi driver.
+- **Profile pictures**: friends who sign in with Discord show their Discord profile picture on their card in Moonshine (yours too, after you sign in again once). Only you and your accepted friends can see it, and Moonshine's service passes the picture along, so friends never see your Discord account number. Without a picture the card keeps the coloured letter.
 - **Invite a friend to your game**: the Invite button on a friend's PC asks them to join, and works however the two of you are connected (same network, Tailscale, direct or relay), since it goes through the friends service.
+- **Steam button and stream link**: helpers on this PC, such as a Steam (Millennium) plugin, can list your friends and invite them through a local API that only programs on this PC can use. Opening `moonshine://stream?friend=Name` (several names separated by commas) does the same from a shortcut, after asking in a small popup. See [docs/stream-link.md](docs/stream-link.md).
 - **Connection badge**: each PC in the Connect list says how you reach it (Same network, Tailscale, Direct or Relay) and how long it takes to answer.
 - **Send files**: on a paired PC's page, **Send files**, or drop files on that page, on its row, or onto its stream window. The other PC's Moonshine asks "X wants to send you a file" and saves it in **Downloads\Moonshine**. It works over any connection (network, Tailscale, direct, relay). The sending device needs the **Upload files** permission on the other PC (Host → Devices).
 - **Wake a PC**: a PC Moonshine has seen on your network gets a **Wake** button while it's off (wake-on-LAN; the PC needs the feature turned on in its BIOS and network adapter settings).
@@ -73,7 +76,7 @@ pwsh scripts/package.ps1                              # dist/Moonshine-Setup.exe
 
 `package.ps1` ships Moonshine's own player build from `build/moonlight/dist` when it exists. Without it, it falls back to the official Moonlight release fetched by `scripts/fetch-moonlight.ps1` (same features, but the stream window is named Moonlight).
 
-The player build uses MSYS2's Qt, SDL2, FFmpeg, libplacebo, OpenSSL and Opus instead of Moonlight's prebuilt MSVC libraries, and leaves out its AntiHooking and Discord integrations. It keeps Moonlight's own settings location, so saved PCs and pairings are shared with a standalone Moonlight.
+The player build uses MSYS2's Qt, SDL2, FFmpeg, libplacebo, OpenSSL and Opus instead of Moonlight's prebuilt MSVC libraries, and leaves out its AntiHooking and Discord integrations. It saves its PCs and pairings under its own name, so Moonshine and a Moonlight install never share or affect each other's list.
 
 `build-apollo.ps1` builds through a `subst` drive (`M:` by default; pass `-Drive` to change it), because Apollo's resource compiler can't handle the spaces or `~` in some paths.
 

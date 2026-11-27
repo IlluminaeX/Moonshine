@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT,
   username_lower TEXT UNIQUE,
   created INTEGER NOT NULL,
-  guest INTEGER NOT NULL DEFAULT 0 -- a login made by an invite link: no friends, reaches one PC
+  guest INTEGER NOT NULL DEFAULT 0, -- a login made by an invite link: no friends, reaches one PC
+  avatar TEXT NOT NULL DEFAULT '' -- hash of their Discord picture, from sign-in ('' = none)
 );
 
 -- A PC signed in as that person. Authenticates with a random token (only its hash is kept here).

@@ -5,12 +5,13 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const { execFile } = require('child_process');
+const library = require('./library');
 
 const PIECE = 4 << 20; // 4 MB per request (the host takes up to 8)
 const ANSWER_TIMEOUT_MS = 2 * 60 * 1000;
 
 const PS_READ = `
-$k = 'HKCU:\\Software\\Moonlight Game Streaming Project\\Moonlight'
+$k = $env:MS_KEY
 $root = Get-ItemProperty -Path $k
 $srv = ''
 Get-ChildItem "$k\\hosts" -ErrorAction SilentlyContinue | ForEach-Object {
@@ -29,7 +30,7 @@ function unwrap(value) {
 function readIdentity(uuid) {
   return new Promise((resolve, reject) => {
     execFile('powershell.exe', ['-NoProfile', '-Command', PS_READ], {
-      windowsHide: true, env: { ...process.env, MS_UUID: String(uuid) },
+      windowsHide: true, env: { ...process.env, MS_UUID: String(uuid), MS_KEY: library.PLAYER_KEY.replace('HKCU\\', 'HKCU:\\') },
     }, (err, stdout) => {
       if (err) return reject(new Error('Couldn’t read this PC’s stream identity.'));
       try {
@@ -43,22 +44,6 @@ function readIdentity(uuid) {
       }
     });
   });
-}
-
-/** "host", "host:47989", "[::1]:47989" → { host, httpsPort } (the HTTPS port is 5 below). */
-function target(address) {
-  let host = String(address);
-  let port = 47989;
-  const v6 = host.match(/^\[(.+)\](?::(\d+))?$/);
-  if (v6) {
-    host = v6[1];
-    if (v6[2]) port = Number(v6[2]);
-  } else if ((host.match(/:/g) || []).length === 1) {
-    const [h, p] = host.split(':');
-    host = h;
-    port = Number(p) || port;
-  }
-  return { host, httpsPort: port - 5 };
 }
 
 const ERRORS = {
@@ -75,7 +60,7 @@ class SendError extends Error {}
 /** One connection to a PC, pinned to its saved certificate. */
 async function connect(pc) {
   const id = pc.identity || await readIdentity(pc.uuid); // tests pass their own
-  const { host, httpsPort } = target(pc.address);
+  const { host, port } = library.splitAddress(pc.address);
   const agent = new https.Agent({
     // the host closes the connection after each answer, and refuses resumed TLS sessions
     keepAlive: false, maxSockets: 1, maxCachedSessions: 0,
@@ -84,7 +69,7 @@ async function connect(pc) {
   });
   const call = (method, p, body) => new Promise((resolve, reject) => {
     const req = https.request({
-      host, port: httpsPort, path: p, method, agent, timeout: 30000,
+      host, port: port - 5, path: p, method, agent, timeout: 30000, // the HTTPS port is 5 below the HTTP one
       headers: body ? { 'Content-Type': 'application/octet-stream', 'Content-Length': body.length } : { 'Content-Length': 0 },
     }, (res) => {
       const parts = [];
@@ -104,7 +89,7 @@ async function connect(pc) {
     req.on('error', (e) => reject(e instanceof SendError ? e : new SendError(
       /certificate|self.signed|CERT/i.test(e.message)
         ? `${pc.name}’s identity has changed. Pair with it again.`
-        : `Couldn’t reach ${pc.name}.`, { cause: `${method} ${p.split('?')[0]}: ${e.code || e.message}` })));
+        : `Couldn’t reach ${pc.name}.`)));
     if (body) req.write(body);
     req.end();
   });
@@ -159,4 +144,4 @@ async function send(pc, file, onUpdate, signal = {}) {
   }
 }
 
-module.exports = { send, target, unwrap, readIdentity, SendError };
+module.exports = { send };

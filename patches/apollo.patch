@@ -753,19 +753,20 @@ index 51a59989..9b9d1773 100644
    // Create signal handler after logging has been initialized
 diff --git a/src/moonshine_adaptive.h b/src/moonshine_adaptive.h
 new file mode 100644
-index 00000000..2f3402cd
+index 00000000..879792cc
 --- /dev/null
 +++ b/src/moonshine_adaptive.h
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,162 @@
 +/**
 + * @file src/moonshine_adaptive.h
 + * @brief Moonshine: adaptive video quality for one stream.
 + *
-+ * The viewer's player reports lost video (frames it couldn't rebuild) back to the host. When that
-+ * keeps happening the stream is asking for more than the connection carries, so the encoder bitrate
-+ * is lowered a step; after a long clean stretch it is raised again, but never back to the level that
-+ * just failed (that bouncing is why the player doesn't do this itself). Each change restarts the
-+ * encoder, so changes are spaced out.
++ * Two things tell the host the stream is asking for more than the connection carries: the viewer's
++ * player reporting lost video (frames it couldn't rebuild), and the round trip to the viewer growing
++ * well past its usual time (data piling up in a queue, which often happens with hardly any loss).
++ * Either one is "trouble". When it keeps happening the encoder bitrate is lowered a step; after a long
++ * clean stretch it is raised again, but never back to the level that just failed (that bouncing is why
++ * the player doesn't do this itself). Each change restarts the encoder, so changes are spaced out.
 + *
 + * The controller only decides: it answers with a "scale" (a share of the bitrate the viewer picked)
 + * and knows nothing about encoders, so it can be tested with a made-up clock.
@@ -775,6 +776,7 @@ index 00000000..2f3402cd
 +#include <algorithm>
 +#include <chrono>
 +#include <deque>
++#include <optional>
 +
 +namespace moonshine {
 +  class adaptive_controller_t {
@@ -794,18 +796,52 @@ index 00000000..2f3402cd
 +    static constexpr double bad_rise_s = 20;  ///< a loss this soon after going up means that level was too high
 +    static constexpr double relax_s = 60;  ///< the "too high" level is forgotten a step at a time after this long quiet
 +    static constexpr double min_scale = 0.25;
++    static constexpr double rtt_window_s = 30;  ///< the usual round trip is the lowest seen in this long
++    static constexpr double rtt_ratio = 1.5;  ///< a round trip this many times the usual is trouble...
++    static constexpr double rtt_margin_ms = 15;  ///< ...and at least this much above it, so small links don't trip on jitter
++    static constexpr double rtt_hold_s = 0.3;  ///< trouble must last this long, and counts once per this long after
 +
 +    explicit adaptive_controller_t(clock::time_point start):
-+        start_ {start}, last_change_ {start}, last_loss_ {start}, ceiling_checked_ {start} {
++        start_ {start}, last_change_ {start}, last_trouble_ {start}, ceiling_checked_ {start} {
 +    }
 +
-+    /** The video player lost something it couldn't rebuild. */
-+    void note_loss(clock::time_point now) {
++    /** Trouble: the video player lost something it couldn't rebuild (note_rtt adds the other kind). */
++    void note_trouble(clock::time_point now) {
 +      if (secs(start_, now) < grace_s) {
 +        return;
 +      }
-+      losses_.push_back(now);
-+      last_loss_ = now;
++      troubles_.push_back(now);
++      last_trouble_ = now;
++    }
++
++    /**
++     * The round trip to the viewer, in milliseconds (0: not measured yet). Call with every reading.
++     * A round trip that stays well above the usual one counts as trouble.
++     */
++    void note_rtt(clock::time_point now, double rtt_ms) {
++      if (rtt_ms <= 0) {
++        return;
++      }
++      // Lowest round trip in the last rtt_window_s: a queue of readings that only ever gets higher
++      while (!rtts_.empty() && rtts_.back().ms >= rtt_ms) {
++        rtts_.pop_back();
++      }
++      rtts_.push_back({now, rtt_ms});
++      while (secs(rtts_.front().at, now) > rtt_window_s) {
++        rtts_.pop_front();
++      }
++      const auto usual = rtts_.front().ms;
++      if (rtt_ms <= std::max(usual * rtt_ratio, usual + rtt_margin_ms)) {
++        slow_since_.reset();
++        return;
++      }
++      if (!slow_since_) {
++        slow_since_ = now;
++      }
++      if (secs(*slow_since_, now) >= rtt_hold_s) {
++        note_trouble(now);
++        slow_since_ = now;
++      }
 +    }
 +
 +    /**
@@ -813,26 +849,26 @@ index 00000000..2f3402cd
 +     * negative number.
 +     */
 +    double evaluate(clock::time_point now) {
-+      while (!losses_.empty() && secs(losses_.front(), now) > window_s) {
-+        losses_.pop_front();
++      while (!troubles_.empty() && secs(troubles_.front(), now) > window_s) {
++        troubles_.pop_front();
 +      }
 +      const auto since_change = secs(last_change_, now);
-+      const auto since_loss = secs(last_loss_, now);
++      const auto since_trouble = secs(last_trouble_, now);
 +
 +      // A long quiet spell: the level that failed before may work now
-+      if (since_loss >= relax_s && secs(ceiling_checked_, now) >= relax_s) {
++      if (since_trouble >= relax_s && secs(ceiling_checked_, now) >= relax_s) {
 +        ceiling_ = std::min(1.0, ceiling_ + 0.1);
 +        ceiling_checked_ = now;
 +      }
 +
-+      if (static_cast<int>(losses_.size()) >= events_to_drop && since_change >= (rose_last_ ? min_after_rise_s : min_between_drops_s)) {
++      if (static_cast<int>(troubles_.size()) >= events_to_drop && since_change >= (rose_last_ ? min_after_rise_s : min_between_drops_s)) {
 +        auto lower = std::max(min_scale, scale_ * drop_factor);
 +        if (rose_last_ && since_change < bad_rise_s) {
 +          // That level was too high: go back to the one before it, and don't try it again for a while
 +          ceiling_ = std::min(ceiling_, scale_before_rise_);
 +          lower = scale_before_rise_;
 +        }
-+        losses_.clear();
++        troubles_.clear();
 +        if (lower >= scale_ - 1e-9) {
 +          return -1;  // already as low as it goes
 +        }
@@ -842,7 +878,7 @@ index 00000000..2f3402cd
 +        return scale_;
 +      }
 +
-+      if (losses_.empty() && since_loss >= clean_before_rise_s && since_change >= clean_before_rise_s && scale_ < ceiling_ - 1e-9) {
++      if (troubles_.empty() && since_trouble >= clean_before_rise_s && since_change >= clean_before_rise_s && scale_ < ceiling_ - 1e-9) {
 +        scale_before_rise_ = scale_;
 +        scale_ = std::min(ceiling_, scale_ * rise_factor);
 +        last_change_ = now;
@@ -865,11 +901,18 @@ index 00000000..2f3402cd
 +      return std::chrono::duration_cast<seconds>(to - from).count();
 +    }
 +
++    struct rtt_reading_t {
++      clock::time_point at;
++      double ms;
++    };
++
 +    clock::time_point start_;
 +    clock::time_point last_change_;
-+    clock::time_point last_loss_;
++    clock::time_point last_trouble_;
 +    clock::time_point ceiling_checked_;
-+    std::deque<clock::time_point> losses_;
++    std::deque<clock::time_point> troubles_;
++    std::deque<rtt_reading_t> rtts_;
++    std::optional<clock::time_point> slow_since_;
 +    double scale_ = 1.0;
 +    double ceiling_ = 1.0;
 +    double scale_before_rise_ = 1.0;
@@ -877,7 +920,7 @@ index 00000000..2f3402cd
 +  };
 +}  // namespace moonshine
 diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
-index e6df1c0b..4d03cafe 100644
+index e6df1c0b..fecd44c7 100644
 --- a/src/nvhttp.cpp
 +++ b/src/nvhttp.cpp
 @@ -6,9 +6,19 @@
@@ -1047,7 +1090,7 @@ index e6df1c0b..4d03cafe 100644
    void applist(resp_https_t response, req_https_t request) {
      print_req<SunshineHTTPS>(request);
  
-@@ -1147,6 +1218,730 @@ namespace nvhttp {
+@@ -1147,6 +1218,729 @@ namespace nvhttp {
  
    }
  
@@ -1276,10 +1319,9 @@ index e6df1c0b..4d03cafe 100644
 +
 +    void prune(std::chrono::steady_clock::time_point now) {
 +      files.remove_if([&](const file_t &f) {
-+        const bool expired = f.decision == 0  ? now - f.created > WAIT_TTL :
-+                             f.decision < 0   ? now - f.created > WAIT_TTL :
-+                             f.done           ? now - f.touched > DONE_TTL :
-+                                                now - f.touched > IDLE_TTL;
++        const bool expired = f.decision <= 0 ? now - f.created > WAIT_TTL :  // never answered, or declined
++                             f.done          ? now - f.touched > DONE_TTL :
++                                               now - f.touched > IDLE_TTL;
 +        if (expired) {
 +          discard(f);
 +        }
@@ -1778,7 +1820,7 @@ index e6df1c0b..4d03cafe 100644
    void launch(bool &host_audio, resp_https_t response, req_https_t request) {
      print_req<SunshineHTTPS>(request);
  
-@@ -1702,15 +2497,23 @@ namespace nvhttp {
+@@ -1702,15 +2496,23 @@ namespace nvhttp {
      https_server.resource["^/pair$"]["GET"] = pair<SunshineHTTPS>;
      https_server.resource["^/applist$"]["GET"] = applist;
      https_server.resource["^/appasset$"]["GET"] = appasset;
@@ -1806,7 +1848,7 @@ index e6df1c0b..4d03cafe 100644
  
      https_server.config.reuse_address = true;
      https_server.config.address = net::af_to_any_address_string(address_family);
-@@ -1719,6 +2522,11 @@ namespace nvhttp {
+@@ -1719,6 +2521,11 @@ namespace nvhttp {
      http_server.default_resource["GET"] = not_found<SimpleWeb::HTTP>;
      http_server.resource["^/serverinfo$"]["GET"] = serverinfo<SimpleWeb::HTTP>;
      http_server.resource["^/pair$"]["GET"] = pair<SimpleWeb::HTTP>;
@@ -1818,7 +1860,7 @@ index e6df1c0b..4d03cafe 100644
  
      http_server.config.reuse_address = true;
      http_server.config.address = net::af_to_any_address_string(address_family);
-@@ -1814,7 +2622,8 @@ namespace nvhttp {
+@@ -1814,7 +2621,8 @@ namespace nvhttp {
      const crypto::PERM newPerm,
      const bool enable_legacy_ordering,
      const bool allow_client_commands,
@@ -1828,7 +1870,7 @@ index e6df1c0b..4d03cafe 100644
    ) {
      find_and_udpate_session_info(uuid, name, newPerm);
  
-@@ -1831,6 +2640,7 @@ namespace nvhttp {
+@@ -1831,6 +2639,7 @@ namespace nvhttp {
          named_cert_p->enable_legacy_ordering = enable_legacy_ordering;
          named_cert_p->allow_client_commands = allow_client_commands;
          named_cert_p->always_use_virtual_display = always_use_virtual_display;
@@ -2665,7 +2707,7 @@ index c426bd93..095a194c 100644
     * @brief Terminates all running streaming sessions.
     */
 diff --git a/src/stream.cpp b/src/stream.cpp
-index bceeb93d..08507008 100644
+index bceeb93d..4a454a57 100644
 --- a/src/stream.cpp
 +++ b/src/stream.cpp
 @@ -4,9 +4,12 @@
@@ -2793,13 +2835,13 @@ index bceeb93d..08507008 100644
    int send_feedback_msg(session_t *session, platf::gamepad_feedback_msg_t &msg) {
      if (!session->control.peer) {
        BOOST_LOG(warning) << "Couldn't send gamepad feedback data, still waiting for PING from Moonlight"sv;
-@@ -927,9 +1007,33 @@ namespace stream {
+@@ -927,9 +1007,34 @@ namespace stream {
      return 0;
    }
  
 +  /**
 +   * Moonshine: feed the adaptive-quality controller. `lost` says the viewer just reported lost video; every
-+   * control packet also gives it the chance to act on the quiet (raising the quality again).
++   * control packet also feeds it the round trip and lets it act on the quiet (raising the quality again).
 +   */
 +  static void adaptive_step(session_t *session, bool lost) {
 +    if (!session->config.moonshineAdaptive) {
@@ -2810,8 +2852,9 @@ index bceeb93d..08507008 100644
 +      session->adaptive = std::make_unique<moonshine::adaptive_controller_t>(now);
 +    }
 +    if (lost) {
-+      session->adaptive->note_loss(now);
++      session->adaptive->note_trouble(now);
 +    }
++    session->adaptive->note_rtt(now, session->rtt_ms.load(std::memory_order_relaxed));
 +    const auto scale = session->adaptive->evaluate(now);
 +    if (scale > 0) {
 +      BOOST_LOG(info) << "Moonshine: adaptive quality for ["sv << session->device_name << "] is now "sv << (int) std::lround(scale * 100) << "% of what the viewer picked"sv;
@@ -2827,7 +2870,7 @@ index bceeb93d..08507008 100644
      });
  
      server->map(packetTypes[IDX_START_A], [&](session_t *session, const std::string_view &payload) {
-@@ -947,6 +1051,9 @@ namespace stream {
+@@ -947,6 +1052,9 @@ namespace stream {
  
        auto lastGoodFrame = stats[3];
  
@@ -2837,7 +2880,7 @@ index bceeb93d..08507008 100644
        BOOST_LOG(verbose)
          << "type [IDX_LOSS_STATS]"sv << std::endl
          << "---begin stats---" << std::endl
-@@ -959,6 +1066,7 @@ namespace stream {
+@@ -959,6 +1067,7 @@ namespace stream {
      server->map(packetTypes[IDX_REQUEST_IDR_FRAME], [&](session_t *session, const std::string_view &payload) {
        BOOST_LOG(debug) << "type [IDX_REQUEST_IDR_FRAME]"sv;
  
@@ -2845,7 +2888,7 @@ index bceeb93d..08507008 100644
        session->video.idr_events->raise(true);
      });
  
-@@ -972,6 +1080,7 @@ namespace stream {
+@@ -972,6 +1081,7 @@ namespace stream {
          << "firstFrame [" << firstFrame << ']' << std::endl
          << "lastFrame [" << lastFrame << ']';
  
@@ -2853,7 +2896,7 @@ index bceeb93d..08507008 100644
        session->video.invalidate_ref_frames_events->raise(std::make_pair(firstFrame, lastFrame));
      });
  
-@@ -998,7 +1107,8 @@ namespace stream {
+@@ -998,7 +1108,8 @@ namespace stream {
          std::copy(payload.end() - 16, payload.end(), std::begin(iv));
        }
  
@@ -2863,7 +2906,7 @@ index bceeb93d..08507008 100644
      });
  
      server->map(packetTypes[IDX_EXEC_SERVER_CMD], [server](session_t *session, const std::string_view &payload) {
-@@ -1112,6 +1222,7 @@ namespace stream {
+@@ -1112,6 +1223,7 @@ namespace stream {
        // IDX_INPUT_DATA callback will attempt to decrypt unencrypted data, therefore we need pass it directly
        if (type == packetTypes[IDX_INPUT_DATA]) {
          plaintext.erase(std::begin(plaintext), std::begin(plaintext) + 4);
@@ -2871,7 +2914,7 @@ index bceeb93d..08507008 100644
          input::passthrough(session->input, std::move(plaintext), session->permission);
        } else {
          server->call(type, session, next_payload, true);
-@@ -1956,6 +2067,27 @@ namespace stream {
+@@ -1956,6 +2068,27 @@ namespace stream {
        return session.device_uuid;
      }
  
@@ -2899,7 +2942,7 @@ index bceeb93d..08507008 100644
      bool uuid_match(const session_t &session, const std::string_view& uuid) {
        return session.device_uuid == uuid;
      }
-@@ -1978,6 +2110,74 @@ namespace stream {
+@@ -1978,6 +2111,74 @@ namespace stream {
        return false;
      }
  
@@ -2974,7 +3017,7 @@ index bceeb93d..08507008 100644
      void stop(session_t &session) {
        while_starting_do_nothing(session.state);
        auto expected = state_e::RUNNING;
-@@ -1985,6 +2185,7 @@ namespace stream {
+@@ -1985,6 +2186,7 @@ namespace stream {
        if (already_stopping) {
          return;
        }
@@ -2982,7 +3025,7 @@ index bceeb93d..08507008 100644
  
        session.shutdown_event->raise(true);
      }
-@@ -1996,6 +2197,7 @@ namespace stream {
+@@ -1996,6 +2198,7 @@ namespace stream {
        if (already_stopping) {
          return;
        }
@@ -2990,7 +3033,7 @@ index bceeb93d..08507008 100644
  
        // reason: graceful termination
        std::uint32_t reason = 0x80030023;
-@@ -2112,6 +2314,8 @@ namespace stream {
+@@ -2112,6 +2315,8 @@ namespace stream {
  
        session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
  
@@ -2999,7 +3042,7 @@ index bceeb93d..08507008 100644
        session.audioThread = std::thread {audioThread, &session};
        session.videoThread = std::thread {videoThread, &session};
  
-@@ -2171,6 +2375,11 @@ namespace stream {
+@@ -2171,6 +2376,11 @@ namespace stream {
        };
  
        session->video.idr_events = mail->event<bool>(mail::idr);

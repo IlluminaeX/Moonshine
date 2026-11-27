@@ -4,15 +4,14 @@ const http = require('http');
 const { execFile } = require('child_process');
 const mdns = require('multicast-dns');
 
-const MOONLIGHT_KEY = 'HKCU\\Software\\Moonlight Game Streaming Project\\Moonlight';
+const PLAYER_KEY = 'HKCU\\Software\\Moonshine\\Moonshine'; // where the stream player saves its PCs and pairings
 const DEFAULT_PORT = 47989;
 
 /**
- * Read Moonlight's saved hosts (and their cached app lists) from the registry.
- * Moonshine always runs Moonlight in non-portable mode, so this is the same store
- * an installed Moonlight uses.
+ * Read the stream player's saved hosts (and their cached app lists) from the registry. They are
+ * Moonshine's own: a Moonlight install keeps its list somewhere else.
  */
-function readSavedHosts(key = MOONLIGHT_KEY) {
+function readSavedHosts(key = PLAYER_KEY) {
   return new Promise((resolve) => {
     execFile('reg.exe', ['query', `${key}\\hosts`, '/s'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
       (err, stdout) => {
@@ -65,7 +64,7 @@ function reg(...args) {
  * (hosts\1 .. hosts\N plus a count), so the ones after it move up a place.
  * @returns {Promise<boolean>} false if no saved PC has that uuid
  */
-async function removeSavedHost(uuid, key = MOONLIGHT_KEY) {
+async function removeSavedHost(uuid, key = PLAYER_KEY) {
   const saved = await readSavedHosts(key);
   const target = saved.find((h) => h.uuid === uuid);
   if (!target) return false;
@@ -135,4 +134,11 @@ function discoverLan(timeoutMs = 2500) {
   });
 }
 
-module.exports = { DEFAULT_PORT, readSavedHosts, removeSavedHost, serverInfo, discoverLan };
+/** "host", "host:port", "[ipv6]" or "[ipv6]:port" → { host (no brackets), port (the default when none is given) }. */
+function splitAddress(address) {
+  const text = String(address || '');
+  const m = text.match(/^(\[.*\]|[^:]+):(\d+)$/);
+  return { host: (m ? m[1] : text).replace(/^\[|\]$/g, ''), port: m ? Number(m[2]) : DEFAULT_PORT };
+}
+
+module.exports = { DEFAULT_PORT, PLAYER_KEY, splitAddress, readSavedHosts, removeSavedHost, serverInfo, discoverLan };

@@ -889,7 +889,7 @@ async function renderTransfers() {
   const list = await window.moonshine.files.list();
   $('#transfers').classList.toggle('hidden', !list.length);
   $('#transfers-list').replaceChildren(...list.map((t) => {
-    const pct = t.size ? Math.round((100 * (t.sent || 0)) / t.size) : 0;
+    const pct = percent(t.sent, t.size);
     const row = el('div', { className: `transfer ${t.state}` },
       el('div', { className: 'transfer-name', textContent: `${t.dir === 'in' ? '↓' : '↑'} ${t.name}`, title: t.name }),
       el('div', { className: 'transfer-state', textContent: TRANSFER_STATES[t.state](t) + (t.state === 'sending' ? ` · ${pct}%` : '') }));
@@ -962,10 +962,21 @@ function personName(user) {
   return (user || '').replace(/@.*$/, '') || user;
 }
 
-function avatarFor(seed, text) {
+/**
+ * A round picture: the first letter on a colour from `seed`. `photo` ({ user, version }) swaps in that
+ * person's profile picture (from their Discord sign-in) once it has loaded; without one, the letter stays.
+ */
+function avatarFor(seed, text, photo = null) {
   const hue = [...seed].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) % 360, 7);
   const a = el('div', { className: 'avatar', textContent: (text.trim()[0] || '?').toUpperCase() });
   a.style.background = `linear-gradient(135deg, hsl(${hue} 70% 55%), hsl(${(hue + 40) % 360} 75% 35%))`;
+  if (photo) {
+    window.moonshine.friends.avatar(photo.user, photo.version).then((url) => {
+      if (!url) return;
+      a.textContent = '';
+      a.style.background = `center / cover no-repeat url(${url})`;
+    }).catch(() => { /* the letter stays */ });
+  }
   return a;
 }
 
@@ -1204,6 +1215,7 @@ function buildAccount(box, service, view) {
     await loadFriends();
   }));
   box.replaceChildren(
+    avatarFor(service.username, service.username, service.avatar ? { user: service.username, version: service.avatar } : null),
     el('div', { className: 'account-text' },
       el('div', { className: 'account-title' }, 'You’re ', el('span', { className: 'account-name', textContent: service.username })),
       el('div', { className: 'account-hint live', textContent: service.error ? `Can’t reach Moonshine’s friends service right now (${service.error}).` : 'Friends add you by this username.' })),
@@ -1277,7 +1289,7 @@ function inviteRow(inv) {
 }
 
 /** The first card: this PC, with a button (shown when you point at it) that copies a one-time invite link. */
-function selfCard(self, invites) {
+function selfCard(self, invites, photo) {
   const copy = el('button', { className: 'secondary reveal', textContent: 'Copy invite link' });
   copy.title = 'Copies a link that lets one person stream from this PC. It works once, and for an hour if nobody opens it.';
   copy.addEventListener('click', () => busy(copy, 'Copying…', async () => {
@@ -1292,7 +1304,7 @@ function selfCard(self, invites) {
     copy);
   const card = el('div', { className: 'friend self-card' },
     el('div', { className: 'friend-head' },
-      avatarFor('this-pc', 'This PC'),
+      avatarFor('this-pc', 'This PC', photo),
       el('div', { className: 'friend-head-text' },
         el('div', { className: 'friend-name', textContent: 'This PC' }),
         el('div', { className: 'friend-summary', textContent: 'Point at it to invite someone with a one-time link' }))),
@@ -1310,13 +1322,14 @@ function renderFriends({ me, tailscale, pcs, alerts, shareGame, version, service
   const box = $('#friends');
   // Nothing changed since the last refresh: leave the cards alone (no flicker, buttons keep their state)
   const showSelf = Boolean(self && service && service.signedIn);
-  const view = JSON.stringify([me, tailscale, pcs, self, invites, service && service.signedIn, service && service.username,
-    ((service && service.friends) || []).map((f) => [f.username, f.online, f.nickname, f.unread]), version]);
+  const ownPhoto = showSelf && service.avatar ? { user: service.username, version: service.avatar } : null; // your Discord picture
+  const view = JSON.stringify([me, tailscale, pcs, self, invites, service && service.signedIn, service && service.username, service && service.avatar,
+    ((service && service.friends) || []).map((f) => [f.username, f.online, f.nickname, f.unread, f.avatar]), version]);
   if (view === friendsView && box.children.length) return;
   friendsView = view;
   const shownBefore = new Set([...box.querySelectorAll('.friend[data-key]')].map((n) => n.dataset.key));
   if (!pcs.length && !(service && service.friends.length)) {
-    box.replaceChildren(...(showSelf ? [selfCard(self, invites)] : []), el('div', { className: 'empty', textContent: service && service.signedIn && service.username
+    box.replaceChildren(...(showSelf ? [selfCard(self, invites, ownPhoto)] : []), el('div', { className: 'empty', textContent: service && service.signedIn && service.username
       ? 'No friends yet. Add someone by their username above.'
       : tailscale
       ? 'No friends yet. Add one by username above, or a friend who shares their PC with you on Tailscale shows up here.'
@@ -1333,7 +1346,7 @@ function renderFriends({ me, tailscale, pcs, alerts, shareGame, version, service
   }
   const rank = (key, list) => (key === 'invite' ? -1 : key === 'me' ? 2 : key === 'other' ? 3 : list.some((p) => p.online) ? 0 : 1);
   const ordered = [...groups].sort(([a, la], [b, lb]) => (rank(a, la) - rank(b, lb)) || a.localeCompare(b));
-  box.replaceChildren(...(showSelf ? [selfCard(self, invites)] : []), ...ordered.map(([key, list]) => {
+  box.replaceChildren(...(showSelf ? [selfCard(self, invites, ownPhoto)] : []), ...ordered.map(([key, list]) => {
     list.sort((a, b) => (b.online - a.online) || (a.name || '').localeCompare(b.name || ''));
     const account = (service && service.friends || []).find((f) => f.username === key);
     const isAccount = Boolean(account);
@@ -1349,8 +1362,10 @@ function renderFriends({ me, tailscale, pcs, alerts, shareGame, version, service
     if (account && account.nickname) name.append(el('span', { className: 'friend-handle', textContent: key }));
     const badge = isAccount ? versionBadge(list, version) : null;
     if (badge) name.append(badge);
+    const photo = isAccount && account.avatar ? { user: key, version: account.avatar }
+      : key === 'me' && service && service.avatar ? { user: service.username, version: service.avatar } : null;
     const head = el('div', { className: 'friend-head' },
-      avatarFor(key, title),
+      avatarFor(key, title, photo),
       el('div', { className: 'friend-head-text' },
         name,
         el('div', { className: 'friend-summary', textContent: list.length || !isAccount ? summary : (account.online ? 'Online' : 'Offline'), title: key.includes('@') ? key : '' })));
@@ -2325,6 +2340,8 @@ const updates = window.moonshine.updates;
 let checkingByHand = false;
 
 function mb(bytes) { return `${(bytes / 1048576).toFixed(0)} MB`; }
+/** How far along, 0 to 100 (0 when the total isn't known yet). */
+function percent(done, total) { return total ? Math.max(0, Math.min(100, Math.round((100 * (done || 0)) / total))) : 0; }
 
 function showUpdate(s) {
   if (!s) return;
@@ -2343,6 +2360,11 @@ let bannerState = null;
 function bannerDismissed() {
   try { return localStorage.getItem('updateBannerDismissed') || ''; } catch { return ''; }
 }
+/** "Installing the host… 25%": the installer's real step (Moonshine stays open until it must restart). */
+function installStepText(s) {
+  return `${s.step || 'Installing'}… ${percent(s.percent, 100)}%`;
+}
+
 function showUpdateBanner(s) {
   bannerState = s;
   const banner = $('#update-banner');
@@ -2354,12 +2376,13 @@ function showUpdateBanner(s) {
   $('#update-banner-title').textContent = s.status === 'installing'
     ? `Installing Moonshine ${s.version}…`
     : `Moonshine ${s.version} is available`;
-  let detail = `You have ${s.current}. Updating takes about a minute; Moonshine opens again by itself.`;
+  let detail = `You have ${s.current}. Moonshine stays open while it updates, then restarts by itself.`;
   if (s.status === 'downloading') {
-    const pct = s.total ? Math.min(100, Math.round((s.received / s.total) * 100)) : 0;
-    detail = `Downloading… ${pct}%`;
-  } else if (s.status === 'ready') detail = 'Downloaded and checked. Install it when you’re ready.';
-  else if (s.error) detail = s.error;
+    detail = `Downloading… ${percent(s.received, s.total)}%`;
+  } else if (s.status === 'installing') {
+    detail = installStepText(s);
+  } else if (s.error) detail = s.error;
+  else if (s.status === 'ready') detail = 'Downloaded and checked. Install it when you’re ready.';
   $('#update-banner-detail').textContent = detail;
   const button = $('#update-banner-now');
   button.classList.toggle('hidden', s.status === 'installing');
@@ -2403,14 +2426,15 @@ function showUpdatesPanel(s = panelState) {
   else if (s.status === 'current') text = `You have the latest version. Checked ${s.checkedAt ? agoText(s.checkedAt) : 'just now'}.`;
   else if (s.status === 'available') text = s.error || `Moonshine ${s.version} is available${s.size ? ` (${mb(s.size)})` : ''}.`;
   else if (s.status === 'downloading') {
-    text = `Downloading Moonshine ${s.version}… ${s.total ? Math.min(100, Math.round((s.received / s.total) * 100)) : 0}%`;
-  } else if (s.status === 'ready') text = `Moonshine ${s.version} is downloaded and checked. Install it when you’re ready.`;
-  else if (s.status === 'installing') text = 'Installing the update…';
+    text = `Downloading Moonshine ${s.version}… ${percent(s.received, s.total)}%`;
+  } else if (s.status === 'ready') text = s.error || `Moonshine ${s.version} is downloaded and checked. Install it when you’re ready.`;
+  else if (s.status === 'installing') text = `Installing Moonshine ${s.version}: ${installStepText(s)}`;
   else if (s.status === 'error') text = s.message;
   $('#upd-status').textContent = text;
   const bar = $('#upd-bar');
-  bar.classList.toggle('hidden', s.status !== 'downloading');
-  if (s.status === 'downloading') bar.firstElementChild.style.width = `${s.total ? Math.min(100, Math.round((s.received / s.total) * 100)) : 0}%`;
+  bar.classList.toggle('hidden', s.status !== 'downloading' && s.status !== 'installing');
+  if (s.status === 'downloading') bar.firstElementChild.style.width = `${percent(s.received, s.total)}%`;
+  if (s.status === 'installing') bar.firstElementChild.style.width = `${percent(s.percent, 100)}%`;
   const check = $('#upd-check');
   check.disabled = busyNow;
   check.textContent = s.status === 'checking' ? 'Checking…' : 'Check for updates';
@@ -2473,7 +2497,7 @@ $('#update-dialog').addEventListener('click', (e) => { if (e.target.id === 'upda
 $('#update-install').addEventListener('click', (e) => busy(e.currentTarget, 'Closing Moonshine…', async () => {
   $('#update-later').disabled = true;
   try {
-    await updates.install(); // Moonshine closes once the installer is on its way
+    await updates.install(); // Moonshine shows the progress and closes only for the last step
   } finally {
     $('#update-later').disabled = false;
   }

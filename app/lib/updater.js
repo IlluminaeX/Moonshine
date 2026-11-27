@@ -10,9 +10,11 @@
 // below and whose signed version is newer than its own, so a tampered or old installer is refused
 // even if someone got hold of the GitHub account.
 //
-// Installing: a small PowerShell helper (not elevated) waits for Moonshine to quit, runs the
-// installer silently behind a Windows admin prompt, then starts Moonshine again: the new version
-// if it worked, the old one if the prompt was declined or the install failed.
+// Installing: a small PowerShell helper (not elevated) runs the installer silently behind a Windows
+// admin prompt while Moonshine stays open. The installer reports each step in a progress file, which
+// Moonshine shows; it updates the host and drivers first and writes "close" only when Moonshine's
+// own files are next. Moonshine then quits, and the helper starts it again once the installer is
+// done. A declined prompt, or a failure before that point, leaves Moonshine open and unchanged.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -27,6 +29,7 @@ const PUBLIC_KEY = 'MCowBQYDK2VwAyEAKduWnNJU1yHWBfhZiGxcL8yCylYs3MOzvRszwPU85m4=
 const SIGNED_PREFIX = 'moonshine-update-v1';
 const TICK_MS = 60 * 60 * 1000; // how often to see whether a check is due (also catches up after sleep)
 const FIRST_CHECK_MS = 3 * 1000; // a check right as Moonshine starts
+const SILENT_INSTALL_MS = 10 * 60 * 1000; // how long the Windows prompt may sit unanswered
 
 const events = new EventEmitter();
 let fetchImpl = null; // electron's net.fetch (uses Windows' proxy settings); plain fetch in tests
@@ -200,19 +203,22 @@ function download() {
 // Runs hidden and not elevated. Waits for Moonshine to close, installs behind a UAC prompt, and
 // opens Moonshine again either way.
 const HELPER = String.raw`
-param([string]$Installer, [string]$App, [int]$AppPid, [string]$Log)
+param([string]$Installer, [string]$App, [int]$AppPid, [string]$Log, [string]$Progress)
 function Say($t) { Add-Content -Path $Log -Value "$(Get-Date -Format s) $t" }
-Say "waiting for Moonshine to close"
-try { Wait-Process -Id $AppPid -Timeout 30 -ErrorAction SilentlyContinue } catch {}
+function Tell($t) { try { Set-Content -Path $Progress -Value $t -NoNewline } catch {} }
 $code = -1
 try {
-  $p = Start-Process -FilePath $Installer -ArgumentList '/S' -Verb RunAs -PassThru -Wait
+  $p = Start-Process -FilePath $Installer -ArgumentList ('/S /PROGRESS="' + $Progress + '"') -Verb RunAs -PassThru -Wait
   $code = $p.ExitCode
   Say "installer finished with $code"
 } catch {
   Say "install not started: $($_.Exception.Message)"
+  Tell 'declined'
+  exit
 }
-$result = if ($code -eq 0) { 'done' } elseif ($code -eq -1) { 'declined' } else { 'failed' }
+# Moonshine still open: the install stopped before it had to close (Moonshine shows why)
+if (Get-Process -Id $AppPid -ErrorAction SilentlyContinue) { Tell "exit|$code"; exit }
+$result = if ($code -eq 0) { 'done' } else { 'failed' }
 Start-Process -FilePath $App -ArgumentList "--updated=$result"
 `;
 
@@ -234,10 +240,46 @@ function startOutsideMoonshine(commandLine) {
   });
 }
 
+/** Follow the installer's progress file until it says to close (then `quit`), or stops. */
+function followProgress(file, offer, quit) {
+  let last = '';
+  const started = Date.now();
+  const timer = setInterval(() => {
+    let text = '';
+    try { text = fs.readFileSync(file, 'utf8').trim(); } catch { /* not written yet */ }
+    if (!text && Date.now() - started > SILENT_INSTALL_MS) {
+      // Never a word: the Windows prompt was ignored, or the installer couldn't write here
+      clearInterval(timer);
+      setState({ ...offer, status: 'ready', error: 'The installer never answered. Nothing was changed; try again.' });
+      return;
+    }
+    if (!text || text === last) return;
+    last = text;
+    if (text === 'declined') {
+      clearInterval(timer);
+      setState({ ...offer, status: 'ready', error: 'The update was cancelled at the Windows prompt. Nothing was changed.' });
+      return;
+    }
+    if (text.startsWith('exit|')) {
+      clearInterval(timer);
+      setState({ ...offer, status: 'ready', error: `The update couldn't be installed (code ${text.slice(5)}). Moonshine wasn't changed; try again.` });
+      return;
+    }
+    const [pct, step] = text.split('|');
+    if (step === 'close') {
+      clearInterval(timer);
+      setState({ ...offer, status: 'installing', percent: Number(pct) || 85, step: 'Restarting Moonshine' });
+      setTimeout(quit, 400); // let the window show it first
+      return;
+    }
+    setState({ ...offer, status: 'installing', percent: Number(pct) || 0, step: step || 'Installing' });
+  }, 300);
+}
+
 /**
- * Close Moonshine and install the downloaded update. `quit` is called once the helper is running;
- * it must quit the app (the installer can't replace Moonshine's files while it runs). If the helper
- * can't be started, Moonshine stays open and this throws.
+ * Install the downloaded update. Moonshine stays open showing the installer's progress; `quit` is
+ * called when the installer is ready to replace Moonshine's own files (it must quit the app). If the
+ * helper can't be started, nothing happens and this throws.
  */
 async function install(quit, { appPath = process.execPath } = {}) {
   if (state.status !== 'ready' || !state.file || !fs.existsSync(state.file)) {
@@ -246,15 +288,18 @@ async function install(quit, { appPath = process.execPath } = {}) {
   const dir = path.dirname(state.file);
   const script = path.join(dir, 'install-update.ps1');
   const log = path.join(dir, 'update.log');
+  const progress = path.join(dir, 'progress.txt');
   fs.writeFileSync(script, HELPER);
   fs.rmSync(log, { force: true });
+  fs.rmSync(progress, { force: true });
   const q = (s) => `"${s}"`; // none of these paths can contain a double quote
   await startOutsideMoonshine([
     'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-    '-File', q(script), '-Installer', q(state.file), '-App', q(appPath), '-AppPid', String(process.pid), '-Log', q(log),
+    '-File', q(script), '-Installer', q(state.file), '-App', q(appPath), '-AppPid', String(process.pid), '-Log', q(log), '-Progress', q(progress),
   ].join(' '));
-  setState({ ...state, status: 'installing' });
-  quit();
+  const offer = { ...state };
+  setState({ ...offer, status: 'installing', percent: 0, step: 'Waiting for you to allow it in the Windows prompt' });
+  followProgress(progress, offer, quit);
 }
 
 /**

@@ -19,6 +19,7 @@ Unicode true
 !include "WinMessages.nsh"
 !include "x64.nsh"
 !include "LogicLib.nsh"
+!include "FileFunc.nsh"
 
 Name "Moonshine"
 OutFile "${OUTFILE}"
@@ -57,6 +58,7 @@ AutoCloseWindow true ; go straight from installing to the finish page
 !define ACCENT_REF 0x003C14DC
 
 Var HostPlan ; fresh | update | migrate
+Var ProgressFile ; in-app updates: where to report progress (/PROGRESS="..."), empty otherwise
 Var PlanText
 Var DesktopShortcut ; 1 or 0, from the tick-boxes on the first page
 Var StartShortcut
@@ -223,7 +225,9 @@ FunctionEnd
 Function OnOpenClick
   Pop $0
   !ifndef PREVIEW
-    Exec '"$INSTDIR\Moonshine.exe"'
+    ; Through Explorer, so Moonshine runs as the user and not with the installer's admin rights. An
+    ; admin Moonshine can't be reached by links (moonshine://) or files dropped from normal programs.
+    Exec '"$WINDIR\explorer.exe" "$INSTDIR\Moonshine.exe"'
   !endif
   SendMessage $HWNDPARENT ${WM_COMMAND} 1 0
 FunctionEnd
@@ -431,6 +435,16 @@ FunctionEnd
 
 ; ---- Install --------------------------------------------------------------------------
 
+; In-app updates pass /PROGRESS="file": each step writes "percent|what it's doing" there, and
+; "close" when Moonshine itself has to close (only its own files are in use while it runs).
+!macro Progress PCT TEXT
+  ${If} $ProgressFile != ""
+    FileOpen $9 $ProgressFile w
+    FileWrite $9 "${PCT}|${TEXT}"
+    FileClose $9
+  ${EndIf}
+!macroend
+
 !ifdef PREVIEW
 Section "-Preview" SEC_APP
   DetailPrint "Installing Moonshine..."
@@ -446,9 +460,13 @@ SectionEnd
 
 Section "-Moonshine app" SEC_APP
   ; Close a running Moonshine and stop its host so their files can be replaced.
-  DetailPrint "Closing Moonshine..."
-  nsExec::ExecToLog /TIMEOUT=30000 'taskkill /im Moonshine.exe /f'
+  ${If} $ProgressFile == ""
+    DetailPrint "Closing Moonshine..."
+    nsExec::ExecToLog /TIMEOUT=30000 'taskkill /im Moonshine.exe /f'
+  ${EndIf}
+  !insertmacro Progress 5 "Stopping the host"
   nsExec::ExecToLog /TIMEOUT=90000 'net stop MoonshineHost'
+  !insertmacro Progress 10 "Preparing the host"
 
   ; Move a separate Apollo in (then remove it), and put the host in managed mode.
   ; Run with 64-bit PowerShell and a time limit, so this step can never leave the installer stuck;
@@ -478,6 +496,53 @@ Section "-Moonshine app" SEC_APP
     FileClose $2
   ${EndIf}
 
+SectionEnd
+
+Section "-Host" SEC_HOST
+  ; The host engine (same steps as Apollo's own installer, minus its PATH entry and web shortcut).
+  ; Its config folder is never overwritten: that is the user's settings, apps and paired devices.
+  !insertmacro Progress 25 "Installing the host"
+  DetailPrint "Installing the host..."
+  SetOutPath "${HOST_DIR}"
+  File /r /x config "${STAGE}\apollo\*.*"
+  nsExec::ExecToLog /TIMEOUT=180000 'icacls "${HOST_DIR}" /reset'
+  !insertmacro Progress 40 "Installing the virtual display driver"
+  DetailPrint "Installing the virtual display driver..."
+  nsExec::ExecToLog /TIMEOUT=180000 '"${HOST_DIR}\drivers\sudovda\install.bat"'
+  ; Clear rules from earlier installs first, or every install would add another pair.
+  nsExec::ExecToLog /TIMEOUT=180000 '"${HOST_DIR}\scripts\delete-firewall-rule.bat"'
+  nsExec::ExecToLog /TIMEOUT=180000 '"${HOST_DIR}\scripts\add-firewall-rule.bat"'
+  !insertmacro Progress 55 "Installing the virtual gamepad driver"
+  DetailPrint "Installing the virtual gamepad driver..."
+  nsExec::ExecToLog /TIMEOUT=180000 'powershell.exe -ExecutionPolicy Bypass -File "${HOST_DIR}\scripts\install-gamepad.ps1"'
+  !insertmacro Progress 70 "Starting the host"
+  DetailPrint "Starting the host..."
+  nsExec::ExecToLog /TIMEOUT=180000 '"${HOST_DIR}\scripts\install-service.bat"'
+  nsExec::ExecToLog /TIMEOUT=180000 '"${HOST_DIR}\scripts\autostart-service.bat"'
+  SetOutPath "$INSTDIR"
+
+  ; Tailscale powers the friend invites; offer it if it's missing.
+  IfFileExists "$PROGRAMFILES64\Tailscale\tailscale.exe" tailscale_ok
+    MessageBox MB_YESNO|MB_ICONQUESTION "Moonshine uses Tailscale to connect with friends. Open the Tailscale download page?" /SD IDNO IDNO tailscale_ok
+    ExecShell "open" "https://tailscale.com/download/windows"
+  tailscale_ok:
+SectionEnd
+
+Section "-Moonshine files" SEC_FILES
+  ; Last, so an in-app update keeps Moonshine open (showing progress) until now.
+  ${If} $ProgressFile != ""
+    !insertmacro Progress 85 "close"
+    ; Moonshine closes itself when it reads "close"; give it 20 seconds, then make sure.
+    ${For} $0 1 40
+      nsExec::Exec 'cmd /c tasklist /FI "IMAGENAME eq Moonshine.exe" /NH | find /i "Moonshine.exe"'
+      Pop $1
+      ${If} $1 != "0"
+        ${Break}
+      ${EndIf}
+      Sleep 500
+    ${Next}
+    nsExec::ExecToLog /TIMEOUT=30000 'taskkill /im Moonshine.exe /f'
+  ${EndIf}
   DetailPrint "Installing Moonshine..."
   ; The stream player and app code are replaced whole, so files from an older version
   ; (a different player build, removed scripts) can't linger and get loaded.
@@ -525,47 +590,26 @@ Section "-Moonshine app" SEC_APP
   WriteRegStr HKCR "moonshine\DefaultIcon" "" "$INSTDIR\Moonshine.exe,0"
   WriteRegStr HKCR "moonshine\shell\open\command" "" '"$INSTDIR\Moonshine.exe" "%1"'
 SectionEnd
-
-Section "-Host" SEC_HOST
-  ; The host engine (same steps as Apollo's own installer, minus its PATH entry and web shortcut).
-  ; Its config folder is never overwritten: that is the user's settings, apps and paired devices.
-  DetailPrint "Installing the host..."
-  SetOutPath "${HOST_DIR}"
-  File /r /x config "${STAGE}\apollo\*.*"
-  nsExec::ExecToLog /TIMEOUT=180000 'icacls "${HOST_DIR}" /reset'
-  DetailPrint "Installing the virtual display driver..."
-  nsExec::ExecToLog /TIMEOUT=180000 '"${HOST_DIR}\drivers\sudovda\install.bat"'
-  ; Clear rules from earlier installs first, or every install would add another pair.
-  nsExec::ExecToLog /TIMEOUT=180000 '"${HOST_DIR}\scripts\delete-firewall-rule.bat"'
-  nsExec::ExecToLog /TIMEOUT=180000 '"${HOST_DIR}\scripts\add-firewall-rule.bat"'
-  DetailPrint "Installing the virtual gamepad driver..."
-  nsExec::ExecToLog /TIMEOUT=180000 'powershell.exe -ExecutionPolicy Bypass -File "${HOST_DIR}\scripts\install-gamepad.ps1"'
-  DetailPrint "Starting the host..."
-  nsExec::ExecToLog /TIMEOUT=180000 '"${HOST_DIR}\scripts\install-service.bat"'
-  nsExec::ExecToLog /TIMEOUT=180000 '"${HOST_DIR}\scripts\autostart-service.bat"'
-  SetOutPath "$INSTDIR"
-
-  ; Tailscale powers the friend invites; offer it if it's missing.
-  IfFileExists "$PROGRAMFILES64\Tailscale\tailscale.exe" tailscale_ok
-    MessageBox MB_YESNO|MB_ICONQUESTION "Moonshine uses Tailscale to connect with friends. Open the Tailscale download page?" /SD IDNO IDNO tailscale_ok
-    ExecShell "open" "https://tailscale.com/download/windows"
-  tailscale_ok:
-SectionEnd
 !endif
 
 ; Defined after the sections so it can refer to their indexes.
 Function .onInit
-  ; Both unticked on a fresh install. A silent run is an in-app update: keep the shortcuts as they are
-  ; (kept if they exist, and not re-added if deleted).
-  StrCpy $DesktopShortcut 0
-  StrCpy $StartShortcut 0
-  ${If} ${Silent}
+  ${GetParameters} $R0
+  ${GetOptions} $R0 "/PROGRESS=" $ProgressFile
+  ; Fresh install: Start menu ticked, desktop unticked. Over an earlier install (an in-app update, or
+  ; setup run again) each box matches whether that shortcut exists, so a removed one isn't re-added.
+  ${If} ${FileExists} "$INSTDIR\Moonshine.exe"
+    StrCpy $DesktopShortcut 0
+    StrCpy $StartShortcut 0
     ${If} ${FileExists} "$DESKTOP\Moonshine.lnk"
       StrCpy $DesktopShortcut 1
     ${EndIf}
     ${If} ${FileExists} "$SMPROGRAMS\Moonshine.lnk"
       StrCpy $StartShortcut 1
     ${EndIf}
+  ${Else}
+    StrCpy $DesktopShortcut 0
+    StrCpy $StartShortcut 1
   ${EndIf}
   ${IfNot} ${RunningX64}
     MessageBox MB_ICONSTOP "Moonshine needs 64-bit Windows."

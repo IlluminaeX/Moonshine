@@ -6,7 +6,12 @@ const features = [
   {
     id: 'adaptiveBitrate',
     name: 'Auto-tuned quality',
-    description: 'While you stream, the PC you’re watching lowers the video quality a step when your connection can’t keep up, and raises it again after a calm stretch, so the picture stays smooth instead of stuttering. It never goes above the bitrate you chose in Settings, and every change causes a brief hitch, so it holds off for a few seconds between changes. Needs the other PC to run this version of Moonshine too.',
+    description: 'While you stream, the PC you’re watching lowers the video quality a step when your connection can’t keep up (video is being lost, or the delay to the other PC suddenly climbs), and raises it again after a calm stretch, so the picture stays smooth instead of stuttering. It never goes above the bitrate you chose in Settings, and every change causes a brief hitch, so it holds off for a few seconds between changes. Needs the other PC to run this version of Moonshine too.',
+  },
+  {
+    id: 'steadyWifi',
+    name: 'Steadier Wi-Fi',
+    description: 'While you stream, this PC asks its Wi-Fi card not to leave the channel to scan for other networks, which is a common cause of the delay suddenly jumping for a few seconds. Windows undoes it as soon as the stream ends (or if Moonshine closes), so nothing stays changed. Does nothing on a cable. Whether it helps depends on the Wi-Fi driver.',
   },
 ];
 

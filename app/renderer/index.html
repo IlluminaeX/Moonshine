@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' boxart:; style-src 'self'; script-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' boxart: data:; style-src 'self'; script-src 'self'">
   <title>Moonshine</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -615,7 +615,7 @@
     <div class="dialog update-dialog">
       <img src="../assets/moonshine.png" alt="" class="update-dialog-icon">
       <h2 id="update-dialog-title">Install the update?</h2>
-      <p class="hint">Moonshine closes, installs the update and opens again by itself in about a minute. Windows asks you to allow the install.</p>
+      <p class="hint">Windows asks you to allow the install. Moonshine stays open and shows the progress, then restarts by itself for the last step.</p>
       <ul id="update-dialog-warnings" class="update-warnings hidden"></ul>
       <div class="actions end">
         <button type="button" id="update-later" class="secondary">Later</button>
