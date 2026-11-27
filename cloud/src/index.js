@@ -952,6 +952,30 @@ async function joinPage(env, secret) {
 <p style="color:#b6a6bd;font-size:13px">Install it, then open this page again and press Open in Moonshine.</p>`);
 }
 
+/** Where a Discord "Join" button lands: opens Moonshine on this PC, or offers to get it. Nothing secret is in it. */
+function playPage(url) {
+  const h = url.searchParams.get('h') || '';
+  const u = url.searchParams.get('u') || '';
+  const a = (url.searchParams.get('a') || '').slice(0, 100);
+  const ok = /^[\w-]{8,64}$/.test(h) && /^[\w.-]{1,40}$/.test(u);
+  const style = 'font:16px system-ui,sans-serif;background:#0e0a14;color:#f7f1f3;display:grid;place-items:center;min-height:90vh;margin:0';
+  const button = 'display:inline-block;margin:6px;padding:12px 22px;border-radius:12px;font-weight:600;text-decoration:none;';
+  const open = ok ? `moonshine://play?${new URLSearchParams({ h, u, a })}` : '';
+  const inner = ok
+    ? `<h1 style="color:#f0708c;font-size:24px">Join ${esc(u)}’s stream</h1>
+<p style="color:#b6a6bd">${a && !/^desktop$/i.test(a) ? `${esc(a)} on ${esc(u)}’s PC. ` : ''}Moonshine opens and asks you to confirm. If ${esc(u)} wants to approve joiners, you’ll wait for their answer.</p>
+<p><a href="${esc(open)}" style="${button}background:#d6405f;color:#fff">Join in Moonshine</a></p>
+<p style="color:#b6a6bd;font-size:14px">Don’t have Moonshine yet?</p>
+<p><a href="${RELEASES_URL}" style="${button}background:#271e30;color:#f7f1f3">Get Moonshine</a></p>
+<script>setTimeout(function(){location.href=${JSON.stringify(open).replace(/</g, '\u003c')}},400)</script>`
+    : '<h1 style="color:#f0708c;font-size:24px">Link not right</h1><p style="color:#b6a6bd">Ask your friend to share their status again.</p>';
+  return new Response(
+    `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Join in Moonshine</title>
+<body style="${style}"><div style="text-align:center;max-width:440px;padding:24px">${inner}</div>`,
+    { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } },
+  );
+}
+
 const GUEST_ROUTES = new Set(['GET /me', 'POST /hub/ticket', 'POST /tunnel/offer', 'POST /tunnel/answer', 'POST /tunnel/relay', 'POST /turn', 'POST /invites/end']);
 
 export default {
@@ -967,6 +991,7 @@ export default {
         case 'GET /auth/poll': return await pollLogin(env, url);
         case 'POST /invites/redeem': return await redeemInvite(env, await readJson(request));
         case 'GET /hub': return await hubConnect(env, request, url);
+        case 'GET /play': return playPage(url);
         default: break;
       }
 

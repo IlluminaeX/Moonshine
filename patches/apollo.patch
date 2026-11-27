@@ -994,7 +994,7 @@ index 00000000..879792cc
 +  };
 +}  // namespace moonshine
 diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
-index e6df1c0b..302f610c 100644
+index e6df1c0b..47549b46 100644
 --- a/src/nvhttp.cpp
 +++ b/src/nvhttp.cpp
 @@ -6,9 +6,19 @@
@@ -1169,7 +1169,7 @@ index e6df1c0b..302f610c 100644
    void applist(resp_https_t response, req_https_t request) {
      print_req<SunshineHTTPS>(request);
  
-@@ -1147,6 +1223,729 @@ namespace nvhttp {
+@@ -1147,6 +1223,728 @@ namespace nvhttp {
  
    }
  
@@ -1363,7 +1363,6 @@ index e6df1c0b..302f610c 100644
 +    constexpr auto WAIT_TTL = 2min;  ///< waiting for the user's answer
 +    constexpr auto IDLE_TTL = 2min;  ///< accepted, but no piece arrived for this long
 +    constexpr auto DONE_TTL = 15min;  ///< finished, waiting for Moonshine to take it
-+    constexpr std::uint64_t MAX_SIZE = 64ull << 30;  ///< 64 GB
 +    constexpr std::size_t MAX_CHUNK = 8u << 20;  ///< 8 MB per piece
 +    constexpr std::uint64_t KEEP_FREE = 1ull << 30;  ///< never fill the disk: leave 1 GB
 +
@@ -1773,7 +1772,7 @@ index e6df1c0b..302f610c 100644
 +    } catch (...) {
 +      size = 0;
 +    }
-+    if (size == 0 || size > file_box::MAX_SIZE) {
++    if (size == 0) {
 +      moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::client_error_bad_request, {{"error", "bad-size"}});
 +      return;
 +    }
@@ -1781,7 +1780,7 @@ index e6df1c0b..302f610c 100644
 +      std::error_code ec;
 +      std::filesystem::create_directories(file_box::dir(), ec);
 +      auto space = std::filesystem::space(file_box::dir(), ec);
-+      if (!ec && space.available < size + file_box::KEEP_FREE) {
++      if (!ec && (space.available < file_box::KEEP_FREE || space.available - file_box::KEEP_FREE < size)) {
 +        moonshine_reply<SunshineHTTPS>(response, SimpleWeb::StatusCode::client_error_payload_too_large, {{"error", "no-space"}});
 +        return;
 +      }
@@ -1899,7 +1898,7 @@ index e6df1c0b..302f610c 100644
    void launch(bool &host_audio, resp_https_t response, req_https_t request) {
      print_req<SunshineHTTPS>(request);
  
-@@ -1702,15 +2501,23 @@ namespace nvhttp {
+@@ -1702,15 +2500,23 @@ namespace nvhttp {
      https_server.resource["^/pair$"]["GET"] = pair<SunshineHTTPS>;
      https_server.resource["^/applist$"]["GET"] = applist;
      https_server.resource["^/appasset$"]["GET"] = appasset;
@@ -1927,7 +1926,7 @@ index e6df1c0b..302f610c 100644
  
      https_server.config.reuse_address = true;
      https_server.config.address = net::af_to_any_address_string(address_family);
-@@ -1719,6 +2526,11 @@ namespace nvhttp {
+@@ -1719,6 +2525,11 @@ namespace nvhttp {
      http_server.default_resource["GET"] = not_found<SimpleWeb::HTTP>;
      http_server.resource["^/serverinfo$"]["GET"] = serverinfo<SimpleWeb::HTTP>;
      http_server.resource["^/pair$"]["GET"] = pair<SimpleWeb::HTTP>;
@@ -1939,7 +1938,7 @@ index e6df1c0b..302f610c 100644
  
      http_server.config.reuse_address = true;
      http_server.config.address = net::af_to_any_address_string(address_family);
-@@ -1814,7 +2626,8 @@ namespace nvhttp {
+@@ -1814,7 +2625,8 @@ namespace nvhttp {
      const crypto::PERM newPerm,
      const bool enable_legacy_ordering,
      const bool allow_client_commands,
@@ -1949,7 +1948,7 @@ index e6df1c0b..302f610c 100644
    ) {
      find_and_udpate_session_info(uuid, name, newPerm);
  
-@@ -1831,6 +2644,7 @@ namespace nvhttp {
+@@ -1831,6 +2643,7 @@ namespace nvhttp {
          named_cert_p->enable_legacy_ordering = enable_legacy_ordering;
          named_cert_p->allow_client_commands = allow_client_commands;
          named_cert_p->always_use_virtual_display = always_use_virtual_display;

@@ -51,7 +51,7 @@ const ERRORS = {
   closed: (pc) => `Moonshine isn’t running on ${pc}, so nobody can accept the file.`,
   'no-space': (pc) => `${pc} doesn’t have enough free disk space for that file.`,
   busy: (pc) => `${pc} has too many files waiting. Try again in a minute.`,
-  'bad-size': () => 'That file is empty or too big (64 GB at most).',
+  'bad-size': () => 'That file is empty.',
   declined: (pc) => `${pc} declined the file.`,
 };
 

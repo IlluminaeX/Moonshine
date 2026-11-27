@@ -1,7 +1,7 @@
 {
   "name": "moonshine",
   "productName": "Moonshine",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Host and play game streams in one app (Apollo + Moonlight)",
   "main": "main.js",
   "license": "GPL-3.0-only",

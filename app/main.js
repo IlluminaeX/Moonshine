@@ -713,9 +713,25 @@ let hostUuidSeen = ''; // this PC's host id
 let discordSince = 0; // when the current activity began
 
 /** What Discord should show right now (null = nothing). A game's name is only shown when sharing it is on. */
+const isDesktop = (name) => /^desktop$/i.test(String(name || '').trim());
+
+/** Buttons under the status, for friends: Join (on top), then Get Moonshine. Discord needs web links, so Join opens a page on the friends service that hands over to the Moonshine app. */
+function discordButtons(user) {
+  const buttons = [];
+  if (user && hostUuidSeen) {
+    const q = new URLSearchParams({ h: hostUuidSeen, u: user, a: hostApp });
+    buttons.push({ label: 'Join', url: `${service.SERVICE_URL}/play?${q}`.slice(0, 512) });
+  }
+  buttons.push({ label: 'Get Moonshine', url: 'https://github.com/IlluminaeX/Moonshine/releases/latest' });
+  return buttons;
+}
+
 function discordActivity() {
   if (!store.get('discordStatus')) return null;
   const share = store.get('shareGame');
+  // Just the desktop (no game found): nothing to show
+  if (hostApp && isDesktop(hostApp) && !(hostGame && !isDesktop(hostGame))) return null;
+  if (!hostApp && streamApp && isDesktop(streamApp)) return null;
   if (hostApp) {
     const name = share ? (hostGame || hostApp) : '';
     const user = service.signedIn() ? service.username() : '';
@@ -724,11 +740,7 @@ function discordActivity() {
       state: hostGuests > 0 ? `Streaming to ${hostGuests} friend${hostGuests === 1 ? '' : 's'}` : 'Hosting on Moonshine',
       timestamps: { start: discordSince },
     };
-    if (user && hostUuidSeen) {
-      // The Join button: the secret says whose PC and which app, so a friend's Moonshine can connect
-      activity.party = { id: hostUuidSeen, size: [1 + hostGuests, 1 + hostGuests + 4] };
-      activity.secrets = { join: `ms1:${hostUuidSeen}:${user}:${hostApp}`.slice(0, 128) };
-    }
+    activity.buttons = discordButtons(user);
     return activity;
   }
   if (streamApp) {
@@ -749,24 +761,23 @@ function updateDiscord() {
   discord.setActivity(discordActivity());
 }
 
-/** A friend pressed Join on your Discord profile. The secret is "ms1:hostUuid:username:app". */
-discord.events.on('join', async (secret) => {
-  const [tag, hostUuid, username, ...rest] = String(secret).split(':');
-  const appName = rest.join(':');
-  if (tag !== 'ms1' || !/^[\w-]{8,64}$/.test(hostUuid) || !/^[\w.-]{1,40}$/.test(username || '')) return;
+/** Someone pressed Join on a friend's Discord status (the link opens moonshine://play?h=&u=&a=). Ask first, then join. */
+async function offerJoin(hostUuid, username, appName) {
+  if (!/^[\w-]{8,64}$/.test(hostUuid) || !/^[\w.-]{1,40}$/.test(username || '')) return;
   if (username.toLowerCase() === String(service.username()).toLowerCase()) return;
-  if (isDnd()) { notifyRenderer('app:toast', 'Do not disturb is on, so Join from Discord was ignored.'); return; }
+  if (!service.signedIn()) { showWindow(); notifyRenderer('app:toast', 'Sign in to Moonshine with Discord first, then press Join again.'); return; }
+  if (isDnd()) { notifyRenderer('app:toast', 'Do not disturb is on, so Join was ignored.'); return; }
   const who = friendLabel(username);
   const choice = await prompts.ask({
     key: `discord-join:${username}`,
     title: `Join ${who}’s stream?`,
-    details: [appName ? `${appName} on ${who}’s PC` : `${who}’s PC`, 'From their Discord profile'],
+    details: [appName && !isDesktop(appName) ? `${appName} on ${who}’s PC` : `${who}’s PC`, 'From their Discord status'],
     accept: 'Join',
     decline: 'Cancel',
   });
   if (choice.cancelled || !choice.ok) return;
   joinFriendGame(username, hostUuid, `${who}’s PC`, appName || 'Desktop').catch((err) => notifyRenderer('app:toast', err.message));
-});
+}
 
 let seenGame = { at: 0, name: '' };
 /** The game in front on this PC (Steam's running game, or a fullscreen game), checked at most every 10 seconds. */
@@ -2200,6 +2211,7 @@ async function joinFriendGame(username, hostUuid, hostName, appName) {
     notifyRenderer('pair:state', null);
     if (!res.ok) throw new Error(res.reason === 'cancelled' ? 'Joining cancelled.' : `Couldn’t pair with ${name}.`);
   }
+  notifyRenderer('app:toast', `Joining ${name}. If they ask guests first, this waits for their yes.`);
   startStream(target, appName);
 }
 
@@ -2778,7 +2790,7 @@ const INVITE_URL = /^moonshine:\/\/join\/([A-Za-z0-9_-]{20,64})\/?$/i;
 
 // Links that need no window: a stream link, and moonshine://background, which only makes sure Moonshine is
 // running (helpers such as the Steam button open it before using the local API).
-const opensQuietly = (argv) => (argv || []).some((a) => /^moonshine:\/\/(stream|background)(?:[/?]|$)/i.test(String(a).trim()) || /^discord-\d+:/i.test(String(a).trim()));
+const opensQuietly = (argv) => (argv || []).some((a) => /^moonshine:\/\/(stream|background|play)(?:[/?]|$)/i.test(String(a).trim()) || /^discord-\d+:/i.test(String(a).trim()));
 
 /** A link click starts Moonshine (or reaches the one running) with the address as an argument. */
 function handleInviteArgs(argv) {
@@ -2788,6 +2800,10 @@ function handleInviteArgs(argv) {
     if (m) { acceptInviteLink(m[1]); return; }
     let url;
     try { url = new URL(arg); } catch { continue; }
+    if (url.protocol === 'moonshine:' && url.hostname === 'play') {
+      offerJoin(url.searchParams.get('h') || '', url.searchParams.get('u') || '', (url.searchParams.get('a') || '').slice(0, 100)).catch((err) => say(err.message));
+      return;
+    }
     if (url.protocol === 'moonshine:' && url.hostname === 'stream') {
       const names = (url.searchParams.get('friend') || '').split(',').map((s) => s.trim()).filter(Boolean);
       streamLink(names).catch((err) => say(err.message));

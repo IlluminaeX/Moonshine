@@ -146,6 +146,32 @@ index 7ac7dd0e..21fa3dae 100644
      }
  
      // Allow user to back out of pairing
+diff --git a/app/gui/CliStartStreamSegue.qml b/app/gui/CliStartStreamSegue.qml
+index cc1be12a..ef3d08ac 100644
+--- a/app/gui/CliStartStreamSegue.qml
++++ b/app/gui/CliStartStreamSegue.qml
+@@ -5,7 +5,7 @@ import ComputerManager 1.0
+ 
+ Item {
+     function onSearchingComputer() {
+-        stageLabel.text = qsTr("Establishing connection to PC...")
++        stageLabel.text = qsTr("Waiting for the PC (it may need to approve you first)...")
+     }
+ 
+     function onSearchingApp() {
+diff --git a/app/gui/StreamSegue.qml b/app/gui/StreamSegue.qml
+index d7c0c5d1..92d5b929 100644
+--- a/app/gui/StreamSegue.qml
++++ b/app/gui/StreamSegue.qml
+@@ -10,7 +10,7 @@ Item {
+     property Session session
+     property string appName
+     property string stageText : isResume ? qsTr("Resuming %1...").arg(appName) :
+-                                           qsTr("Starting %1...").arg(appName)
++                                           qsTr("Waiting for the PC to start %1...").arg(appName) + "\n" + qsTr("If they have to approve you first, this waits for their yes.")
+     property bool isResume : false
+     property bool quitAfter : false
+ 
 diff --git a/app/gui/main.qml b/app/gui/main.qml
 index 84e7d9de..58504eb0 100644
 --- a/app/gui/main.qml
