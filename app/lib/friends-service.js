@@ -119,11 +119,14 @@ async function friends() {
 const request = (username) => call('POST', '/friends/request', { username });
 const respond = (username, accept) => call('POST', '/friends/respond', { username, accept });
 const remove = (username) => call('POST', '/friends/remove', { username });
+const setPcName = (hostUuid, name) => call('POST', '/pcnames', { hostUuid, name });
 const setNickname = (username, nickname) => call('POST', '/friends/nickname', { username, nickname });
 const sendMessage = (username, text) => call('POST', '/messages/send', { username, text });
 // "Join my game" invites, carried by the live link so they work however two PCs are connected
 const sendPlayInvite = (body) => call('POST', '/friends/play-invite', body);
 const answerPlayInvite = (body) => call('POST', '/friends/play-answer', body);
+// Offering a file to a phone: only the offer goes through the service, the phone fetches the file from this PC
+const sendFileOffer = (body) => call('POST', '/friends/file-offer', body);
 
 // Direct connections (lib/tunnels.js): a one-time pass for the live link (lib/hub.js), and the
 // offer and answer two PCs swap to connect straight to each other.
@@ -156,8 +159,8 @@ async function avatar(username) {
 }
 
 module.exports = {
-  configured, signedIn, signIn, cancelSignIn, signOut, setUsername, reportPresence, friends, request, respond, remove,
-  setNickname, sendMessage, sendPlayInvite, answerPlayInvite, avatar,
+  configured, signedIn, signIn, cancelSignIn, signOut, setUsername, reportPresence, setPcName, friends, request, respond, remove,
+  setNickname, sendMessage, sendPlayInvite, answerPlayInvite, sendFileOffer, avatar,
   hubTicket, tunnelOffer, tunnelAnswer, tunnelRelay, turnCredentials, SERVICE_URL,
   createInvite, listInvites, revokeInvite, endInvite, redeemInvite,
   username: () => store.get('serviceUsername') || '',

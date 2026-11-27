@@ -12,6 +12,7 @@ const defaults = {
   recentHosts: [],
   // Host uuid -> the name you gave that PC in Moonshine (shown instead of its own name)
   pcNames: {},
+  pcNamesSynced: [],
   // Show a notification when a friend comes online or starts hosting
   joinNotice: true, // show a popup when someone joins a stream on this PC
   joinSoundOn: true, // and play a sound with it
@@ -39,6 +40,8 @@ const defaults = {
   knownDevices: null,
   // Hosting paused: until when (ms; -1 until resumed by hand; 0 not paused), and the devices that
   // could stream without asking before the pause (uuid -> true), to let them again afterwards
+  hostingOff: false, // hosting turned off by hand: the host keeps running but is closed to everyone
+  filePermsGranted: false, // every device paired before 0.8.0 was allowed to send files, once
   pausedUntil: 0,
   pauseSkipped: {},
   // Do not disturb: until when (ms; -1 until turned off; 0 off)

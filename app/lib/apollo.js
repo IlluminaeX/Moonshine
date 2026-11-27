@@ -309,6 +309,21 @@ async function setWebLogin(user, password) {
   authCookie = '';
 }
 
+/** Offer a file on this PC to a friend's phone (it fetches it with `key`). Resolves to the file's size, or 0 if it can't be read. */
+async function shareFile(id, key, file) {
+  const res = await api('POST', '/api/moonshine/share', { id, key, path: file });
+  return res.status ? Number(res.size) : 0;
+}
+
+async function unshareFile(id) {
+  return api('POST', '/api/moonshine/unshare', { id });
+}
+
+/** Files being offered to phones: [{ id, state: waiting | sending | done, sent, size }]. */
+async function shares() {
+  return (await api('GET', '/api/moonshine/shares')).shares || [];
+}
+
 /** Allow or decline a waiting stream request. */
 async function decideStream(id, allow) {
   return api('POST', '/api/moonshine/decide', { id, allow });
@@ -355,6 +370,9 @@ module.exports = {
   decidePair,
   decideInvite,
   decideFile,
+  shareFile,
+  unshareFile,
+  shares,
   fileData,
   fileTaken,
   setPlayerOrder,

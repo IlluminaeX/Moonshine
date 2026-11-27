@@ -18,6 +18,7 @@ const beta = require('./lib/beta');
 const wol = require('./lib/wol');
 const gameDetect = require('./lib/game-detect');
 const discord = require('./lib/discord-presence');
+const { activity: discordActivityFor, isDesktop } = require('./lib/discord-activity');
 const files = require('./lib/files');
 const wifi = require('./lib/wifi');
 const streamSettings = require('./lib/stream-settings');
@@ -59,9 +60,13 @@ function createWindow() {
     title: 'Moonshine',
     icon,
     backgroundColor: '#0e0a14',
-    autoHideMenuBar: true,
+    // Moonshine draws its own title bar; Windows still supplies the minimize, maximize and close buttons
+    // (so snap layouts keep working), painted in the app's colours. No menu bar, so Alt does nothing.
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#0e0a14', symbolColor: '#f7f1f3', height: 38 },
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
+  mainWindow.removeMenu();
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) shell.openExternal(url);
@@ -93,8 +98,8 @@ async function refreshTray() {
   const update = updater.getState();
   const paused = isPaused();
   const dnd = isDnd();
-  tray.setToolTip(['Moonshine', paused ? 'hosting paused' : '', dnd ? 'do not disturb' : ''].filter(Boolean).join(' · '));
-  const pauseItems = state !== 'running' ? [] : paused ? [{
+  tray.setToolTip(['Moonshine', isHostingOff() ? 'hosting off' : paused ? 'hosting paused' : '', dnd ? 'do not disturb' : ''].filter(Boolean).join(' · '));
+  const pauseItems = state !== 'running' || isHostingOff() ? [] : paused ? [{
     label: `Resume hosting (paused${untilText(store.get('pausedUntil'))})`,
     click: () => resumeHosting().then(() => notifyRenderer('app:toast', 'Hosting resumed.')),
   }] : [{
@@ -126,10 +131,11 @@ async function refreshTray() {
     }] : []),
     { type: 'separator' },
     {
-      label: state === 'running' ? 'Stop hosting' : 'Start hosting',
+      label: state === 'running' && !isHostingOff() ? 'Stop hosting' : 'Start hosting',
       enabled: state !== 'not-installed',
       click: async () => {
-        await apollo.setService(state !== 'running').catch(() => {});
+        if (state === 'running' && !isHostingOff()) await stopHosting().catch(() => {});
+        else await ensureHosting().catch(() => {});
         refreshTray();
         notifyRenderer('host:changed');
       },
@@ -469,6 +475,97 @@ async function sendFiles(pc, paths) {
   }
 }
 
+/**
+ * Send files to a friend's phone (Moonshine for Android). This PC offers each file through the friends
+ * service (a name, a size and a one-time key); the phone asks its user "Save it?" and, on yes, fetches the
+ * file from this PC's host over the same connection a stream would use. Nothing is uploaded anywhere.
+ */
+const phoneOffers = new Map(); // offer id -> { transfer id, name, pc, device, signal }
+
+async function sendToPhone(user, device, phoneName, paths) {
+  if (!hub.isConnected()) throw new Error('Moonshine isn’t connected to its service right now.');
+  if (isPaused()) throw new Error('Hosting is off or paused, so files can’t be sent from this PC. Turn hosting on in the Host tab.');
+  if ((await apollo.serviceState()) !== 'running') throw new Error('Turn on hosting in the Host tab first. Phones get files from this PC’s host.');
+  const cfg = await apollo.getConfig().catch(() => ({}));
+  const port = Number(cfg.port) || library.DEFAULT_PORT;
+  const self = await library.serverInfo('127.0.0.1', port);
+  if (!self) throw new Error('Turn on hosting in the Host tab first.');
+  const who = phoneName || user;
+  for (const file of paths) {
+    const offerId = crypto.randomBytes(12).toString('hex');
+    const key = crypto.randomBytes(24).toString('base64url');
+    const id = `out:${offerId}`;
+    const name = path.basename(file);
+    const signal = {};
+    let size = 0;
+    try {
+      size = await apollo.shareFile(offerId, key, file);
+      if (!size) throw new Error(`Couldn’t read ${name}.`);
+      setTransfer({ id, dir: 'out', name, pc: who, size, sent: 0, state: 'asking' });
+      sendSignals.set(id, signal);
+      phoneOffers.set(offerId, { id, who, signal, accepted: false });
+      await service.sendFileOffer({ device, id: offerId, hostUuid: self.uuid, port, key, name, size });
+    } catch (err) {
+      apollo.unshareFile(offerId).catch(() => {});
+      phoneOffers.delete(offerId);
+      sendSignals.delete(id);
+      setTransfer({ id, dir: 'out', name, pc: who, size, sent: 0, state: 'failed', error: err.message });
+      notifyRenderer('app:toast', err.message);
+      continue;
+    }
+    watchPhoneOffer(offerId).catch(() => {});
+  }
+}
+
+/** Follow one offer: waiting for the phone's answer, then how much it has fetched. */
+async function watchPhoneOffer(offerId) {
+  const started = Date.now();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const offer = phoneOffers.get(offerId);
+    if (!offer) return; // declined, finished or failed: already shown
+    const end = (state, error) => {
+      setTransfer({ id: offer.id, state, error });
+      apollo.unshareFile(offerId).catch(() => {});
+      phoneOffers.delete(offerId);
+      sendSignals.delete(offer.id);
+    };
+    if (offer.signal.cancelled) return end('failed', 'Cancelled.');
+    let share;
+    try { share = (await apollo.shares()).find((s) => s.id === offerId); } catch { continue; }
+    if (!share) return end(offer.accepted ? 'done' : 'failed', offer.accepted ? undefined : 'No answer.');
+    if (share.sent > 0 || offer.accepted) setTransfer({ id: offer.id, state: share.state === 'done' ? 'done' : 'sending', sent: share.sent, size: share.size });
+    if (share.state === 'done') {
+      apollo.unshareFile(offerId).catch(() => {});
+      phoneOffers.delete(offerId);
+      sendSignals.delete(offer.id);
+      notifyRenderer('app:toast', `${offer.who} has the file.`);
+      return;
+    }
+    if (!offer.accepted && share.sent === 0 && Date.now() - started > 3 * 60 * 1000) return end('failed', `${offer.who} didn’t answer.`);
+  }
+}
+
+/** The phone answered a file offer. */
+function onFileAnswer(msg) {
+  const offer = phoneOffers.get(String(msg.id || ''));
+  if (!offer) return;
+  if (msg.status === 'accepted') {
+    offer.accepted = true;
+    setTransfer({ id: offer.id, state: 'sending' });
+  } else if (msg.status === 'declined' || msg.status === 'failed') {
+    const id = String(msg.id);
+    apollo.unshareFile(id).catch(() => {});
+    phoneOffers.delete(id);
+    sendSignals.delete(offer.id);
+    const declined = msg.status === 'declined';
+    setTransfer({ id: offer.id, state: 'failed', error: declined ? `${offer.who} declined the file.` : `${offer.who} couldn’t get the file.` });
+    if (!declined) notifyRenderer('app:toast', `${offer.who} couldn’t get the file.`);
+  }
+}
+
+ipcMain.handle('files:sendToPhone', (_e, user, device, name, paths) => sendToPhone(String(user || ''), Number(device), String(name || ''), (paths || []).filter(Boolean)));
+
 ipcMain.handle('files:list', () => [...transfers.values()].reverse());
 ipcMain.handle('files:send', (_e, pc, paths) => sendFiles(pc, (paths || []).filter(Boolean)));
 ipcMain.handle('files:pick', async (_e, pc) => {
@@ -514,7 +611,7 @@ async function joinInvite(inv) {
 const P = { list: 1 << 24, view: 1 << 25, launch: 1 << 26, controller: 1 << 8, touch: 1 << 9, pen: 1 << 10,
   mouse: 1 << 11, keyboard: 1 << 12, clipboardSet: 1 << 16, clipboardRead: 1 << 17, upload: 1 << 18, download: 1 << 19 };
 const NEW_DEVICE_PERMS = {
-  controller: P.list | P.view | P.launch | P.controller,
+  controller: P.list | P.view | P.launch | P.controller | P.upload, // sending files is on by default; the host still asks before saving each one
   full: P.list | P.view | P.launch | P.controller | P.touch | P.pen | P.mouse | P.keyboard
     | P.clipboardSet | P.clipboardRead | P.upload | P.download,
   watch: P.list | P.view,
@@ -522,6 +619,25 @@ const NEW_DEVICE_PERMS = {
 
 function newDevicePerm() {
   return (NEW_DEVICE_PERMS[store.get('newDevicePerm')] ?? NEW_DEVICE_PERMS.controller) >>> 0;
+}
+
+/**
+ * Once, after updating to 0.8.0: every device paired before may send files to this PC. Each file still
+ * needs a click on Accept here, so this only lets a device ask. New devices get it by default too.
+ */
+let filePermsRunning = false;
+async function grantFilePerms() {
+  if (store.get('filePermsGranted') || filePermsRunning) return;
+  filePermsRunning = true;
+  try {
+    for (const c of await apollo.listClients()) {
+      const perm = Number(c.perm) >>> 0;
+      if ((perm & P.upload) !== P.upload) await apollo.updateClient(c, { perm: (perm | P.upload) >>> 0 });
+    }
+    store.set('filePermsGranted', true);
+  } finally {
+    filePermsRunning = false;
+  }
 }
 
 function markKnown(uuids) {
@@ -573,7 +689,10 @@ async function setUpUnknownDevices(clients) {
 // lets nobody in: every device has to ask, every ask is declined, and anyone watching is
 // disconnected. Friends see this PC as not hosting. Do not disturb silences notifications.
 
-const isPaused = () => { const u = store.get('pausedUntil'); return u === -1 || u > Date.now(); };
+// "Hosting off" keeps the host running (it costs next to nothing idle) but closed: no streams, no pairing,
+// friends see the PC as not hosting. That way devices can still be managed while hosting is off.
+const isHostingOff = () => Boolean(store.get('hostingOff'));
+const isPaused = () => { const u = store.get('pausedUntil'); return isHostingOff() || u === -1 || u > Date.now(); };
 const isDnd = () => { const u = store.get('dndUntil'); return u === -1 || u > Date.now(); };
 const clockTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 const untilText = (u) => (u === -1 ? '' : ` until ${clockTime(u)}`);
@@ -612,8 +731,17 @@ async function pauseHosting(until) {
   notifyRenderer('app:toast', `Hosting paused${untilText(until)}. Nobody can stream from this PC.`);
 }
 
+/** Turn hosting off: the host stays up, closed to everyone. */
+async function stopHosting() {
+  store.set('hostingOff', true);
+  const clients = await apollo.listClients().catch(() => []);
+  await enforcePause(clients);
+  hostingChanged();
+}
+
 async function resumeHosting() {
   const skipped = store.get('pauseSkipped');
+  store.set('hostingOff', false);
   store.set('pausedUntil', 0);
   store.set('pauseSkipped', {});
   const clients = await apollo.listClients().catch(() => []);
@@ -626,6 +754,7 @@ async function resumeHosting() {
 function setDnd(until) {
   store.set('dndUntil', until);
   refreshTray();
+  presenceOnce(); // friends see the ring change
   notifyRenderer('app:dnd', dndState());
 }
 
@@ -713,45 +842,16 @@ let hostUuidSeen = ''; // this PC's host id
 let discordSince = 0; // when the current activity began
 
 /** What Discord should show right now (null = nothing). A game's name is only shown when sharing it is on. */
-const isDesktop = (name) => /^desktop$/i.test(String(name || '').trim());
-
-/** Buttons under the status, for friends: Join (on top), then Get Moonshine. Discord needs web links, so Join opens a page on the friends service that hands over to the Moonshine app. */
-function discordButtons(user) {
-  const buttons = [];
-  if (user && hostUuidSeen) {
-    const q = new URLSearchParams({ h: hostUuidSeen, u: user, a: hostApp });
-    buttons.push({ label: 'Join', url: `${service.SERVICE_URL}/play?${q}`.slice(0, 512) });
-  }
-  buttons.push({ label: 'Get Moonshine', url: 'https://github.com/IlluminaeX/Moonshine/releases/latest' });
-  return buttons;
-}
-
 function discordActivity() {
-  if (!store.get('discordStatus')) return null;
-  const share = store.get('shareGame');
-  // Just the desktop (no game found): nothing to show
-  if (hostApp && isDesktop(hostApp) && !(hostGame && !isDesktop(hostGame))) return null;
-  if (!hostApp && streamApp && isDesktop(streamApp)) return null;
-  if (hostApp) {
-    const name = share ? (hostGame || hostApp) : '';
-    const user = service.signedIn() ? service.username() : '';
-    const activity = {
-      details: name ? `Playing ${name}` : 'Streaming a game',
-      state: hostGuests > 0 ? `Streaming to ${hostGuests} friend${hostGuests === 1 ? '' : 's'}` : 'Hosting on Moonshine',
-      timestamps: { start: discordSince },
-    };
-    activity.buttons = discordButtons(user);
-    return activity;
-  }
-  if (streamApp) {
-    const name = share ? streamApp : '';
-    return {
-      details: name ? `Playing ${name}` : 'Streaming a game',
-      state: streamHost ? `On ${streamHost}` : 'On a friend’s PC',
-      timestamps: { start: discordSince },
-    };
-  }
-  return null;
+  return discordActivityFor({
+    on: Boolean(store.get('discordStatus')),
+    share: store.get('shareGame'),
+    hostApp, hostGame, hostGuests, streamApp, streamHost,
+    since: discordSince,
+    user: service.signedIn() ? service.username() : '',
+    hostUuid: hostUuidSeen,
+    serviceUrl: service.SERVICE_URL,
+  });
 }
 
 function updateDiscord() {
@@ -832,6 +932,7 @@ async function watchGuests() {
       }
       watching = now;
       inviteTick(now).catch(() => {});
+      grantFilePerms().catch(() => {});
     } else {
       inviteTick(new Set()).catch(() => {});
       watching = null;
@@ -894,6 +995,13 @@ async function pollHostRequests() {
     }
     for (const offer of offers) {
       const key = `offer:${offer.id}`;
+      if (isPaused()) {
+        if (!prompted.has(key)) {
+          prompted.add(key);
+          apollo.decidePair(offer.id, false).catch(() => {});
+        }
+        continue;
+      }
       live.add(key);
       if (!prompted.has(key)) {
         invitePairing.set(offer.address, Infinity);
@@ -929,6 +1037,7 @@ async function pollHostRequests() {
         continue;
       }
       if (request.age > PAIRING_MAX_AGE_S) continue;
+      if (isPaused()) { prompted.add(key); continue; } // closed: nobody gets a PIN box to pair with
       live.add(key);
       if (!prompted.has(key)) raisePrompt(key, () => promptForPin(request));
     }
@@ -1013,13 +1122,21 @@ ipcMain.handle('host:status', async () => {
     audio,
     loginNeeded,
     startAtLogin: store.get('startAtLogin'),
-    paused: isPaused() ? store.get('pausedUntil') : 0,
+    paused: isPaused() && !isHostingOff() ? store.get('pausedUntil') : 0,
+    off: isHostingOff(),
     newDevicePerm: NEW_DEVICE_PERMS[store.get('newDevicePerm')] ? store.get('newDevicePerm') : 'controller',
   };
 });
 
+/** Stop hosting = closed (the host keeps running); start hosting = open, starting the host first if it's stopped. */
 ipcMain.handle('host:setService', async (_e, running) => {
-  await apollo.setService(running);
+  if (!running) {
+    await stopHosting();
+  } else {
+    const why = await ensureHosting();
+    if (why) throw new Error(why);
+    hostingChanged();
+  }
   refreshTray();
 });
 
@@ -1027,6 +1144,21 @@ ipcMain.handle('host:login', (_e, user, password) => apollo.setCredentials(user,
 
 ipcMain.handle('host:setAudio', (_e, mode, appName) =>
   apollo.updateConfig({ audio_capture_mode: mode, audio_capture_app: appName }));
+
+/** Which graphics makers this PC has ('nv', 'amd', 'qsv'), to show the matching encoder settings first. */
+let gpuVendorsCache = null;
+ipcMain.handle('host:gpuVendors', () => new Promise((resolve) => {
+  if (gpuVendorsCache) return resolve(gpuVendorsCache);
+  execFile('powershell.exe', ['-NoProfile', '-Command', '(Get-CimInstance Win32_VideoController).Name -join \"`n\"'], { windowsHide: true, timeout: 10000 }, (err, stdout) => {
+    const names = String(stdout || '').toLowerCase();
+    const found = [];
+    if (/nvidia|geforce|quadro/.test(names)) found.push('nv');
+    if (/amd|radeon/.test(names)) found.push('amd');
+    if (/intel/.test(names)) found.push('qsv');
+    gpuVendorsCache = err ? [] : found;
+    resolve(gpuVendorsCache);
+  });
+}));
 
 ipcMain.handle('host:processes', () => new Promise((resolve) => {
   execFile('tasklist.exe', ['/fo', 'csv', '/nh'], { windowsHide: true }, (err, stdout) => {
@@ -1162,7 +1294,7 @@ async function buildDiagnostics() {
   push('Moonshine', `${app.getVersion()} on ${os.platform()} ${os.release()} (${os.arch()})`);
 
   const hostState = await apollo.serviceState().catch(() => 'unknown');
-  push('Hosting', isPaused() ? `paused${untilText(store.get('pausedUntil'))}` : hostState);
+  push('Hosting', isHostingOff() ? 'off' : isPaused() ? `paused${untilText(store.get('pausedUntil'))}` : hostState);
   if (hostState === 'running') {
     try {
       const clients = await apollo.listClients();
@@ -1203,6 +1335,22 @@ ipcMain.handle('app:copyDiagnostics', async () => {
   const text = await buildDiagnostics();
   clipboard.writeText(text);
   return text.length;
+});
+
+/** A file for support: the diagnostics plus the host's recent log, with addresses and paths scrubbed. */
+ipcMain.handle('app:saveSupportLog', async () => {
+  const res = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save log for support',
+    defaultPath: path.join(app.getPath('documents'), `moonshine-log-${new Date().toISOString().slice(0, 10)}.txt`),
+    filters: [{ name: 'Text', extensions: ['txt'] }],
+  });
+  if (res.canceled || !res.filePath) return { ok: false };
+  let hostLog = '(the host is not running, so there is no host log)';
+  if ((await apollo.serviceState().catch(() => '')) === 'running') {
+    try { hostLog = (await apollo.getLogs()).split(/\r?\n/).slice(-3000).map(redact).join('\n'); } catch { hostLog = '(could not read the host log)'; }
+  }
+  fs.writeFileSync(res.filePath, `${await buildDiagnostics()}\n\n---- Host log (last 3000 lines) ----\n${hostLog}\n`);
+  return { ok: true, path: res.filePath };
 });
 
 ipcMain.handle('apollo:browse', async (_e, kind) => {
@@ -1345,8 +1493,33 @@ async function findHosts() {
 
 let lastHosts = []; // what the Connect tab last showed
 
+/**
+ * Your own PC names are kept by the friends service, so a PC renamed on your phone is renamed here too.
+ * The service's list wins; a name only this PC has is sent up once, and one the service dropped is dropped here.
+ */
+function syncPcNames(remote) {
+  if (!remote || typeof remote !== 'object') return;
+  const local = { ...store.get('pcNames') };
+  const synced = new Set(store.get('pcNamesSynced') || []);
+  let changed = false;
+  for (const [uuid, name] of Object.entries(remote)) {
+    if (local[uuid] !== name) { local[uuid] = name; changed = true; }
+  }
+  for (const uuid of Object.keys(local)) {
+    if (uuid in remote) continue;
+    if (synced.has(uuid)) { delete local[uuid]; changed = true; } else service.setPcName(uuid, local[uuid]).catch(() => {});
+  }
+  store.set('pcNamesSynced', Object.keys(remote).concat(Object.keys(local).filter((u) => !(u in remote) && !synced.has(u))));
+  if (changed) {
+    store.set('pcNames', local);
+    lastHosts = lastHosts.map((h) => ({ ...h, name: local[h.uuid] || h.ownName || h.name }));
+    notifyRenderer('friends:changed');
+  }
+}
+
 /** Give a PC your own name in Moonshine ('' goes back to the name it gives itself). */
 function renamePc(uuid, name) {
+  if (service.signedIn()) service.setPcName(uuid, name).catch(() => {});
   const names = { ...store.get('pcNames') };
   const host = lastHosts.find((h) => h.uuid === uuid);
   const oldName = host ? host.name : names[uuid];
@@ -1690,6 +1863,7 @@ async function serviceFriends(fresh = false) {
   try {
     const data = await service.friends();
     friendsCache = { at: Date.now(), data, error: '' };
+    syncPcNames(data.names);
     // Remember where friends' PCs connect from, to let their pairing requests through
     const addrs = new Map();
     for (const f of data.friends) {
@@ -1752,38 +1926,6 @@ ipcMain.handle('pc:wake', async (_e, uuid) => {
   return true;
 });
 
-/** The "Can I connect directly?" check: this PC's network, and what Moonshine will do about it. */
-ipcMain.handle('network:check', async () => {
-  if (!service.signedIn()) {
-    return { verdict: 'signin', summary: 'Sign in with your Moonshine account first (Connect tab). Direct connections are arranged through it.' };
-  }
-  const link = hub.isConnected();
-  let nat = 'blocked';
-  try { nat = (await tunnels.checkNetwork()).nat; } catch { /* treated as blocked */ }
-  let relay = 'unavailable';
-  try { await service.turnCredentials(); relay = 'ready'; } catch { /* no relay right now */ }
-  const backup = relay === 'ready'
-    ? 'If it can’t, Moonshine switches to a relay by itself: it works, with a little more delay.'
-    : 'The relay isn’t available right now, so Tailscale is the way around it.';
-  let verdict;
-  let summary;
-  if (nat === 'cone') {
-    verdict = 'yes';
-    summary = 'Yes. Your router allows direct connections, so friends can connect straight to you and you to them. (A friend’s network matters too.)';
-  } else if (nat === 'unknown') {
-    verdict = 'probably';
-    summary = 'Probably. Your router looks fine, but only one of the two test servers answered. ' + backup;
-  } else if (nat === 'symmetric') {
-    verdict = 'relay';
-    summary = 'Not directly. Your router uses a different address for every connection (common on mobile and some internet providers). ' + backup;
-  } else {
-    verdict = 'relay';
-    summary = 'Not directly. Your network blocks the kind of traffic direct connections use. ' + backup;
-  }
-  if (!link) summary += ' Moonshine isn’t connected to its service right now, so friends can’t reach this PC until it is.';
-  return { verdict, nat, relay, link, summary };
-});
-
 /** How to reach a friend's PC from here: the first of its addresses whose host answers. */
 async function reachFriendPc(pc) {
   const cached = reachCache.get(pc.hostUuid);
@@ -1834,7 +1976,9 @@ async function accountFriends(fresh = false) {
   const unread = store.get('unread');
   state.friends = data.friends.filter((f) => f.status === 'accepted').map((f) => ({
     username: f.username, nickname: f.nickname || '', avatar: f.avatar || '', online: f.online, unread: unread[f.username] || 0,
+    phones: (f.phones || []).filter((p) => p.device && updater.compareVersions(p.version, '0.8.0') >= 0).map((p) => ({ device: p.device, name: p.name })),
   }));
+  state.myPhones = (data.minePhones || []).filter((p) => p.device && updater.compareVersions(p.version, '0.8.0') >= 0).map((p) => ({ device: p.device, name: p.name }));
   const names = store.get('pcNames');
   const pcs = [];
   // Your own other PCs first (the service lists them as `mine`), then each friend's
@@ -1975,6 +2119,7 @@ async function presenceOnce() {
         tunnel: hub.isConnected(),
         version: app.getVersion(),
         game: currentGame(),
+        dnd: isDnd(),
       });
       // With the live link up, a change to friends arrives as a notice; without it, check now
       await serviceFriends(!hub.isConnected());
@@ -2908,6 +3053,7 @@ app.whenReady().then(() => {
     else if (msg.type === 'message') onMessage(msg);
     else if (msg.type === 'play-invite') onPlayInvite(msg).catch(() => {});
     else if (msg.type === 'play-answer') onPlayAnswer(msg);
+    else if (msg.type === 'file-answer') onFileAnswer(msg);
   });
   // Asleep, this PC can't be streamed from: show it offline now, and back online on waking
   powerMonitor.on('suspend', () => { hub.stop({ bye: true }); });

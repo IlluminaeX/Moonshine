@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <div class="titlebar"><img src="../assets/moonshine.png" alt=""><span>Moonshine</span></div>
   <!-- Signed out: nothing else shows until the person signs in -->
   <div id="gate" class="gate">
     <div class="gate-box">
@@ -38,10 +39,6 @@
     <button class="tab" data-tab="beta">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6L4.5 19a1.5 1.5 0 0 0 1.3 2.2h12.4a1.5 1.5 0 0 0 1.3-2.2L14 9V3"/><path d="M7.5 15h9"/></svg>
       <span>Beta</span>
-    </button>
-    <button class="tab" data-tab="apollo">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
-      <span>Host settings</span>
     </button>
     <div class="spacer"></div>
     <div id="app-version" class="version-line"></div>
@@ -76,6 +73,7 @@
         </div>
         <p class="hint">Your PCs and your friends’ PCs. Add friends by username. Click a PC’s name for its games.</p>
         <div id="friend-account" class="panel friend-account hidden"></div>
+        <div id="invite-links" class="panel invite-links hidden"></div>
         <div id="friend-requests" class="friend-requests hidden"></div>
         <div id="friends" class="friends"></div>
       </div>
@@ -107,143 +105,6 @@
       </div>
     </section>
 
-    <section id="tab-apollo" class="page">
-      <header>
-        <h1>Host settings</h1>
-        <div class="actions">
-          <button id="apollo-restart" class="secondary">Restart host</button>
-        </div>
-      </header>
-      <nav class="segmented" id="apollo-subnav">
-        <button data-sub="settings" class="active">Settings</button>
-        <button data-sub="apps">Applications</button>
-        <button data-sub="commands">Commands</button>
-        <button data-sub="tools">Tools</button>
-        <button data-sub="logs">Logs</button>
-      </nav>
-
-      <div id="apollo-message" class="panel hidden">
-        <p id="apollo-message-text"></p>
-        <button id="apollo-message-action" class="secondary"></button>
-      </div>
-
-      <!-- Settings, built from apollo-schema.js -->
-      <div id="apollo-sub-settings" class="apollo-sub">
-        <div class="settings-layout">
-          <nav id="apollo-sections" class="section-list"></nav>
-          <form id="apollo-settings-form" class="settings-fields"></form>
-        </div>
-        <div id="apollo-save-bar" class="save-bar hidden">
-          <span>Unsaved changes. Saving restarts the host and ends any active stream.</span>
-          <div class="actions">
-            <button id="apollo-discard" type="button" class="secondary">Discard</button>
-            <button id="apollo-save" type="button">Save and restart</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Applications -->
-      <div id="apollo-sub-apps" class="apollo-sub hidden">
-        <div class="row-actions">
-          <p class="hint">What friends and your other devices can launch on this PC.</p>
-          <button id="app-add">Add application</button>
-        </div>
-        <div id="apollo-apps" class="list panel"></div>
-      </div>
-
-      <!-- Logs -->
-      <div id="apollo-sub-logs" class="apollo-sub hidden">
-        <div class="row-actions">
-          <input id="logs-filter" placeholder="Filter (e.g. Error, Warning, audio)">
-          <button id="logs-refresh" class="secondary">Refresh</button>
-          <button id="logs-copy" class="secondary">Copy</button>
-        </div>
-        <pre id="apollo-logs" class="logs"></pre>
-      </div>
-
-      <!-- Tools: troubleshooting -->
-      <div id="apollo-sub-tools" class="apollo-sub hidden">
-        <div class="scroll">
-          <div class="panel first">
-            <h2>Troubleshooting</h2>
-            <div class="row">
-              <div>
-                <div>Close the running app</div>
-                <div class="hint">Ends the app being streamed, if it’s stuck or won’t close from the device.</div>
-              </div>
-              <button id="tool-close-app" class="secondary">Close app</button>
-            </div>
-            <div class="row">
-              <div>
-                <div>Reset display settings</div>
-                <div class="hint">Use this if your monitors didn’t go back to normal after a stream.</div>
-              </div>
-              <button id="tool-reset-display" class="secondary">Reset</button>
-            </div>
-            <div class="row">
-              <div>
-                <div>Remove every paired device</div>
-                <div class="hint">They will all have to pair again.</div>
-              </div>
-              <button id="tool-unpair-all" class="danger">Remove all</button>
-            </div>
-          </div>
-          <div class="panel">
-            <h2>Web page login</h2>
-            <p class="hint">Moonshine doesn’t need this. It’s the username and password for opening the host’s page in a browser on this PC (https://localhost:47990).</p>
-            <form id="weblogin-form" class="inline">
-              <input id="weblogin-user" placeholder="Username" required>
-              <input id="weblogin-pass" type="password" placeholder="New password" required>
-              <button type="submit">Save</button>
-            </form>
-          </div>
-          <p id="host-version" class="hint"></p>
-        </div>
-      </div>
-
-      <!-- Commands run for every app, and commands devices can trigger -->
-      <div id="apollo-sub-commands" class="apollo-sub hidden">
-        <div class="scroll">
-          <div class="panel first">
-            <div class="cmd-head">
-              <div>
-                <h2>Before and after every app</h2>
-                <p class="hint">“Do” runs before an app starts and “Undo” after it ends. If a “Do” command fails, the app doesn’t start.</p>
-              </div>
-              <button type="button" class="secondary" data-add-cmd="global_prep_cmd">Add</button>
-            </div>
-            <div id="cmd-global_prep_cmd" class="cmd-list"></div>
-          </div>
-          <div class="panel">
-            <div class="cmd-head">
-              <div>
-                <h2>When streaming resumes and pauses</h2>
-                <p class="hint">“Do” runs when the first device connects and “Undo” when the last one disconnects.</p>
-              </div>
-              <button type="button" class="secondary" data-add-cmd="global_state_cmd">Add</button>
-            </div>
-            <div id="cmd-global_state_cmd" class="cmd-list"></div>
-          </div>
-          <div class="panel">
-            <div class="cmd-head">
-              <div>
-                <h2>Server commands</h2>
-                <p class="hint">Commands a device can run from its menu while streaming, if it has the “Run server commands” permission.</p>
-              </div>
-              <button type="button" class="secondary" data-add-cmd="server_cmd">Add</button>
-            </div>
-            <div id="cmd-server_cmd" class="cmd-list"></div>
-          </div>
-        </div>
-        <div id="commands-save-bar" class="save-bar hidden">
-          <span>Unsaved changes. Saving restarts the host and ends any active stream.</span>
-          <div class="actions">
-            <button id="commands-discard" type="button" class="secondary">Discard</button>
-            <button id="commands-save" type="button">Save and restart</button>
-          </div>
-        </div>
-      </div>
-    </section>
 
     <!-- Application editor -->
     <div id="app-dialog" class="overlay hidden">
@@ -313,23 +174,36 @@
 
     <!-- Stream settings -->
     <section id="tab-settings" class="page">
-      <header><h1>Settings</h1></header>
+      <header>
+        <h1>Settings</h1>
+        <div class="actions">
+          <button id="apollo-restart" class="secondary hidden" title="Restart the host program (ends any stream)">Restart host</button>
+        </div>
+      </header>
+      <div class="settings-layout">
+        <nav id="settings-nav" class="section-list" aria-label="Settings sections"></nav>
+        <div class="settings-body">
+          <div id="apollo-message" class="panel hidden">
+            <p id="apollo-message-text"></p>
+            <button id="apollo-message-action" class="secondary"></button>
+          </div>
+          <div id="pane-moonshine" class="pane" data-pane="moonshine">
       <h2 class="settings-heading">Moonshine</h2>
       <div class="panel toggles">
         <label class="check"><input type="checkbox" id="start-at-login"> Start with Windows</label>
-        <div class="diagnostics-row">
-          <div>
-            <div class="diagnostics-title">Can I connect directly?</div>
-            <div class="hint" id="network-check-result">Tests your network for direct connections to friends, with no Tailscale or port forwarding.</div>
-          </div>
-          <button type="button" id="network-check" class="secondary">Check</button>
-        </div>
         <div class="diagnostics-row">
           <div>
             <div class="diagnostics-title">Copy diagnostics</div>
             <div class="hint">Hosting and connection info, for a bug report. No passwords, tokens, device names or addresses.</div>
           </div>
           <button type="button" id="copy-diagnostics" class="secondary">Copy</button>
+        </div>
+        <div class="diagnostics-row">
+          <div>
+            <div class="diagnostics-title">Save log for support</div>
+            <div class="hint">A text file with the same info plus the host's recent log. Addresses and file paths are scrubbed.</div>
+          </div>
+          <button type="button" id="save-support-log" class="secondary">Save</button>
         </div>
       </div>
       <h2 class="settings-heading">Notifications</h2>
@@ -371,6 +245,8 @@
         </div>
         <p class="hint">Moonshine always looks when it starts. Updates are checked against Moonshine’s signature before they install.</p>
       </div>
+          </div>
+          <div id="pane-streaming" class="pane hidden" data-pane="streaming">
       <h2 class="settings-heading">Streaming</h2>
       <p class="hint">Used every time you connect from Moonshine.</p>
       <div class="panel grid-form pc-settings">
@@ -478,6 +354,122 @@
       </form>
       <p class="hint">To end a stream, press Ctrl+Alt+Shift+Q. Ctrl+Alt+Shift+S switches the stats between full, compact and off.</p>
 
+          </div>
+      <!-- Settings, built from apollo-schema.js -->
+      <div id="apollo-sub-settings" class="pane apollo-sub hidden" data-pane="host">
+        <form id="apollo-settings-form" class="settings-fields"></form>
+        <div id="apollo-save-bar" class="save-bar hidden">
+          <span>Unsaved changes. Saving restarts the host and ends any active stream.</span>
+          <div class="actions">
+            <button id="apollo-discard" type="button" class="secondary">Discard</button>
+            <button id="apollo-save" type="button">Save and restart</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Applications -->
+      <div id="apollo-sub-apps" class="pane apollo-sub hidden" data-pane="apps">
+        <div class="row-actions">
+          <p class="hint">What friends and your other devices can launch on this PC.</p>
+          <button id="app-add">Add application</button>
+        </div>
+        <div id="apollo-apps" class="list panel"></div>
+      </div>
+
+      <!-- Logs -->
+      <div id="apollo-sub-logs" class="pane apollo-sub hidden" data-pane="logs">
+        <div class="row-actions">
+          <input id="logs-filter" placeholder="Filter (e.g. Error, Warning, audio)">
+          <button id="logs-refresh" class="secondary">Refresh</button>
+          <button id="logs-copy" class="secondary">Copy</button>
+        </div>
+        <pre id="apollo-logs" class="logs"></pre>
+      </div>
+
+      <!-- Tools: troubleshooting -->
+      <div id="apollo-sub-tools" class="pane apollo-sub hidden" data-pane="tools">
+        <div class="scroll">
+          <div class="panel first">
+            <h2>Troubleshooting</h2>
+            <div class="row">
+              <div>
+                <div>Close the running app</div>
+                <div class="hint">Ends the app being streamed, if it’s stuck or won’t close from the device.</div>
+              </div>
+              <button id="tool-close-app" class="secondary">Close app</button>
+            </div>
+            <div class="row">
+              <div>
+                <div>Reset display settings</div>
+                <div class="hint">Use this if your monitors didn’t go back to normal after a stream.</div>
+              </div>
+              <button id="tool-reset-display" class="secondary">Reset</button>
+            </div>
+            <div class="row">
+              <div>
+                <div>Remove every paired device</div>
+                <div class="hint">They will all have to pair again.</div>
+              </div>
+              <button id="tool-unpair-all" class="danger">Remove all</button>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Web page login</h2>
+            <p class="hint">Moonshine doesn’t need this. It’s the username and password for opening the host’s page in a browser on this PC (https://localhost:47990).</p>
+            <form id="weblogin-form" class="inline">
+              <input id="weblogin-user" placeholder="Username" required>
+              <input id="weblogin-pass" type="password" placeholder="New password" required>
+              <button type="submit">Save</button>
+            </form>
+          </div>
+          <p id="host-version" class="hint"></p>
+        </div>
+      </div>
+
+      <!-- Commands run for every app, and commands devices can trigger -->
+      <div id="apollo-sub-commands" class="pane apollo-sub hidden" data-pane="commands">
+        <div class="scroll">
+          <div class="panel first">
+            <div class="cmd-head">
+              <div>
+                <h2>Before and after every app</h2>
+                <p class="hint">“Do” runs before an app starts and “Undo” after it ends. If a “Do” command fails, the app doesn’t start.</p>
+              </div>
+              <button type="button" class="secondary" data-add-cmd="global_prep_cmd">Add</button>
+            </div>
+            <div id="cmd-global_prep_cmd" class="cmd-list"></div>
+          </div>
+          <div class="panel">
+            <div class="cmd-head">
+              <div>
+                <h2>When streaming resumes and pauses</h2>
+                <p class="hint">“Do” runs when the first device connects and “Undo” when the last one disconnects.</p>
+              </div>
+              <button type="button" class="secondary" data-add-cmd="global_state_cmd">Add</button>
+            </div>
+            <div id="cmd-global_state_cmd" class="cmd-list"></div>
+          </div>
+          <div class="panel">
+            <div class="cmd-head">
+              <div>
+                <h2>Server commands</h2>
+                <p class="hint">Commands a device can run from its menu while streaming, if it has the “Run server commands” permission.</p>
+              </div>
+              <button type="button" class="secondary" data-add-cmd="server_cmd">Add</button>
+            </div>
+            <div id="cmd-server_cmd" class="cmd-list"></div>
+          </div>
+        </div>
+        <div id="commands-save-bar" class="save-bar hidden">
+          <span>Unsaved changes. Saving restarts the host and ends any active stream.</span>
+          <div class="actions">
+            <button id="commands-discard" type="button" class="secondary">Discard</button>
+            <button id="commands-save" type="button">Save and restart</button>
+          </div>
+        </div>
+      </div>
+        </div>
+      </div>
     </section>
 
     <!-- Beta features -->
@@ -585,7 +577,7 @@
         <div class="detail-row new-device-perm">
           <label for="new-device-perm" class="detail-label">New devices can</label>
           <select id="new-device-perm">
-            <option value="controller">Start apps and use a controller</option>
+            <option value="controller">Start apps, use a controller, send files (asks first)</option>
             <option value="full">Start apps, full control, clipboard and files</option>
             <option value="watch">Only watch</option>
           </select>

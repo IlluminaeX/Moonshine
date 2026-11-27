@@ -237,16 +237,16 @@ function cleanAddrs(addrs) {
 
 /** What friends see of a device; a report that changes it (or brings it back online) is news. */
 const deviceView = (d, now) => JSON.stringify([d.name, d.host_uuid, d.port, d.addrs, d.public_ip, Boolean(d.hosting),
-  Boolean(d.busy), d.guests, Boolean(d.tunnel), d.version, d.game, d.kind, now - d.last_seen < ONLINE_MS]);
+  Boolean(d.busy), d.guests, Boolean(d.tunnel), d.version, d.game, d.kind, Boolean(d.dnd), now - d.last_seen < ONLINE_MS]);
 
 async function presence(env, ctx, me, body, request) {
   const publicIp = request.headers.get('CF-Connecting-IP') || '';
   const now = Date.now();
   const phone = body.kind === 'phone'; // Moonshine for Android: it only watches, so it never hosts
-  const cols = 'name, host_uuid, port, addrs, public_ip, hosting, busy, guests, tunnel, version, game, kind, last_seen';
+  const cols = 'name, host_uuid, port, addrs, public_ip, hosting, busy, guests, tunnel, version, game, kind, dnd, last_seen';
   const before = await env.DB.prepare(`SELECT ${cols} FROM devices WHERE id = ?`).bind(me.device_id).first();
   const after = await env.DB.prepare(
-    `UPDATE devices SET name = ?, host_uuid = ?, port = ?, addrs = ?, public_ip = ?, hosting = ?, busy = ?, guests = ?, tunnel = ?, version = ?, game = ?, kind = ?, last_seen = ?
+    `UPDATE devices SET name = ?, host_uuid = ?, port = ?, addrs = ?, public_ip = ?, hosting = ?, busy = ?, guests = ?, tunnel = ?, version = ?, game = ?, kind = ?, dnd = ?, last_seen = ?
      WHERE id = ? RETURNING ${cols}`,
   ).bind(
     String(body.name || '').slice(0, 64),
@@ -261,11 +261,23 @@ async function presence(env, ctx, me, body, request) {
     /^\d{1,4}\.\d{1,4}\.\d{1,4}(-[\w.]{1,20})?$/.test(String(body.version || '')) ? String(body.version) : '',
     phone ? '' : cleanText(body.game, 80),
     phone ? 'phone' : '',
+    body.dnd ? 1 : 0,
     now,
     me.device_id,
   ).first();
   if (!before || !after || deviceView(before, now) !== deviceView(after, now)) ctx.waitUntil(notifyFriends(env, me.user_id));
   return json({ ok: true, publicIp });
+}
+
+/** Your own name for a PC, kept for all your devices ('' puts the PC's own name back). */
+async function setPcName(env, me, body) {
+  if (me.guest) return fail(403, 'Not available to guests.');
+  const uuid = String(body.hostUuid || '');
+  if (!/^[0-9A-Za-z-]{8,64}$/.test(uuid)) return fail(400, 'bad request');
+  const name = cleanText(body.name, 60);
+  if (!name) await env.DB.prepare('DELETE FROM pc_names WHERE user_id = ? AND host_uuid = ?').bind(me.user_id, uuid).run();
+  else await env.DB.prepare('INSERT INTO pc_names (user_id, host_uuid, name) VALUES (?, ?, ?) ON CONFLICT(user_id, host_uuid) DO UPDATE SET name = excluded.name').bind(me.user_id, uuid, name).run();
+  return json({ ok: true });
 }
 
 async function userByName(env, name) {
@@ -368,6 +380,56 @@ async function sendMessage(env, me, body) {
   return json({ ok: true, at: now });
 }
 
+const FILE_OFFERS_SINCE = '0.8.0'; // the first Moonshine for Android that can receive a file
+
+/**
+ * "Send you a file": offered to one of a friend's (or your own) phones through the live link. Only the
+ * offer goes through here (a name, a size and a one-time key); the file itself is later fetched by the
+ * phone straight from the sender's PC. Android TV never receives files: only devices that report
+ * themselves as phones can be offered one.
+ */
+async function fileOffer(env, me, body) {
+  if (me.guest) return fail(403, 'Guests can’t send files.');
+  const target = await reachableDevice(env, me, body.device);
+  if (!target) return fail(404, 'That isn’t one of your friends’ phones.');
+  const dev = await env.DB.prepare('SELECT kind, version, last_seen FROM devices WHERE id = ?').bind(target.id).first();
+  if (!dev || dev.kind !== 'phone') return fail(409, 'Files can only be sent to phones.');
+  if (Date.now() - dev.last_seen >= ONLINE_MS) return fail(409, 'That phone isn’t online right now.');
+  if (compareVersions(dev.version, FILE_OFFERS_SINCE) < 0) return fail(409, 'Moonshine on that phone is too old to receive files. Ask them to update it.');
+  const id = String(body.id || '');
+  const hostUuid = String(body.hostUuid || '');
+  const key = String(body.key || '');
+  const size = Number(body.size);
+  const port = Number(body.port);
+  const name = cleanText(body.name, 120);
+  if (!/^[A-Za-z0-9]{8,40}$/.test(id) || !/^[0-9A-Za-z-]{8,64}$/.test(hostUuid) || !/^[A-Za-z0-9_-]{16,64}$/.test(key)
+    || !Number.isFinite(size) || size <= 0 || !Number.isInteger(port) || port < 1 || port > 65535 || !name) return fail(400, 'bad request');
+  const now = Date.now();
+  const sent = await env.DB.prepare('SELECT COUNT(*) AS n FROM message_log WHERE sender = ? AND at > ?').bind(me.user_id, now - 60000).first();
+  if (sent.n >= MESSAGES_PER_MINUTE) return fail(429, 'That’s a lot of files. Wait a minute.');
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM message_log WHERE at < ?').bind(now - 60000),
+    env.DB.prepare('INSERT INTO message_log (sender, at) VALUES (?, ?)').bind(me.user_id, now),
+  ]);
+  const delivered = await pushTo(env, target, {
+    type: 'file-offer', id, hostUuid, port, key, name, size,
+    from: { username: me.username || '', device: me.device_id },
+  });
+  if (!delivered) return fail(409, 'That phone isn’t connected right now.');
+  return json({ ok: true });
+}
+
+/** The phone's answer to a file offer, back to the PC that sent it: accepted, declined or busy. */
+async function fileAnswer(env, me, body) {
+  const id = String(body.id || '');
+  const status = ['accepted', 'declined', 'done', 'failed'].includes(body.status) ? body.status : 'declined';
+  if (!/^[A-Za-z0-9]{8,40}$/.test(id)) return fail(400, 'bad request');
+  const target = await reachableDevice(env, me, body.device);
+  if (!target) return fail(404, 'That PC isn’t one of your friends’ PCs.');
+  const sent = await pushTo(env, target, { type: 'file-answer', id, status, from: { username: me.username || '' } });
+  return sent ? json({ ok: true }) : fail(409, 'That PC isn’t connected right now.');
+}
+
 const AVATAR_HASH = /^(a_)?[a-f0-9]{32}$/;
 const PLAY_INVITES_SINCE = '0.3.7'; // the first Moonshine that shows "join my game" invites sent through here
 
@@ -453,7 +515,7 @@ async function listFriends(env, me, request) {
   const owners = me.guest ? accepted : [...accepted, me.user_id];
   if (owners.length) {
     const { results } = await env.DB.prepare(
-      `SELECT id, user_id, name, host_uuid, port, addrs, public_ip, hosting, busy, guests, tunnel, version, game, kind, last_seen FROM devices
+      `SELECT id, user_id, name, host_uuid, port, addrs, public_ip, hosting, busy, guests, tunnel, version, game, kind, dnd, last_seen FROM devices
        WHERE user_id IN (${owners.map(() => '?').join(',')}) AND last_seen > ?`,
     ).bind(...owners, Date.now() - DEVICE_SHOWN_MS).all();
     for (const d of results) {
@@ -463,7 +525,7 @@ async function listFriends(env, me, request) {
         if (Date.now() - d.last_seen >= ONLINE_MS) continue;
         const sameNetwork = d.public_ip && d.public_ip === myIp;
         const list = phones.get(d.user_id) || [];
-        list.push({ device: d.id, name: d.name, addrs: JSON.parse(d.addrs).filter((a) => isTailnet(a) || sameNetwork), version: d.version });
+        list.push({ device: d.id, name: d.name, addrs: JSON.parse(d.addrs).filter((a) => isTailnet(a) || sameNetwork), version: d.version, dnd: Boolean(d.dnd) });
         phones.set(d.user_id, list);
         continue;
       }
@@ -487,14 +549,23 @@ async function listFriends(env, me, request) {
         guests: d.guests,
         version: d.version,
         game: online ? d.game : '',
+        dnd: online && Boolean(d.dnd),
       });
       devices.set(d.user_id, list);
     }
   }
 
+  const names = {};
+  if (!me.guest) {
+    const { results: nm } = await env.DB.prepare('SELECT host_uuid, name FROM pc_names WHERE user_id = ?').bind(me.user_id).all();
+    for (const n of nm) names[n.host_uuid] = n.name;
+  }
+
   return json({
+    names,
     me: { username: me.username, avatar: me.avatar || '' },
     mine: me.guest ? [] : (devices.get(me.user_id) || []).filter((p) => p.name && p.device !== me.device_id),
+    minePhones: me.guest ? [] : (phones.get(me.user_id) || []).filter((p) => p.device !== me.device_id),
     friends: rows.map((r) => {
       const status = r.status === 'accepted' ? 'accepted' : r.a === me.user_id ? 'outgoing' : 'incoming';
       const pcs = status === 'accepted' ? (devices.get(r.other) || []).filter((p) => p.name) : [];
@@ -502,6 +573,8 @@ async function listFriends(env, me, request) {
       return {
         username: r.username, nickname: r.nick || '', avatar: status === 'accepted' ? r.avatar || '' : '', status,
         online: pcs.some((p) => p.online) || phoneList.length > 0, pcs, phones: phoneList,
+        // Do not disturb: shown when everything of theirs that is online has it on
+        dnd: [...pcs.filter((p) => p.online), ...phoneList].length > 0 && [...pcs.filter((p) => p.online), ...phoneList].every((p) => p.dnd),
       };
     }).filter((f) => f.username),
   });
@@ -965,9 +1038,10 @@ function playPage(url) {
     ? `<h1 style="color:#f0708c;font-size:24px">Join ${esc(u)}’s stream</h1>
 <p style="color:#b6a6bd">${a && !/^desktop$/i.test(a) ? `${esc(a)} on ${esc(u)}’s PC. ` : ''}Moonshine opens and asks you to confirm. If ${esc(u)} wants to approve joiners, you’ll wait for their answer.</p>
 <p><a href="${esc(open)}" style="${button}background:#d6405f;color:#fff">Join in Moonshine</a></p>
+<p id="hint" style="color:#b6a6bd;font-size:14px;display:none">Nothing opened? Joining needs Moonshine 0.8.0 or newer, so update Moonshine first (open the app, or get the latest below).</p>
 <p style="color:#b6a6bd;font-size:14px">Don’t have Moonshine yet?</p>
 <p><a href="${RELEASES_URL}" style="${button}background:#271e30;color:#f7f1f3">Get Moonshine</a></p>
-<script>setTimeout(function(){location.href=${JSON.stringify(open).replace(/</g, '\u003c')}},400)</script>`
+<script>setTimeout(function(){location.href=${JSON.stringify(open).replace(/</g, '\u003c')}},400);setTimeout(function(){document.getElementById('hint').style.display='block'},2500)</script>`
     : '<h1 style="color:#f0708c;font-size:24px">Link not right</h1><p style="color:#b6a6bd">Ask your friend to share their status again.</p>';
   return new Response(
     `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Join in Moonshine</title>
@@ -1010,6 +1084,7 @@ export default {
         case 'POST /me/username': return await setUsername(env, ctx, me, body);
         case 'POST /presence': return await presence(env, ctx, me, body, request);
         case 'GET /friends': return await listFriends(env, me, request);
+        case 'POST /pcnames': return await setPcName(env, me, body);
         case 'GET /friends/avatar': return await avatarPicture(env, me, url);
         case 'POST /friends/request': return await requestFriend(env, ctx, me, body);
         case 'POST /friends/respond': return await respondFriend(env, ctx, me, body);
@@ -1018,6 +1093,8 @@ export default {
         case 'POST /messages/send': return await sendMessage(env, me, body);
         case 'POST /friends/play-invite': return await playInvite(env, me, body);
         case 'POST /friends/play-answer': return await playAnswer(env, me, body);
+        case 'POST /friends/file-offer': return await fileOffer(env, me, body);
+        case 'POST /friends/file-answer': return await fileAnswer(env, me, body);
         case 'POST /hub/ticket': return await hubTicket(env, me);
         case 'POST /tunnel/offer': return await tunnelOffer(env, me, body);
         case 'POST /tunnel/answer': return await tunnelAnswer(env, me, body);

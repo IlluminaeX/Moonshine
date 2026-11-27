@@ -538,7 +538,7 @@ button.icon { padding: 7px 13px; font-size: 16px; }
 .toggles.compact .check { flex-direction: row; justify-content: flex-start; border: 0; padding: 4px 0; }
 
 /* ---- Host settings: embedded pages ---- */
-#tab-apollo.active { display: flex; flex-direction: column; height: 100%; max-width: none; }
+#tab-settings.active { display: flex; flex-direction: column; height: 100%; max-width: none; }
 #apollo-frame {
   display: block;
   flex: 1;
@@ -1069,9 +1069,6 @@ button.friend-pc-name:hover { background: none; color: var(--accent-bright); tex
 .conn-badge.direct, .conn-badge.internet { color: #9ec5ff; border-color: rgb(158 197 255 / 0.3); }
 .conn-badge.relay { color: #f0c47d; border-color: rgb(240 196 125 / 0.3); }
 /* The "Can I connect directly?" answer */
-#network-check-result.check-yes { color: #8fd6a8; }
-#network-check-result.check-probably { color: #9ec5ff; }
-#network-check-result.check-relay, #network-check-result.check-signin { color: #f0c47d; }
 
 /* Beta tab */
 .beta-list { display: flex; flex-direction: column; gap: 14px; }
@@ -1112,3 +1109,55 @@ button.friend-pc-name:hover { background: none; color: var(--accent-bright); tex
 .gate-actions { display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .gate-button { min-width: 240px; padding: 12px 22px; font-size: 15px; }
 .gate-actions .hint { margin: 0; }
+
+/* A ring around a friend's picture shows whether they are online (green), offline (grey) or on do not disturb (red) */
+.avatar.ring { outline: 2.5px solid transparent; outline-offset: 2px; box-shadow: none; }
+.avatar.ring-online { outline-color: #4ade80; }
+.avatar.ring-offline { outline-color: #6e6076; }
+.avatar.ring-dnd { outline-color: #ff6b6b; }
+
+/* A busy button: dim, not clickable, with three dots pulsing in turn */
+button.working { opacity: 0.55; cursor: default; box-shadow: none; pointer-events: none; min-width: 120px; }
+.dot-anim { display: inline-block; font-weight: 800; font-size: 1.2em; line-height: 1; margin: 0 2px; animation: dot-pulse 1s ease-in-out infinite; }
+@keyframes dot-pulse { 0%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+
+/* ---- Settings: one tab with a list of sections ---- */
+#tab-settings .settings-layout { margin-top: 16px; }
+.settings-body { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.pane { flex: 1; min-height: 0; overflow-y: auto; padding-right: 8px; }
+.pane.apollo-sub { margin-top: 0; overflow-y: visible; }
+.pane > .settings-heading:first-child { margin-top: 0; }
+#apollo-message { margin-bottom: 14px; }
+.section-list { width: 188px; }
+.section-list .nav-group { margin: 14px 12px 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); opacity: 0.75; }
+.section-list .nav-group:first-child { margin-top: 2px; }
+.settings-group { margin: 26px 0 2px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent-bright); }
+.settings-collapsed { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 4px; }
+.settings-collapsed > summary { cursor: pointer; padding: 10px 0; color: var(--muted); font-weight: 650; }
+.settings-collapsed[open] > summary { color: var(--text); }
+.hold-slider { display: flex; align-items: center; gap: 12px; width: 100%; }
+.hold-slider input[type="range"] { flex: 1; }
+.hold-slider output { min-width: 72px; text-align: right; color: var(--muted); font-size: 13px; }
+
+/* ---- Window: themed title bar, and a dim sky behind everything ---- */
+body { padding-top: 38px; }
+body.prompt { padding-top: 0; }
+.titlebar {
+  position: fixed; top: 0; left: 0; right: 0; height: 38px; z-index: 60;
+  display: flex; align-items: center; gap: 8px; padding-left: 14px;
+  background: linear-gradient(180deg, #0e0a14, rgb(14 10 20 / 0.94));
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag; user-select: none;
+  font-size: 12px; font-weight: 650; letter-spacing: 0.02em; color: var(--muted);
+}
+.titlebar img { width: 16px; height: 16px; }
+body:not(.prompt)::before {
+  content: ""; position: fixed; inset: 38px 0 0 0; z-index: 0; pointer-events: none;
+  background: url("data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%22900%22%20height=%22760%22%20viewBox=%220%200%20900%20760%22%3E%3Ccircle%20cx=%22436.5%22%20cy=%22595.8%22%20r=%220.62%22%20fill=%22%23f4eeef%22%20opacity=%220.41%22/%3E%3Ccircle%20cx=%22413.2%22%20cy=%22301.3%22%20r=%220.68%22%20fill=%22%23f4eeef%22%20opacity=%220.24%22/%3E%3Ccircle%20cx=%22702.9%22%20cy=%2260.9%22%20r=%220.73%22%20fill=%22%23f4eeef%22%20opacity=%220.30%22/%3E%3Ccircle%20cx=%2242.7%22%20cy=%22496.6%22%20r=%221.19%22%20fill=%22%23f4eeef%22%20opacity=%220.11%22/%3E%3Ccircle%20cx=%22616.8%22%20cy=%2269.5%22%20r=%220.63%22%20fill=%22%23ffd3dc%22%20opacity=%220.37%22/%3E%3Ccircle%20cx=%22725.4%22%20cy=%22268.0%22%20r=%220.72%22%20fill=%22%23f4eeef%22%20opacity=%220.28%22/%3E%3Ccircle%20cx=%22746.4%22%20cy=%22645.1%22%20r=%221.11%22%20fill=%22%23f4eeef%22%20opacity=%220.38%22/%3E%3Ccircle%20cx=%22220.4%22%20cy=%2216.4%22%20r=%220.68%22%20fill=%22%23f4eeef%22%20opacity=%220.27%22/%3E%3Ccircle%20cx=%2271.3%22%20cy=%22166.5%22%20r=%220.76%22%20fill=%22%23ffd3dc%22%20opacity=%220.10%22/%3E%3Ccircle%20cx=%22249.6%22%20cy=%22205.6%22%20r=%220.92%22%20fill=%22%23f4eeef%22%20opacity=%220.33%22/%3E%3Ccircle%20cx=%2286.3%22%20cy=%2281.6%22%20r=%221.13%22%20fill=%22%23f4eeef%22%20opacity=%220.30%22/%3E%3Ccircle%20cx=%22744.7%22%20cy=%22264.6%22%20r=%220.67%22%20fill=%22%23f4eeef%22%20opacity=%220.22%22/%3E%3Ccircle%20cx=%22234.5%22%20cy=%22262.5%22%20r=%220.91%22%20fill=%22%23ffd3dc%22%20opacity=%220.23%22/%3E%3Ccircle%20cx=%22338.7%22%20cy=%22258.7%22%20r=%220.63%22%20fill=%22%23ffd3dc%22%20opacity=%220.21%22/%3E%3Ccircle%20cx=%2213.6%22%20cy=%22624.7%22%20r=%220.57%22%20fill=%22%23f4eeef%22%20opacity=%220.21%22/%3E%3Ccircle%20cx=%2299.5%22%20cy=%22649.6%22%20r=%221.38%22%20fill=%22%23ffd3dc%22%20opacity=%220.39%22/%3E%3Ccircle%20cx=%22733.4%22%20cy=%22686.4%22%20r=%220.93%22%20fill=%22%23f4eeef%22%20opacity=%220.39%22/%3E%3Ccircle%20cx=%22539.2%22%20cy=%22688.2%22%20r=%221.02%22%20fill=%22%23f4eeef%22%20opacity=%220.39%22/%3E%3Ccircle%20cx=%22868.6%22%20cy=%22429.4%22%20r=%221.16%22%20fill=%22%23ffd3dc%22%20opacity=%220.24%22/%3E%3Ccircle%20cx=%22170.0%22%20cy=%22513.7%22%20r=%221.39%22%20fill=%22%23ffd3dc%22%20opacity=%220.39%22/%3E%3Ccircle%20cx=%22361.5%22%20cy=%22368.8%22%20r=%221.28%22%20fill=%22%23f4eeef%22%20opacity=%220.21%22/%3E%3Ccircle%20cx=%22134.5%22%20cy=%22162.8%22%20r=%220.67%22%20fill=%22%23ffd3dc%22%20opacity=%220.28%22/%3E%3Ccircle%20cx=%22279.6%22%20cy=%22508.1%22%20r=%221.28%22%20fill=%22%23f4eeef%22%20opacity=%220.41%22/%3E%3Ccircle%20cx=%2256.3%22%20cy=%22552.4%22%20r=%221.18%22%20fill=%22%23f4eeef%22%20opacity=%220.38%22/%3E%3Ccircle%20cx=%22151.8%22%20cy=%22439.0%22%20r=%221.29%22%20fill=%22%23f4eeef%22%20opacity=%220.31%22/%3E%3Ccircle%20cx=%22560.0%22%20cy=%22212.9%22%20r=%221.39%22%20fill=%22%23f4eeef%22%20opacity=%220.37%22/%3E%3Ccircle%20cx=%22567.0%22%20cy=%22210.6%22%20r=%220.97%22%20fill=%22%23f4eeef%22%20opacity=%220.15%22/%3E%3Ccircle%20cx=%22836.4%22%20cy=%22162.8%22%20r=%220.57%22%20fill=%22%23f4eeef%22%20opacity=%220.32%22/%3E%3Ccircle%20cx=%22463.8%22%20cy=%22247.0%22%20r=%220.84%22%20fill=%22%23f4eeef%22%20opacity=%220.29%22/%3E%3Ccircle%20cx=%2299.7%22%20cy=%22561.2%22%20r=%220.70%22%20fill=%22%23f4eeef%22%20opacity=%220.37%22/%3E%3Ccircle%20cx=%22242.0%22%20cy=%2296.7%22%20r=%220.92%22%20fill=%22%23f4eeef%22%20opacity=%220.39%22/%3E%3Ccircle%20cx=%22647.5%22%20cy=%22616.5%22%20r=%221.33%22%20fill=%22%23f4eeef%22%20opacity=%220.35%22/%3E%3Ccircle%20cx=%22422.9%22%20cy=%22595.2%22%20r=%220.93%22%20fill=%22%23f4eeef%22%20opacity=%220.19%22/%3E%3Ccircle%20cx=%22395.1%22%20cy=%22638.3%22%20r=%220.79%22%20fill=%22%23f4eeef%22%20opacity=%220.28%22/%3E%3Ccircle%20cx=%22547.4%22%20cy=%22101.5%22%20r=%220.68%22%20fill=%22%23ffd3dc%22%20opacity=%220.26%22/%3E%3Ccircle%20cx=%22181.6%22%20cy=%22574.8%22%20r=%220.97%22%20fill=%22%23f4eeef%22%20opacity=%220.41%22/%3E%3Ccircle%20cx=%22177.7%22%20cy=%22271.8%22%20r=%220.93%22%20fill=%22%23f4eeef%22%20opacity=%220.37%22/%3E%3Ccircle%20cx=%22425.9%22%20cy=%22740.1%22%20r=%220.81%22%20fill=%22%23f4eeef%22%20opacity=%220.39%22/%3E%3Ccircle%20cx=%22620.5%22%20cy=%2282.4%22%20r=%221.24%22%20fill=%22%23f4eeef%22%20opacity=%220.36%22/%3E%3Ccircle%20cx=%22215.9%22%20cy=%22301.3%22%20r=%221.13%22%20fill=%22%23f4eeef%22%20opacity=%220.15%22/%3E%3Ccircle%20cx=%22362.0%22%20cy=%22293.1%22%20r=%221.10%22%20fill=%22%23ffd3dc%22%20opacity=%220.32%22/%3E%3Ccircle%20cx=%22645.3%22%20cy=%22272.9%22%20r=%220.72%22%20fill=%22%23f4eeef%22%20opacity=%220.33%22/%3E%3Ccircle%20cx=%2278.0%22%20cy=%22146.7%22%20r=%220.65%22%20fill=%22%23f4eeef%22%20opacity=%220.12%22/%3E%3Ccircle%20cx=%2222.2%22%20cy=%22712.8%22%20r=%220.86%22%20fill=%22%23f4eeef%22%20opacity=%220.11%22/%3E%3Ccircle%20cx=%22577.5%22%20cy=%2247.2%22%20r=%220.93%22%20fill=%22%23f4eeef%22%20opacity=%220.20%22/%3E%3Ccircle%20cx=%22575.4%22%20cy=%22604.4%22%20r=%221.19%22%20fill=%22%23f4eeef%22%20opacity=%220.19%22/%3E%3Ccircle%20cx=%22150.0%22%20cy=%22630.2%22%20r=%221.11%22%20fill=%22%23f4eeef%22%20opacity=%220.29%22/%3E%3Ccircle%20cx=%22327.4%22%20cy=%22318.8%22%20r=%221.29%22%20fill=%22%23f4eeef%22%20opacity=%220.33%22/%3E%3Ccircle%20cx=%22736.0%22%20cy=%22124.2%22%20r=%220.70%22%20fill=%22%23f4eeef%22%20opacity=%220.38%22/%3E%3Ccircle%20cx=%22399.5%22%20cy=%22466.6%22%20r=%220.99%22%20fill=%22%23ffd3dc%22%20opacity=%220.27%22/%3E%3Ccircle%20cx=%22114.0%22%20cy=%22265.3%22%20r=%221.21%22%20fill=%22%23f4eeef%22%20opacity=%220.14%22/%3E%3Ccircle%20cx=%22318.4%22%20cy=%22134.4%22%20r=%220.91%22%20fill=%22%23f4eeef%22%20opacity=%220.10%22/%3E%3Ccircle%20cx=%22323.6%22%20cy=%22207.0%22%20r=%220.59%22%20fill=%22%23f4eeef%22%20opacity=%220.17%22/%3E%3Ccircle%20cx=%22204.6%22%20cy=%22167.9%22%20r=%220.56%22%20fill=%22%23f4eeef%22%20opacity=%220.10%22/%3E%3Ccircle%20cx=%22406.6%22%20cy=%22388.3%22%20r=%220.78%22%20fill=%22%23f4eeef%22%20opacity=%220.18%22/%3E%3Ccircle%20cx=%2213.8%22%20cy=%22236.2%22%20r=%221.36%22%20fill=%22%23f4eeef%22%20opacity=%220.23%22/%3E%3Ccircle%20cx=%22778.2%22%20cy=%22347.7%22%20r=%220.89%22%20fill=%22%23f4eeef%22%20opacity=%220.41%22/%3E%3Ccircle%20cx=%22660.6%22%20cy=%22660.8%22%20r=%220.81%22%20fill=%22%23f4eeef%22%20opacity=%220.12%22/%3E%3Ccircle%20cx=%22613.4%22%20cy=%22425.0%22%20r=%220.90%22%20fill=%22%23f4eeef%22%20opacity=%220.12%22/%3E%3Ccircle%20cx=%22645.7%22%20cy=%22703.2%22%20r=%221.11%22%20fill=%22%23f4eeef%22%20opacity=%220.26%22/%3E%3Ccircle%20cx=%22192.7%22%20cy=%22462.9%22%20r=%220.59%22%20fill=%22%23f4eeef%22%20opacity=%220.27%22/%3E%3Ccircle%20cx=%22142.5%22%20cy=%22422.5%22%20r=%221.24%22%20fill=%22%23f4eeef%22%20opacity=%220.31%22/%3E%3Ccircle%20cx=%22563.8%22%20cy=%22485.1%22%20r=%221.39%22%20fill=%22%23ffd3dc%22%20opacity=%220.36%22/%3E%3Ccircle%20cx=%22423.0%22%20cy=%22116.5%22%20r=%220.63%22%20fill=%22%23f4eeef%22%20opacity=%220.12%22/%3E%3Ccircle%20cx=%22383.5%22%20cy=%22673.0%22%20r=%221.05%22%20fill=%22%23f4eeef%22%20opacity=%220.32%22/%3E%3Ccircle%20cx=%22627.5%22%20cy=%22135.3%22%20r=%221.29%22%20fill=%22%23f4eeef%22%20opacity=%220.28%22/%3E%3Ccircle%20cx=%22383.7%22%20cy=%22482.7%22%20r=%220.99%22%20fill=%22%23f4eeef%22%20opacity=%220.13%22/%3E%3Ccircle%20cx=%22372.0%22%20cy=%22177.2%22%20r=%221.02%22%20fill=%22%23f4eeef%22%20opacity=%220.39%22/%3E%3Ccircle%20cx=%22688.9%22%20cy=%22740.1%22%20r=%221.16%22%20fill=%22%23f4eeef%22%20opacity=%220.35%22/%3E%3Ccircle%20cx=%22726.9%22%20cy=%22263.4%22%20r=%220.95%22%20fill=%22%23ffd3dc%22%20opacity=%220.38%22/%3E%3Ccircle%20cx=%2280.0%22%20cy=%22594.5%22%20r=%221.25%22%20fill=%22%23ffd3dc%22%20opacity=%220.20%22/%3E%3Ccircle%20cx=%2273.5%22%20cy=%22116.0%22%20r=%220.78%22%20fill=%22%23f4eeef%22%20opacity=%220.38%22/%3E%3Ccircle%20cx=%22785.2%22%20cy=%2288.1%22%20r=%220.59%22%20fill=%22%23f4eeef%22%20opacity=%220.22%22/%3E%3Ccircle%20cx=%22333.6%22%20cy=%22373.0%22%20r=%220.69%22%20fill=%22%23f4eeef%22%20opacity=%220.22%22/%3E%3Ccircle%20cx=%22360.9%22%20cy=%22453.5%22%20r=%220.90%22%20fill=%22%23f4eeef%22%20opacity=%220.14%22/%3E%3Ccircle%20cx=%22241.9%22%20cy=%22476.0%22%20r=%220.95%22%20fill=%22%23f4eeef%22%20opacity=%220.32%22/%3E%3Ccircle%20cx=%22836.1%22%20cy=%2280.1%22%20r=%220.61%22%20fill=%22%23f4eeef%22%20opacity=%220.37%22/%3E%3Ccircle%20cx=%22195.0%22%20cy=%22112.8%22%20r=%221.33%22%20fill=%22%23f4eeef%22%20opacity=%220.40%22/%3E%3Ccircle%20cx=%22317.5%22%20cy=%22748.2%22%20r=%221.02%22%20fill=%22%23f4eeef%22%20opacity=%220.34%22/%3E%3Ccircle%20cx=%22517.4%22%20cy=%22319.9%22%20r=%220.94%22%20fill=%22%23ffd3dc%22%20opacity=%220.42%22/%3E%3C/svg%3E") 0 0 / 900px 760px repeat;
+  opacity: 0.9;
+}
+body:not(.prompt) > .sidebar, body:not(.prompt) > .content, body:not(.prompt) > .gate { position: relative; z-index: 1; }
+body:not(.prompt) > .gate { position: fixed; z-index: 40; }
+
+.invite-links { display: flex; flex-direction: column; gap: 8px; }
+.invite-links .friend-pc { background: rgb(255 255 255 / 0.03); }

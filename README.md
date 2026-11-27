@@ -1,143 +1,77 @@
 # Moonshine
 
-One Windows app for game streaming. **Host** shares your PC, and **Connect** plays on someone else's. Under the hood the host is a build of [Apollo](https://github.com/ClassicOldSong/Apollo) and the stream player is [Moonlight](https://github.com/moonlight-stream/moonlight-qt); both are installed inside Moonshine and driven by it, with no windows, tray icons or web pages of their own.
+Stream games from your PC to your friends, or from theirs to you, in one Windows app (plus an Android app). You sign in with Discord, add friends by username, and click Connect. No port forwarding, no VPN, no PIN typing.
 
-## Features
-- **Host / Connect in one window**
-  - **Connect** lists your saved PCs (Moonshine's own list, separate from Moonlight's), PCs found on your network, and friends' PCs on Tailscale, and you can add any PC by IP.
-  - It handles pairing, shows each PC's games with box art, and starts full-screen streams.
-  - Stream settings (resolution, frame rate, bitrate, codec, HDR and more) are on the Settings tab, with Start with Windows.
-- **You decide who streams, each time**
-  - Every paired device has an **Ask before streaming** switch (on by default). When it's on, a Moonshine popup asks you to **Allow** or **Decline** each stream. This works for any device, however it was paired.
-  - The popup's **Don't ask again** turns the switch off for that device.
-  - If Moonshine isn't running, devices that have to ask are turned away.
-  - When a device joins without asking (it's allowed to), a popup with a chime says so for 5 seconds, with **Kick** and **Dismiss**. Kicking also makes it ask next time.
-  - **Pause hosting** (tray menu or Host tab) for 30 minutes, 1 or 2 hours, or until you resume: hosting stays on, but every stream request is declined, anyone watching is disconnected, and friends see this PC as not hosting. No Windows admin prompt, unlike turning hosting off.
-- **Pairing without the browser**
-  - Friends on Moonshine pair with each other's PCs by themselves, the first time each PC sees the other online. No PIN, no popup. A friend's PC that is off says it will pair once it's on; **Pair** appears only if pairing by itself didn't work.
-  - Other PCs with Moonshine (on Tailscale, your network, or by IP): click **Pair**, they get one **Accept** popup, and nobody types the PIN.
-  - Any other Moonlight client: Moonshine pops up a box to type the PIN that device is showing.
-- **Connect** tab: your PCs and your friends' PCs in one list (you sign in with Discord first, and add friends by username). Click a PC's name for its games, to rename it, or to remove it.
-  - The list updates live: who is online, free, hosting or in a game, and **what they're playing** (turn off **Share what I'm playing** to hide yours).
-  - **Quick messages**: one-tap phrases ("Want to play?", "On my way"...) or a short note, delivered at once to friends who are online. Conversations stay on your PC.
-  - **Nicknames** only you see, kept with your account.
-  - A badge when a friend's Moonshine is older or newer than yours.
-  - **Do not disturb** (tray menu or Connect tab), for an hour, until morning, or until you turn it off: no notifications, and invites to play are answered "not now". Messages still arrive, unread. Requests to stream from your PC still ask.
-- **Beta tab**: new features that haven't had much real-world use, each off until you turn it on.
-  - **Auto-tuned quality**: while you stream, the host lowers the video bitrate a step when your connection can't keep up and raises it again after a calm stretch, never above the bitrate you chose. It reacts to two things: the loss reports the player already sends, and the delay to your PC suddenly climbing (data piling up in a queue, which often happens with almost no loss), so a stream on a good connection is left alone. Changes are spaced out, because each one restarts the encoder for a moment, and a level that just failed isn't tried again for a minute.
-  - **Steadier Wi-Fi**: while you stream, your Wi-Fi card is asked not to leave the channel to scan for other networks, a common cause of the delay jumping for a few seconds. Windows undoes it as soon as the stream ends, or if Moonshine closes. It does nothing on a cable, and how much it helps depends on the Wi-Fi driver.
-- **Profile pictures**: friends who sign in with Discord show their Discord profile picture on their card in Moonshine (yours too, after you sign in again once). Only you and your accepted friends can see it, and Moonshine's service passes the picture along, so friends never see your Discord account number. Without a picture the card keeps the coloured letter.
-- **Discord status**: with "Show on Discord" on, friends see what you are hosting or streaming, with a **Join** button (opens Moonshine on their PC, which asks them to confirm and waits for your approval if you ask guests first) and a **Get Moonshine** button for anyone who does not have it yet. Nothing shows while you are only on the desktop.
-- **Files of any size**: sending a file has no size limit. It is only refused when the other PC does not have the free space (it always keeps 1 GB free).
-- **Invite a friend to your game**: the Invite button on a friend's PC asks them to join, and works however the two of you are connected (same network, Tailscale, direct or relay), since it goes through the friends service.
-- **Steam button and stream link**: helpers on this PC, such as a Steam (Millennium) plugin, can list your friends and invite them through a local API that only programs on this PC can use. Opening `moonshine://stream?friend=Name` (several names separated by commas) does the same from a shortcut, after asking in a small popup. See [docs/stream-link.md](docs/stream-link.md).
-- **Connection badge**: each PC in the Connect list says how you reach it (Same network, Tailscale, Direct or Relay) and how long it takes to answer.
-- **Send files**: on a paired PC's page, **Send files**, or drop files on that page, on its row, or onto its stream window. The other PC's Moonshine asks "X wants to send you a file" and saves it in **Downloads\Moonshine**. It works over any connection (network, Tailscale, direct, relay). The sending device needs the **Upload files** permission on the other PC (Host → Devices).
-- **Wake a PC**: a PC Moonshine has seen on your network gets a **Wake** button while it's off (wake-on-LAN; the PC needs the feature turned on in its BIOS and network adapter settings).
-- **Can I connect directly?**: Settings > Moonshine tests your network and says whether direct connections work, or whether the relay will take over.
-- **One-time invite links**: the first card in the Connect list is this PC. Point at it and click **Copy invite link**, then send the link to one person.
-  - They open it in a browser, click **Open in Moonshine** (or install Moonshine first), and your PC appears in their list, pairs by itself and is ready to stream. No account, no Tailscale, no PIN. Clicking Copy was your permission, so there's no popup asking you; you still get the join popup with **Kick**.
-  - It works once. An unused link runs out after 1 hour. After the guest stops streaming it ends about 2 minutes later (long enough for auto-reconnect), or at once if you **Kick** or **Revoke** it. The guest is unpaired when it ends. Up to 5 links at a time; the card lists them with **Copy** and **Revoke**.
-  - Guests get your **New devices can** permissions. The invite only ever reaches this PC; a guest has no friends and can't see anyone else.
-- **Relay fallback**: when no direct path exists between two PCs (both behind strict routers, some mobile networks), Moonshine falls back to a Cloudflare relay by itself, as a last resort. It works the same, with a little more delay. Streams are encrypted end to end, so the relay only carries scrambled packets.
-- **Settings per PC**: in Settings > Streaming, pick a PC to give it its own resolution, frame rate, bitrate, display mode, codec, audio, HDR or virtual display. Anything you don't change follows the defaults, and "Use the defaults" clears it.
-- **Start with a virtual display**: a Streaming setting that asks the host to stream from its own virtual monitor at your resolution, so a game renders at 1440p even if the host PC's monitor is 1080p. Works with any Moonshine host (it uses the virtual display driver that comes with Moonshine), and the host's real screen is left alone.
-- **Speed test**: **Test my speed** under the bitrate (Settings) measures this PC's download and suggests a stream bitrate; **Test my upload** under the upload limit (Host) measures the upload and suggests a limit. **Apply** or **Dismiss**. Uses Cloudflare's free speed test servers for a few seconds.
-- **Auto-reconnect**: if a stream's connection drops (Wi-Fi blip, a direct connection lost), Moonshine gets it back by itself and picks up the same game, which keeps running on the other PC meanwhile. Up to 5 tries over about 30 seconds; **Stop reconnecting** or the Settings switch turns it off.
-- **Volume boost**: play a PC's stream up to 10x louder, for when its owner keeps their game quiet. A slider on that PC's page and in the stream window, or Ctrl+Alt+Shift+Up/Down during the stream. Remembered per PC; loud parts are softened instead of crackling.
-- **Devices** (Host tab): rename, disconnect or remove a device, and set what it may do: keyboard, mouse, controller, touch, pen; see the app list, start apps, join a running stream; clipboard, file transfer, server commands; a fixed resolution or its own virtual display.
-  - **New devices can**: what a device gets when it pairs, however it pairs. "Start apps and use a controller" by default; or full control with clipboard and files; or only watch. Devices already paired keep theirs.
-- **Host settings** tab: all of the host's settings, the applications list with an editor (including commands to run before and after an app), global commands, the logs, and **Tools** (close a stuck app, reset display settings, remove all devices, set the web page's login).
-  - The settings for each GPU's encoder (NVIDIA, AMD, Intel, software) are grouped under **Advanced**.
-  - The settings pages are generated from Apollo's own settings page by `scripts/gen-apollo-schema.js`, so they use the same options, defaults and wording. Run it again after updating Apollo.
-- **Per-app stream audio**: stream all system audio, everything *except* one app (e.g. `Discord.exe`), or *only* one app. This uses Windows' process-loopback capture and needs Windows 10 build 20348 or later, or Windows 11.
+Under the hood the host is a build of [Apollo](https://github.com/ClassicOldSong/Apollo) and the player is [Moonlight](https://github.com/moonlight-stream/moonlight-qt). Both live inside Moonshine, so there are no extra windows, tray icons or web pages.
 
-## Layout
-| Path | What |
-|------|------|
-| `app/` | Moonshine app (Electron) |
-| `upstream/apollo/` | Official Apollo source (git submodule, pinned to v0.4.6) |
-| `upstream/moonlight-qt/` | Official Moonlight source (git submodule, pinned to v6.2.0) |
-| `patches/` | Moonshine's changes to Apollo and Moonlight, applied on top of the official sources |
-| `vendor/moonlight/` | Official Moonlight portable release (optional fallback player; downloaded, not committed) |
-| `scripts/` | Build, fetch and package scripts |
-| `installer/` | NSIS installer, its artwork, and `prepare-host.ps1` |
-| `versions.json` | Pinned upstream versions |
+**Download:** the installer and the Android APK are on the [latest release](https://github.com/IlluminaeX/Moonshine/releases/latest). Android has its own short guide: [docs/android.md](docs/android.md).
+
+## What it does
+
+**Connect** (the first tab) lists your PCs and your friends' PCs in one place. You see who's online, who's hosting, and what they're playing. Click Connect and it works out the fastest route by itself: same network, Tailscale, a direct connection through both routers, or a relay as a last resort. Streams are encrypted end to end, so the relay only carries scrambled data.
+
+- **Friends:** add people by username, set nicknames only you see, send quick messages, or invite someone into your game. Do not disturb mutes it all.
+- **Invite links:** "Copy invite link" in your account box gives you a one-time link for someone without an account. It works once and runs out after an hour if nobody uses it.
+- **Send files:** drop files on a friend's PC, or on a friend's phone, and they get a Save / Decline prompt first. Files go straight from PC to PC (or PC to phone), never through a server, and have no size limit.
+- **Discord status:** friends see what you're hosting, with a Join button that opens Moonshine on their side.
+- **Wake** a sleeping PC on your network, boost quiet audio up to 10x, auto-reconnect when Wi-Fi blips, and run a speed test to pick a bitrate.
+
+**Host** is where you control your own PC.
+
+- **You decide who streams.** Every device asks first by default, and you get an Allow / Decline popup (or tick "don't ask again" for that device). If Moonshine isn't running, devices that have to ask are turned away.
+- **Stop hosting** closes the PC to everyone but leaves the host running, so you can still manage devices. **Pause** does the same for 30 minutes to a few hours.
+- **Devices:** rename, disconnect or remove a device, and set what it can do (keyboard, mouse, controller, clipboard, files, and so on). New devices, and devices paired before 0.8.0, may send you files, and you still click Accept on each one.
+- Friends pair with each other automatically. Any other Moonlight client gets a box to type the PIN it shows.
+
+**Settings** has Moonshine's own options, per-PC stream settings (resolution, frame rate, bitrate, codec, HDR, virtual display), and all of the host's settings, with the rarely needed ones under Advanced. **Beta** holds features that haven't had much real-world use yet (auto-tuned quality and steadier Wi-Fi).
+
+Also in there: per-app audio capture (stream everything except Discord, say), a "Save log for support" button, and a local API that a Steam plugin can use to invite friends ([docs/stream-link.md](docs/stream-link.md)).
 
 ## Building
-Requirements: [MSYS2](https://www.msys2.org) at `C:\msys64`, Node.js 20 or later, and PowerShell 7.
+
+You need [MSYS2](https://www.msys2.org) at `C:\msys64`, Node.js 20+, and PowerShell 7.
 
 ```powershell
 git submodule update --init --recursive
-pwsh scripts/patches.ps1 apply                        # optional: the build scripts do this too
-pwsh scripts/build-apollo.ps1 -InstallDeps -Package   # host engine, via MSYS2 UCRT64
-pwsh scripts/build-moonlight.ps1 -InstallDeps -Package # stream player, via MSYS2 UCRT64 (Qt 6)
-cd app; npm install; npm start                        # run Moonshine from source
-pwsh scripts/package.ps1                              # dist/Moonshine-Setup.exe
+pwsh scripts/build-apollo.ps1 -InstallDeps -Package     # host
+pwsh scripts/build-moonlight.ps1 -InstallDeps -Package  # player
+cd app; npm install; npm test; npm start                # run from source
+pwsh scripts/package.ps1                                # dist/Moonshine-Setup.exe
 ```
 
-`package.ps1` ships Moonshine's own player build from `build/moonlight/dist` when it exists. Without it, it falls back to the official Moonlight release fetched by `scripts/fetch-moonlight.ps1` (same features, but the stream window is named Moonlight).
-
-The player build uses MSYS2's Qt, SDL2, FFmpeg, libplacebo, OpenSSL and Opus instead of Moonlight's prebuilt MSVC libraries, and leaves out its AntiHooking and Discord integrations. It saves its PCs and pairings under its own name, so Moonshine and a Moonlight install never share or affect each other's list.
-
-`build-apollo.ps1` builds through a `subst` drive (`M:` by default; pass `-Drive` to change it), because Apollo's resource compiler can't handle the spaces or `~` in some paths.
-
-### Building for Android
-Moonshine for Android is Artemis (a Moonlight for Android fork, `upstream/moonlight-android`, pinned at v20.2.6) with `patches/moonlight-android.patch`: Moonshine's name, colours and icons, plus friends, direct connections, invite links and one-tap pairing in `app/src/main/java/com/moonshine/`. The tunnel there speaks the same protocol as `app/lib/tunnel-engine.js`, which `TunnelInteropTest` checks against the real engine (it needs node).
-
-Requirements: JDK 17 and the Android SDK (command-line tools) with `platforms;android-36`, `build-tools;36.0.0`, `platform-tools` and `ndk;27.0.12077973`, in `%LOCALAPPDATA%\Android\Sdk` or `ANDROID_HOME`.
+For Android you need JDK 17 and the Android SDK (platform 36, build-tools 36.0.0, NDK 27.0.12077973):
 
 ```powershell
-pwsh scripts/build-android.ps1 -Test     # dist/Moonshine-Android.apk, signed; runs the unit tests
-pwsh scripts/build-android.ps1 -Debug    # dist/Moonshine-Android-debug.apk ("Moonshine (Debug)", installs alongside)
-pwsh scripts/build-android.ps1 -Install  # also installs it on a phone plugged in with USB debugging
+pwsh scripts/build-android.ps1 -Test    # signed dist/Moonshine-Android.apk, runs the unit tests
+pwsh scripts/build-android.ps1 -Debug -Install   # debug build onto a plugged-in phone
 ```
 
-The first release build makes Moonshine's Android signing key in `%USERPROFILE%\.moonshine-release\` (`android-release.jks` and `android-signing.properties`). Back both up and never commit them: Android installs an update only when it's signed with the same key. The version comes from `app/package.json`, and `release.ps1` attaches the APK to the release when it was built for that version. Like `build-apollo.ps1`, it builds through a `subst` drive because the NDK can't handle spaces in paths.
+The first Android release build creates a signing key in `%USERPROFILE%\.moonshine-release\`. Back it up and never commit it: Android only installs an update signed with the same key.
 
-## Patches
-Moonshine doesn't fork Apollo or Moonlight. The submodules point at their official releases, and Moonshine's changes are plain patch files in `patches/` (`apollo.patch`, `moonlight-qt.patch`, `moonlight-common-c.patch` for Moonlight's streaming library, and `moonlight-android.patch` for the Android app). `build-apollo.ps1` and `build-moonlight.ps1` apply them first; applying twice is harmless.
+## How it's put together
 
-To change Apollo or Moonlight: edit the files under `upstream/`, then run `pwsh scripts/patches.ps1 save` and commit the updated patches. To move to a newer upstream release: check out the new tag in the submodule, apply the patches, fix any parts that no longer fit, then save.
+| Path | What |
+|------|------|
+| `app/` | The Moonshine app (Electron) |
+| `cloud/` | The friends service (a Cloudflare Worker with a D1 database) |
+| `upstream/` | Apollo, Moonlight and the Android app, pinned to official releases |
+| `patches/` | Moonshine's changes to those, as patch files |
+| `scripts/`, `installer/` | Build, package and release scripts, and the NSIS installer |
 
-## Moonshine's changes to Apollo
-In `patches/apollo.patch`:
-- **Per-app audio capture** (`src/platform/windows/audio.cpp`): settings `audio_capture_mode` and `audio_capture_app`.
-- **Managed mode** (setting `moonshine_managed`): no tray icon or notifications of its own, and newly paired devices get stream and input permissions only.
-- **Ask before streaming** (`src/nvhttp.cpp`): each paired device has a `require_approval` flag. A launch or resume from such a device waits, up to a minute, for Moonshine to allow or decline it. After an Allow, reconnects within three minutes don't ask again.
-- **Local API for Moonshine** (`src/confighttp.cpp`): `GET /api/moonshine/pending` lists stream requests, pairing requests from another Moonshine, and pairing requests waiting for a PIN; `POST /api/moonshine/decide` answers a stream request and `POST /api/moonshine/decide-pair` a pairing request. Moonshine polls the first once a second, which is also how the host knows Moonshine is running.
-- **No login for Moonshine**: at each start the host writes a random key to `config/moonshine_token`. Requests from this PC that send it (`X-Moonshine-Token`) need no web login, so Moonshine works on a PC whose Apollo login it was never given.
-- **Pairing requests** (`src/nvhttp.cpp`, on the port pairing already uses): `/moonshine/hello`, `/moonshine/pair` and `/moonshine/pair-status`, described below. A new pairing attempt also replaces an abandoned one instead of getting stuck behind it.
-- **Service renamed** to `MoonshineHost` ("Moonshine Host"), with its own firewall rule name.
-- The build reports its real version (0.4.6) instead of 0.0.0.
+Moonshine doesn't fork Apollo or Moonlight. To change them, edit under `upstream/`, run `pwsh scripts/patches.ps1 save`, and commit the patch. The build scripts apply the patches first.
 
-## How pairing between two Moonshines works
-1. The friend's Moonshine picks a random PIN, shows it, and sends it to the host engine: `GET http://<host>:47989/moonshine/pair?pin=...&name=...`. If Moonshine isn't open on the host, the friend is told so straight away.
-2. The friend's Moonshine runs `Moonlight pair <host> --pin <pin>` as usual.
-3. The host's Moonshine shows an Accept popup, with the Tailscale user when the request came over Tailscale.
-4. On Accept, the host's Moonshine gives the PIN to its host engine, which completes the pairing. The new device can stream and use inputs; clipboard, file and command permissions stay off until you turn them on under Devices.
+The main changes to Apollo: per-app audio capture, a managed mode with no tray icon of its own, "ask before streaming" enforced inside the host, a local API for Moonshine, Moonshine-to-Moonshine pairing and file endpoints, and the service renamed to Moonshine Host. Details are in `patches/apollo.patch`.
 
-That request travels the same way Moonlight's own pairing does (plain HTTP on your network, encrypted inside Tailscale), and nothing happens until the host's user accepts. A host that isn't Moonshine doesn't answer it, so the PIN is typed there as usual.
+## The friends service
 
-## Installer
-- No options: Welcome, Installing, Finish. Everything goes to `C:\Program Files\Moonshine`; the host engine is in its `host` folder and runs as the **Moonshine Host** service.
-- **A separately installed Apollo is moved in.** `installer/prepare-host.ps1` copies its settings, apps, login, paired devices and identity into Moonshine (only if Moonshine has none yet), then removes the old Apollo: its service, firewall rule, PATH entry, Start menu folder, files and its entry in Windows' installed apps. Nothing has to pair again.
-- Every external command the installer runs has a time limit, so no step can leave it stuck. The host preparation step logs what it did to `C:\Program Files\Moonshine\install.log`.
-- The virtual display and virtual gamepad drivers are installed system-wide. The uninstaller asks before removing them.
-- `makensis /DPREVIEW` builds a look-only copy of the installer that needs no admin and installs nothing, for checking its pages.
-- The welcome/finish artwork is `installer/welcome.bmp`, made by `scripts/gen-installer-art.js`. The app icons are made from `app/assets/moonshine.svg` by `scripts/gen-icons.js`.
-- If the host had an Apollo web login before Moonshine and Moonshine doesn't know it, sign in once on the Host tab. Otherwise Moonshine creates its own login automatically.
+`cloud/` is a small Cloudflare Worker. It keeps accounts, friend lists, presence and the live link that carries messages, invites, file offers and the handshake for direct connections. It never sees stream data or file contents. To deploy: `npx wrangler deploy` from `cloud/`. When a release adds a migration from `cloud/migrations/`, apply it first with `npx wrangler d1 execute moonshine --remote --file=migrations/<file>.sql`.
 
-## Updates
-Moonshine checks GitHub for a new release shortly after it starts and every 6 hours (or on demand: click the version at the bottom of the sidebar). A new version shows in the sidebar and the tray menu. **Update now** downloads it, checks it, asks once, then closes Moonshine, installs behind a Windows admin prompt, and opens Moonshine again. Anyone streaming from that PC is disconnected while it installs, and the prompt says so.
+## Installer and updates
 
-Every release is signed. `scripts/release.ps1` signs `Moonshine-Setup.exe` with an Ed25519 key kept outside the repository (`%USERPROFILE%\.moonshine-release\update-key.pem`), and the app installs only a download whose checksum and signature match the public key built into `app/lib/updater.js` and whose version is newer than its own. So a damaged or tampered download, or an old installer, is refused.
+The installer has no options. It installs to `C:\Program Files\Moonshine` and runs the host as the "Moonshine Host" service. If a separate Apollo is installed, its settings, apps and paired devices are moved in and the old install is removed, so nothing has to be paired again.
 
-To publish a release:
-1. Raise `version` in `app/package.json` (and `package-lock.json`).
-2. Build: `build-apollo.ps1 -Package`, `build-moonlight.ps1 -Package`, `package.ps1`.
-3. Commit and push, then `pwsh scripts/release.ps1 -Notes "What's new"`. It signs the installer and creates the GitHub release `v<version>` with it (needs the GitHub CLI, signed in). The signature goes into the release notes as a hidden comment (`<!-- moonshine-update-sig: … -->`), so the release page shows only the installer. Don't remove that line when editing a release's notes, or the app can't install that release. `-SigAsset` also attaches the signature as a separate `Moonshine-Setup.exe.sig` file.
+Moonshine checks GitHub for updates a few times a day and installs one only if its signature matches the public key built into the app. The Android app updates itself the same way and asks you to confirm.
 
-Keep a backup of the signing key. Without it, the copies of Moonshine already installed can't take another in-app update.
+To publish a release: raise the version in `app/package.json`, build the host, player, installer and APK, then run `pwsh scripts/release.ps1 -Notes "What's new"`. It signs the installer and creates the GitHub release. The signature goes into the release notes as a hidden comment, so don't delete it when editing the notes. Keep a backup of the signing key (`%USERPROFILE%\.moonshine-release\update-key.pem`); without it, installed copies can't take another update.
 
-Licences: see [LICENSES/](LICENSES/).
+Licences are in [LICENSES/](LICENSES/).

@@ -7313,10 +7313,10 @@ index 116894b9..2746f903 100755
  
      @Override
 diff --git a/app/src/main/java/com/limelight/HelpActivity.java b/app/src/main/java/com/limelight/HelpActivity.java
-index ec170791..19508305 100755
+index ec170791..21196a0e 100755
 --- a/app/src/main/java/com/limelight/HelpActivity.java
 +++ b/app/src/main/java/com/limelight/HelpActivity.java
-@@ -1,118 +1,128 @@
+@@ -1,118 +1,133 @@
 -package com.limelight;
 -
 -import android.app.Activity;
@@ -7531,6 +7531,11 @@ index ec170791..19508305 100755
 +                android.widget.Toast.makeText(this, "No browser found. Open " + ISSUES_URL, android.widget.Toast.LENGTH_LONG).show();
 +            }
 +        }));
++        TextView ls = text("Asking for help? Export the app’s log and send it along.", 14, MUTED, false);
++        ls.setGravity(Gravity.CENTER);
++        ls.setPadding(0, dp(14), 0, dp(10));
++        issues.addView(ls);
++        issues.addView(com.moonshine.Ui.pill(this, "Export log", com.moonshine.Ui.TONALPILL, v -> com.moonshine.Logs.export(this)));
 +        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
 +        ip.topMargin = dp(20);
 +        content.addView(issues, ip);
@@ -7564,13 +7569,13 @@ index ec170791..19508305 100755
 +    }
 +}
 diff --git a/app/src/main/java/com/limelight/ArtemisApplication.java b/app/src/main/java/com/limelight/MoonshineApplication.java
-similarity index 67%
+similarity index 58%
 rename from app/src/main/java/com/limelight/ArtemisApplication.java
 rename to app/src/main/java/com/limelight/MoonshineApplication.java
-index 81d89967..71cc98b2 100644
+index 81d89967..b23e1dd1 100644
 --- a/app/src/main/java/com/limelight/ArtemisApplication.java
 +++ b/app/src/main/java/com/limelight/MoonshineApplication.java
-@@ -5,10 +5,12 @@ import android.widget.Toast;
+@@ -5,10 +5,13 @@ import android.widget.Toast;
  
  import com.limelight.profiles.ProfilesManager;
  
@@ -7579,6 +7584,7 @@ index 81d89967..71cc98b2 100644
      @Override
      public void onCreate() {
          super.onCreate();
++        com.moonshine.Logs.start(this); // keeps the app's log so it can be exported from Help
 +        // Moonshine's account features: online while the app is open, offline when it goes away
 +        com.moonshine.Moonshine.get(this).attach(this);
          ProfilesManager profilesManager = ProfilesManager.getInstance();
@@ -8560,10 +8566,20 @@ index e7cd2cfe..c5b60daf 100755
                                                  i.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_NEW_TASK);
                                                  intentStack.add(i);
 diff --git a/app/src/main/java/com/limelight/binding/audio/AndroidAudioRenderer.java b/app/src/main/java/com/limelight/binding/audio/AndroidAudioRenderer.java
-index 53cbf687..e5b1a5c2 100755
+index 53cbf687..e34bd087 100755
 --- a/app/src/main/java/com/limelight/binding/audio/AndroidAudioRenderer.java
 +++ b/app/src/main/java/com/limelight/binding/audio/AndroidAudioRenderer.java
-@@ -185,8 +185,25 @@ public class AndroidAudioRenderer implements AudioRenderer {
+@@ -128,7 +128,8 @@ public class AndroidAudioRenderer implements AudioRenderer {
+             switch (i) {
+                 case 0:
+                 case 2:
+-                    bufferSize = bytesPerFrame * 2;
++                    // Moonshine: about 40 ms (not 10 ms), so a Wi-Fi hiccup doesn't leave the speaker with nothing
++                    bufferSize = bytesPerFrame * 8;
+                     break;
+ 
+                 case 1:
+@@ -185,10 +186,27 @@ public class AndroidAudioRenderer implements AudioRenderer {
          return 0;
      }
  
@@ -8584,11 +8600,15 @@ index 53cbf687..e5b1a5c2 100755
 +
      @Override
      public void playDecodedAudio(short[] audioData) {
+-        // Only queue up to 40 ms of pending audio data in addition to what AudioTrack is buffering for us.
+-        if (MoonBridge.getPendingAudioDuration() < 40) {
 +        float g = gain;
 +        if (g > 1.001f) boost(audioData, g);
-         // Only queue up to 40 ms of pending audio data in addition to what AudioTrack is buffering for us.
-         if (MoonBridge.getPendingAudioDuration() < 40) {
++        // Only queue up to 80 ms of pending audio data in addition to what AudioTrack is buffering for us.
++        if (MoonBridge.getPendingAudioDuration() < 80) {
              // This will block until the write is completed. That can cause a backlog
+             // of pending audio data, so we do the above check to be able to bound
+             // latency at 40 ms in that situation.
 diff --git a/app/src/main/java/com/limelight/computers/ComputerManagerService.java b/app/src/main/java/com/limelight/computers/ComputerManagerService.java
 index d2c39026..d78e433f 100755
 --- a/app/src/main/java/com/limelight/computers/ComputerManagerService.java
@@ -11719,6 +11739,208 @@ index 00000000..04e07853
 +        }
 +    }
 +}
+diff --git a/app/src/main/java/com/moonshine/FileReceiver.java b/app/src/main/java/com/moonshine/FileReceiver.java
+new file mode 100644
+index 00000000..7b81f82d
+--- /dev/null
++++ b/app/src/main/java/com/moonshine/FileReceiver.java
+@@ -0,0 +1,196 @@
++package com.moonshine;
++
++import android.content.ContentResolver;
++import android.content.ContentValues;
++import android.content.Context;
++import android.content.Intent;
++import android.net.Uri;
++import android.os.Build;
++import android.os.Environment;
++import android.provider.MediaStore;
++
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.OutputStream;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicBoolean;
++
++import com.moonshine.tunnel.Tunnels;
++
++import okhttp3.OkHttpClient;
++import okhttp3.Request;
++import okhttp3.Response;
++import okhttp3.ResponseBody;
++
++/**
++ * Receiving a file a friend (or your other PC) sends to this phone. The sender's PC offered it through the
++ * friends service; once the user says Save, this fetches it in pieces from that PC's host (over the same
++ * connection a stream would use, with the offer's one-time key) and saves it in Downloads/Moonshine.
++ * Nothing is saved without that yes. Blocking: run it off the main thread.
++ */
++public final class FileReceiver {
++    /** A file offered to this phone. */
++    public static final class Offer {
++        public final String id;
++        public final String from;
++        public final long device; // the sender's PC (a device of the friends service)
++        public final String hostUuid;
++        public final int port;
++        public final String key;
++        public final String name;
++        public final long size;
++
++        Offer(String id, String from, long device, String hostUuid, int port, String key, String name, long size) {
++            this.id = id;
++            this.from = from;
++            this.device = device;
++            this.hostUuid = hostUuid;
++            this.port = port;
++            this.key = key;
++            this.name = safeName(name);
++            this.size = size;
++        }
++
++        void into(Intent i) {
++            i.putExtra("file_id", id).putExtra("file_from", from).putExtra("file_device", device).putExtra("file_host", hostUuid)
++                    .putExtra("file_port", port).putExtra("file_key", key).putExtra("file_name", name).putExtra("file_size", size);
++        }
++
++        static Offer from(Intent i) {
++            String id = i.getStringExtra("file_id");
++            if (id == null) return null;
++            return new Offer(id, String.valueOf(i.getStringExtra("file_from")), i.getLongExtra("file_device", 0), String.valueOf(i.getStringExtra("file_host")),
++                    i.getIntExtra("file_port", 47989), String.valueOf(i.getStringExtra("file_key")), String.valueOf(i.getStringExtra("file_name")), i.getLongExtra("file_size", 0));
++        }
++    }
++
++    public interface Progress {
++        void at(long done, long total);
++    }
++
++    private static final int MAX_PIECE = 8 << 20;
++
++    private FileReceiver() {}
++
++    /** Just a file name: no folders, nothing the file system refuses, not too long. */
++    static String safeName(String name) {
++        String n = name == null ? "" : name;
++        int slash = Math.max(n.lastIndexOf('/'), n.lastIndexOf('\\'));
++        if (slash >= 0) n = n.substring(slash + 1);
++        n = n.replaceAll("[\\p{Cntrl}\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2069\\uFEFF<>:\"/\\\\|?*]", "_");
++        n = n.replaceAll("^[. ]+|[. ]+$", "");
++        if (n.length() > 150) n = n.substring(n.length() - 150); // keep the end: the extension matters most
++        return n.isEmpty() ? "file" : n;
++    }
++
++    /** Validates a hub message into an offer; null if it isn't a well-formed one. */
++    static Offer parse(org.json.JSONObject msg) {
++        org.json.JSONObject from = msg.optJSONObject("from");
++        String id = msg.optString("id", "");
++        String host = msg.optString("hostUuid", "");
++        String key = msg.optString("key", "");
++        long size = msg.optLong("size", 0);
++        int port = msg.optInt("port", 0);
++        if (from == null || from.optString("username").isEmpty() || from.optLong("device") <= 0) return null;
++        if (!id.matches("[A-Za-z0-9]{8,40}") || !host.matches("[0-9A-Za-z-]{8,64}") || !key.matches("[A-Za-z0-9_-]{16,64}")) return null;
++        if (size <= 0 || port < 1 || port > 65535) return null;
++        String name = Moonshine.clean(msg.optString("name"), 120);
++        if (name.isEmpty()) return null;
++        return new Offer(id, Moonshine.clean(from.optString("username"), 40), from.optLong("device"), host, port, key, name, size);
++    }
++
++    /** Where the file ended up. */
++    public static final class Saved {
++        public final String name;
++        public final Uri uri; // null before Android 10 (a plain file in the app's Downloads folder)
++        public final String where;
++
++        Saved(String name, Uri uri, String where) {
++            this.name = name;
++            this.uri = uri;
++            this.where = where;
++        }
++    }
++
++    /** Fetch the whole file and save it. Throws with a message fit to show. */
++    public static Saved receive(Context ctx, Moonshine m, Offer o, Progress progress, AtomicBoolean cancelled) throws IOException {
++        Tunnels.Target target = new Tunnels.Target(o.hostUuid, o.device, o.port, o.from + "’s PC", m.hub, m.token());
++        String ip = m.tunnels.connect(target);
++        OkHttpClient c = Service.http.newBuilder().callTimeout(0, TimeUnit.MILLISECONDS).readTimeout(30, TimeUnit.SECONDS).build();
++        ContentResolver cr = ctx.getContentResolver();
++        Uri uri = null;
++        File file = null;
++        OutputStream out;
++        String where;
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
++            ContentValues v = new ContentValues();
++            v.put(MediaStore.MediaColumns.DISPLAY_NAME, o.name);
++            v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Moonshine");
++            v.put(MediaStore.MediaColumns.IS_PENDING, 1);
++            uri = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
++            if (uri == null) throw new IOException("Couldn’t save in Downloads.");
++            out = cr.openOutputStream(uri);
++            where = "Downloads/Moonshine";
++        } else {
++            File dir = new File(ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "Moonshine");
++            if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("Couldn’t make a folder to save in.");
++            file = new File(dir, o.name);
++            for (int n = 2; file.exists(); n++) file = new File(dir, n + "-" + o.name);
++            out = new FileOutputStream(file);
++            where = "the Moonshine folder in this app’s Downloads";
++        }
++        if (out == null) throw new IOException("Couldn’t save in Downloads.");
++        boolean ok = false;
++        try {
++            pull(c, "http://" + ip + ":" + o.port, o, out, progress, cancelled);
++            ok = true;
++        } finally {
++            try {
++                out.close();
++            } catch (IOException ignored) {
++                // the write error, if any, is already being thrown
++            }
++            if (!ok) {
++                if (uri != null) cr.delete(uri, null, null);
++                if (file != null) file.delete();
++            }
++        }
++        if (uri != null) {
++            ContentValues v = new ContentValues();
++            v.put(MediaStore.MediaColumns.IS_PENDING, 0);
++            cr.update(uri, v, null, null);
++        }
++        return new Saved(o.name, uri, where);
++    }
++    /** Fetch the file in pieces from `base` (the sender's PC, e.g. "http://127.77.1.2:47989") into `out`. */
++    static void pull(OkHttpClient c, String base, Offer o, OutputStream out, Progress progress, AtomicBoolean cancelled) throws IOException {
++        long done = 0;
++        progress.at(0, o.size);
++        while (done < o.size) {
++            if (cancelled.get()) throw new IOException("Cancelled.");
++            String url = base + "/moonshine/take?id=" + o.id + "&key=" + o.key + "&offset=" + done;
++            try (Response res = c.newCall(new Request.Builder().url(url).header("User-Agent", "Moonshine-Android").build()).execute()) {
++                ResponseBody b = res.body();
++                if (res.code() == 404) throw new IOException(o.from + " is no longer offering the file.");
++                if (!res.isSuccessful() || b == null) throw new IOException("Couldn’t get the file from " + o.from + "’s PC (" + res.code() + ").");
++                byte[] buf = new byte[64 * 1024];
++                long piece = 0;
++                try (InputStream in = b.byteStream()) {
++                    int n;
++                    while ((n = in.read(buf)) > 0) {
++                        if (cancelled.get()) throw new IOException("Cancelled.");
++                        out.write(buf, 0, n);
++                        piece += n;
++                        done += n;
++                        if (done > o.size || piece > MAX_PIECE) throw new IOException("The file was bigger than it said.");
++                        progress.at(done, o.size);
++                    }
++                }
++                if (piece == 0) throw new IOException("The file ended early.");
++            }
++        }
++        if (done != o.size) throw new IOException("The file was incomplete.");
++    }
++}
 diff --git a/app/src/main/java/com/moonshine/FileSender.java b/app/src/main/java/com/moonshine/FileSender.java
 new file mode 100644
 index 00000000..b4dcda7e
@@ -11860,10 +12082,10 @@ index 00000000..b4dcda7e
 +}
 diff --git a/app/src/main/java/com/moonshine/FriendsActivity.java b/app/src/main/java/com/moonshine/FriendsActivity.java
 new file mode 100644
-index 00000000..5b280df2
+index 00000000..b47db2ea
 --- /dev/null
 +++ b/app/src/main/java/com/moonshine/FriendsActivity.java
-@@ -0,0 +1,1201 @@
+@@ -0,0 +1,1233 @@
 +package com.moonshine;
 +
 +import android.app.Activity;
@@ -11976,13 +12198,13 @@ index 00000000..5b280df2
 +        super.onCreate(savedInstanceState);
 +        m = Moonshine.get(this);
 +        ScrollView scroll = new ScrollView(this);
-+        scroll.setBackgroundColor(BG);
++        scroll.setBackgroundColor(0); // the sky behind shows through
 +        scroll.setFillViewport(true);
 +        content = new LinearLayout(this);
 +        content.setOrientation(LinearLayout.VERTICAL);
 +        scroll.addView(content, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 +        FrameLayout root = new FrameLayout(this);
-+        root.setBackgroundColor(BG);
++        root.setBackgroundResource(R.drawable.moonshine_sky);
 +        root.addView(scroll, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 +        // The bottom bar floats over the list, like glass: rounded, outlined, a little see-through
 +        nav = new LinearLayout(this);
@@ -12028,6 +12250,12 @@ index 00000000..5b280df2
 +        if (inv != null) {
 +            intent.removeExtra("invite_id");
 +            askToJoin(this, inv);
++            return;
++        }
++        FileReceiver.Offer offer = m.isOurs(intent) ? FileReceiver.Offer.from(intent) : null;
++        if (offer != null) {
++            intent.removeExtra("file_id");
++            askToReceive(this, offer);
 +            return;
 +        }
 +        Uri data = intent.getData();
@@ -12176,18 +12404,22 @@ index 00000000..5b280df2
 +        return e;
 +    }
 +
-+    /** A profile picture with a small green dot when the person is online. */
-+    private View statusAvatar(String username, int sizeDp, boolean online) {
++    private static final int RING_OFFLINE = 0xFF6E6076, RING_DND = 0xFFFF6B6B;
++
++    /** A profile picture inside a ring: green when the person is online, grey offline, red on do not disturb. */
++    private View statusAvatar(String username, int sizeDp, boolean online, boolean dnd) {
 +        FrameLayout f = new FrameLayout(this);
-+        f.addView(avatar(username, sizeDp));
-+        if (online) {
-+            int d = Math.max(10, sizeDp / 3);
-+            View dot = Ui.dot(this, ONLINE, d);
-+            dot.setBackground(Ui.circle(this, ONLINE, BG));
-+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dp(d), dp(d), Gravity.BOTTOM | Gravity.END);
-+            f.addView(dot, lp);
-+        }
-+        f.setLayoutParams(new LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)));
++        int ring = dnd && online ? RING_DND : online ? ONLINE : RING_OFFLINE;
++        GradientDrawable g = new GradientDrawable();
++        g.setShape(GradientDrawable.OVAL);
++        g.setColor(0);
++        g.setStroke(Math.max(2, dp(sizeDp > 36 ? 3 : 2)), ring);
++        f.setBackground(g);
++        int pad = dp(sizeDp > 36 ? 5 : 4);
++        f.setPadding(pad, pad, pad, pad);
++        f.addView(avatar(username, sizeDp), new FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp)));
++        f.setLayoutParams(new LinearLayout.LayoutParams(dp(sizeDp) + 2 * pad, dp(sizeDp) + 2 * pad));
++        f.setContentDescription(dnd && online ? "Do not disturb" : online ? "Online" : "Offline");
 +        return f;
 +    }
 +
@@ -12263,8 +12495,7 @@ index 00000000..5b280df2
 +        content.setGravity(Gravity.CENTER_HORIZONTAL);
 +        content.addView(spacer(1f));
 +        ImageView logo = new ImageView(this);
-+        logo.setImageResource(R.drawable.ic_stat_moonshine);
-+        logo.setColorFilter(ACCENT);
++        logo.setImageResource(R.drawable.moonshine_logo); // the same icon as the app and the PC
 +        content.addView(logo, new LinearLayout.LayoutParams(dp(84), dp(84)));
 +        TextView title = text("Moonshine", 34, TEXT, true);
 +        title.setGravity(Gravity.CENTER);
@@ -12348,7 +12579,7 @@ index 00000000..5b280df2
 +        top.addView(text(title, 32, TEXT, true), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 +        if (m.signedIn()) {
 +            // Your picture opens the account sheet: notifications, tests, sign out
-+            View who = statusAvatar(m.username(), 42, m.hub.isConnected());
++            View who = statusAvatar(m.username(), 42, m.hub.isConnected(), PcPrefs.get(this).dnd());
 +            who.setContentDescription("Account");
 +            who.setOnClickListener(v -> PcSheets.account(this, m, this::render));
 +            top.addView(who);
@@ -12406,7 +12637,7 @@ index 00000000..5b280df2
 +            LinearLayout c = card();
 +            addSpaced(content, c, 8);
 +            LinearLayout head = row();
-+            head.addView(statusAvatar(u, 30, friend.optBoolean("online")));
++            head.addView(statusAvatar(u, 30, friend.optBoolean("online"), friend.optBoolean("dnd")));
 +            head.addView(gap(10));
 +            head.addView(text(nick.isEmpty() ? u : nick, 15, MUTED, true));
 +            c.addView(head);
@@ -12444,18 +12675,21 @@ index 00000000..5b280df2
 +        nameView.setEllipsize(TextUtils.TruncateAt.END);
 +        line.addView(nameView, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 +        PcSheets.Conn conn = live ? conns.get(uuid) : null;
-+        if (conn != null) {
-+            line.addView(gap(8));
-+            line.addView(Ui.badge(this, PcSheets.kindLabel(conn.kind) + (conn.ms > 0 ? " · " + (conn.ms <= 10 ? "<20" : String.valueOf(conn.ms)) + " ms" : ""), ACCENT));
-+        }
 +        info.addView(line);
-+        String state = !online ? "Offline" : !hosting ? "Not hosting" : !game.isEmpty() ? "Playing " + game
++        String state = !online ? "Offline" : !hosting ? "Not hosting" : !game.isEmpty() ? (game.equalsIgnoreCase("desktop") ? "Streaming" : "Playing " + game)
 +                : guests > 0 ? (guests == 1 ? "1 person watching" : guests + " people watching") : pc.optBoolean("busy") ? "In use" : "Ready";
 +        LinearLayout stateLine = row();
 +        stateLine.addView(Ui.dot(this, live ? ONLINE : 0xFF6E6076, 8));
 +        stateLine.addView(gap(6));
 +        stateLine.addView(text(state, 13, live ? ONLINE : MUTED, false));
 +        info.addView(stateLine);
++        if (conn != null) {
++            // How you reach it, under the name so a long PC name keeps its room
++            View badge = Ui.badge(this, PcSheets.kindLabel(conn.kind) + (conn.ms > 0 ? " · " + (conn.ms <= 10 ? "<20" : String.valueOf(conn.ms)) + " ms" : ""), ACCENT);
++            LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
++            bp.topMargin = dp(6);
++            info.addView(badge, bp);
++        }
 +        r.addView(info, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 +        if (live) {
 +            probeConn(pc);
@@ -12689,7 +12923,7 @@ index 00000000..5b280df2
 +        addSpaced(content, c, 10);
 +        LinearLayout head = row();
 +        boolean online = friend.optBoolean("online");
-+        head.addView(statusAvatar(u, 44, online));
++        head.addView(statusAvatar(u, 44, online, friend.optBoolean("dnd")));
 +        head.addView(gap(12));
 +        LinearLayout who = new LinearLayout(this);
 +        who.setOrientation(LinearLayout.VERTICAL);
@@ -12790,6 +13024,26 @@ index 00000000..5b280df2
 +                });
 +            }
 +        });
++    }
++
++    // ---- a file sent to this phone -----------------------------------------------------------------
++
++    private static String sizeText(long bytes) {
++        if (bytes >= 1L << 30) return String.format(java.util.Locale.US, "%.1f GB", bytes / (double) (1L << 30));
++        if (bytes >= 1L << 20) return String.format(java.util.Locale.US, "%.1f MB", bytes / (double) (1L << 20));
++        return Math.max(1, bytes / 1024) + " KB";
++    }
++
++    /** Ask whether to save a file someone wants to send: always, whatever the file is. */
++    static void askToReceive(Activity a, FileReceiver.Offer o) {
++        Moonshine m = Moonshine.get(a);
++        new AlertDialog.Builder(a, R.style.MoonshineDialog)
++                .setTitle(m.friendLabel(o.from) + " wants to send you a file")
++                .setMessage(o.name + " (" + sizeText(o.size) + ")\nOnly save it if you trust " + m.friendLabel(o.from) + ". It goes in Downloads/Moonshine.")
++                .setPositiveButton("Save", (d, w) -> m.receiveFile(o))
++                .setNegativeButton("Decline", (d, w) -> m.answerFileOffer(o, "declined"))
++                .setCancelable(false)
++                .show();
 +    }
 +
 +    // ---- "join my game" ----------------------------------------------------------------------------
@@ -13367,12 +13621,128 @@ index 00000000..395a0fe6
 +        return true;
 +    }
 +}
+diff --git a/app/src/main/java/com/moonshine/Logs.java b/app/src/main/java/com/moonshine/Logs.java
+new file mode 100644
+index 00000000..33bc9446
+--- /dev/null
++++ b/app/src/main/java/com/moonshine/Logs.java
+@@ -0,0 +1,110 @@
++package com.moonshine;
++
++import android.content.Context;
++import android.content.Intent;
++import android.net.Uri;
++import android.os.Build;
++import android.widget.Toast;
++
++import androidx.core.content.FileProvider;
++
++import com.limelight.BuildConfig;
++
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.OutputStream;
++import java.nio.charset.StandardCharsets;
++import java.text.SimpleDateFormat;
++import java.util.Date;
++import java.util.Locale;
++
++/**
++ * Moonshine's own log: while the app runs, its log lines (this app only, nothing from other apps) are
++ * kept in a small rolling file, so a stream that went wrong a while ago can still be looked at.
++ * "Export log" bundles that with the phone and app details into one text file to share.
++ */
++public final class Logs {
++    private static Process recorder;
++
++    private Logs() {
++    }
++
++    private static File dir(Context c) {
++        File d = new File(c.getFilesDir(), "logs");
++        //noinspection ResultOfMethodCallIgnored
++        d.mkdirs();
++        return d;
++    }
++
++    /** Start keeping the log (two files of about 512 KB each; the oldest is dropped). Safe to call again. */
++    public static synchronized void start(Context c) {
++        if (recorder != null) return;
++        try {
++            File f = new File(dir(c), "moonshine.log");
++            recorder = new ProcessBuilder("logcat", "-v", "threadtime", "-f", f.getAbsolutePath(), "-r", "512", "-n", "2")
++                    .redirectErrorStream(true).start();
++        } catch (IOException | RuntimeException ignored) {
++            recorder = null; // no log is kept, everything else works
++        }
++    }
++
++    private static void copy(File f, OutputStream out) throws IOException {
++        if (!f.isFile()) return;
++        byte[] buf = new byte[16384];
++        try (InputStream in = new java.io.FileInputStream(f)) {
++            int n;
++            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
++        }
++    }
++
++    /** Write the log file and open the share sheet. Runs on a background thread. */
++    public static void export(Context c) {
++        final Context app = c.getApplicationContext();
++        new Thread(() -> {
++            try {
++                File out = new File(app.getCacheDir(), "moonshine-log-" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + ".txt");
++                try (OutputStream o = new FileOutputStream(out)) {
++                    String head = "Moonshine for Android " + BuildConfig.VERSION_NAME + "\n"
++                            + "Phone: " + Build.MANUFACTURER + " " + Build.MODEL + ", Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")\n"
++                            + "Saved: " + new Date() + "\n"
++                            + "This file has Moonshine's log only. It can include PC names and addresses, so look it over before you share it.\n"
++                            + "------------------------------------------------------------\n";
++                    o.write(head.getBytes(StandardCharsets.UTF_8));
++                    File d = dir(app);
++                    copy(new File(d, "moonshine.log.1"), o); // the older half, if there is one
++                    copy(new File(d, "moonshine.log"), o);
++                    // What the system still holds right now (covers the moment the log file was started)
++                    try {
++                        Process p = new ProcessBuilder("logcat", "-d", "-v", "threadtime").redirectErrorStream(true).start();
++                        o.write("\n------------ current log ------------\n".getBytes(StandardCharsets.UTF_8));
++                        byte[] buf = new byte[16384];
++                        try (InputStream in = p.getInputStream()) {
++                            int n;
++                            long total = 0;
++                            while ((n = in.read(buf)) > 0 && total < 1_500_000) {
++                                o.write(buf, 0, n);
++                                total += n;
++                            }
++                        }
++                        p.destroy();
++                    } catch (IOException | RuntimeException ignored) {
++                        // the file above is still useful
++                    }
++                }
++                final Uri uri = FileProvider.getUriForFile(app, app.getPackageName() + ".fileprovider", out);
++                Intent send = new Intent(Intent.ACTION_SEND)
++                        .setType("text/plain")
++                        .putExtra(Intent.EXTRA_STREAM, uri)
++                        .putExtra(Intent.EXTRA_SUBJECT, "Moonshine log")
++                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
++                Intent chooser = Intent.createChooser(send, "Export Moonshine log").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++                new android.os.Handler(app.getMainLooper()).post(() -> app.startActivity(chooser));
++            } catch (IOException | RuntimeException e) {
++                new android.os.Handler(app.getMainLooper()).post(() ->
++                        Toast.makeText(app, "Couldn’t save the log: " + e.getMessage(), Toast.LENGTH_LONG).show());
++            }
++        }, "log-export").start();
++    }
++}
 diff --git a/app/src/main/java/com/moonshine/Moonshine.java b/app/src/main/java/com/moonshine/Moonshine.java
 new file mode 100644
-index 00000000..c62c90de
+index 00000000..4c2ecc17
 --- /dev/null
 +++ b/app/src/main/java/com/moonshine/Moonshine.java
-@@ -0,0 +1,793 @@
+@@ -0,0 +1,882 @@
 +package com.moonshine;
 +
 +import android.app.Activity;
@@ -13719,6 +14089,28 @@ index 00000000..c62c90de
 +        }
 +    };
 +
++    /** Tell friends now (a change such as Do not disturb shows on their side in a moment). */
++    public void presenceSoon() {
++        main.removeCallbacks(presenceTick);
++        main.post(presenceTick);
++    }
++
++    /** Keep your name for a PC on the friends service, so your other devices show it too. */
++    void pushName(String uuid, String name) {
++        final String token = token();
++        if (token.isEmpty()) return;
++        run(() -> {
++            try {
++                JSONObject body = new JSONObject();
++                body.put("hostUuid", uuid);
++                body.put("name", name);
++                Service.call("POST", "/pcnames", body, token);
++            } catch (IOException | JSONException ignored) {
++                // sent again the next time the lists sync
++            }
++        });
++    }
++
 +    private void sendPresence() {
 +        String token = token();
 +        if (token.isEmpty()) return;
@@ -13728,6 +14120,7 @@ index 00000000..c62c90de
 +            body.put("name", deviceName(ctx));
 +            body.put("addrs", new JSONArray(localAddresses()));
 +            body.put("tunnel", true);
++            body.put("dnd", PcPrefs.get(ctx).dnd());
 +            body.put("version", BuildConfig.VERSION_NAME.replaceAll("[^0-9A-Za-z.\\-]", ""));
 +            Service.call("POST", "/presence", body, token);
 +        } catch (IOException | JSONException ignored) {
@@ -13790,6 +14183,7 @@ index 00000000..c62c90de
 +                JSONObject me = f.optJSONObject("me");
 +                if (me != null && !me.isNull("username")) prefs().edit().putString("username", me.optString("username", "")).apply();
 +                friends = f;
++                PcPrefs.get(ctx).syncNames(f.optJSONObject("names"), this);
 +                friendsAt = System.currentTimeMillis();
 +                lastError = "";
 +            } catch (Service.ServiceException e) {
@@ -14027,6 +14421,9 @@ index 00000000..c62c90de
 +            case "play-invite":
 +                onPlayInvite(msg);
 +                break;
++            case "file-offer":
++                onFileOffer(msg);
++                break;
 +            default:
 +        }
 +    }
@@ -14075,6 +14472,58 @@ index 00000000..c62c90de
 +        } else {
 +            notify("play:" + id, friendLabel(inv.from) + " invites you to play", (inv.game.isEmpty() ? inv.app : inv.game) + " on " + inv.host, inv);
 +        }
++    }
++
++    /** Android TV never receives files: nothing there to save them to, and nobody to ask. */
++    static boolean isTv(Context c) {
++        android.app.UiModeManager ui = (android.app.UiModeManager) c.getSystemService(Context.UI_MODE_SERVICE);
++        return ui != null && ui.getCurrentModeType() == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION;
++    }
++
++    /** A friend (or your other PC) wants to send this phone a file: always asked, never saved without a yes. */
++    private void onFileOffer(JSONObject msg) {
++        FileReceiver.Offer o = FileReceiver.parse(msg);
++        if (o == null || !seenInvites.add(o.id)) return;
++        if (isTv(ctx) || PcPrefs.get(ctx).dnd()) {
++            answerFileOffer(o, "declined"); // do not disturb: the sender sees "declined"
++            return;
++        }
++        Activity a = resumed.get();
++        if (a != null && !a.isFinishing() && !(a instanceof com.limelight.Game)) {
++            FriendsActivity.askToReceive(a, o);
++        } else {
++            notifyWith("file:" + o.id, friendLabel(o.from) + " wants to send you a file", o.name, "com.moonshine.FILE_OFFER." + o.id, o::into);
++        }
++    }
++
++    /** Tell the sender: accepted, declined, or failed. */
++    public void answerFileOffer(FileReceiver.Offer o, String status) {
++        cancelNotification("file:" + o.id);
++        run(() -> {
++            try {
++                Service.call("POST", "/friends/file-answer", new JSONObject().put("device", o.device).put("id", o.id).put("status", status), token());
++            } catch (IOException | JSONException ignored) {
++                // the sender's window times out by itself
++            }
++        });
++    }
++
++    /** The user said Save: fetch the file in the background and tell them when it is in Downloads. */
++    public void receiveFile(FileReceiver.Offer o) {
++        answerFileOffer(o, "accepted");
++        onMain(() -> android.widget.Toast.makeText(ctx, "Saving " + o.name + "…", android.widget.Toast.LENGTH_SHORT).show());
++        run(() -> {
++            try {
++                FileReceiver.Saved saved = FileReceiver.receive(ctx, this, o, (done, total) -> { }, new java.util.concurrent.atomic.AtomicBoolean());
++                onMain(() -> android.widget.Toast.makeText(ctx, "Saved " + saved.name + " in " + saved.where + ".", android.widget.Toast.LENGTH_LONG).show());
++                notifyWith("filedone:" + o.id, "Saved " + saved.name, "From " + friendLabel(o.from) + ". It’s in " + saved.where + ".", "com.moonshine.FILE_DONE." + o.id, i -> { });
++            } catch (IOException e) {
++                answerFileOffer(o, "failed");
++                final String why = e.getMessage() == null ? "Couldn’t get the file." : e.getMessage();
++                onMain(() -> android.widget.Toast.makeText(ctx, why, android.widget.Toast.LENGTH_LONG).show());
++                notifyWith("filedone:" + o.id, "Couldn’t save " + o.name, why, "com.moonshine.FILE_FAIL." + o.id, i -> { });
++            }
++        });
 +    }
 +
 +    /** A "join my game" invite. */
@@ -14134,13 +14583,23 @@ index 00000000..c62c90de
 +    }
 +
 +    private void notify(String key, String title, String text, PlayInvite inv) {
++        if (inv == null) notifyWith(key, title, text, null, null);
++        else notifyWith(key, title, text, "com.moonshine.PLAY_INVITE." + inv.id, inv::into); // one PendingIntent per invite
++    }
++
++    interface Extras {
++        void put(Intent i);
++    }
++
++    /** A notification that opens Moonshine; `extras` puts the thing it is about into the intent (signed, so only this app's are believed). */
++    private void notifyWith(String key, String title, String text, String action, Extras extras) {
 +        NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
 +        if (nm == null) return;
 +        Intent open = new Intent(ctx, FriendsActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-+        if (inv != null) {
-+            inv.into(open);
++        if (extras != null) {
++            extras.put(open);
 +            sign(open);
-+            open.setAction("com.moonshine.PLAY_INVITE." + inv.id); // one PendingIntent per invite
++            open.setAction(action);
 +        }
 +        int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
 +        PendingIntent pi = PendingIntent.getActivity(ctx, key.hashCode(), open, flags);
@@ -14298,10 +14757,10 @@ index 00000000..4ffd9cc7
 +}
 diff --git a/app/src/main/java/com/moonshine/PcPrefs.java b/app/src/main/java/com/moonshine/PcPrefs.java
 new file mode 100644
-index 00000000..b583013b
+index 00000000..b6453983
 --- /dev/null
 +++ b/app/src/main/java/com/moonshine/PcPrefs.java
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,202 @@
 +package com.moonshine;
 +
 +import android.content.Context;
@@ -14321,9 +14780,11 @@ index 00000000..b583013b
 +    public static final float MAX_BOOST = 10f;
 +    private static PcPrefs instance;
 +    private final SharedPreferences p;
++    private final Context ctx;
 +
 +    private PcPrefs(Context c) {
-+        p = c.getApplicationContext().getSharedPreferences("moonshine_pcs", Context.MODE_PRIVATE);
++        ctx = c.getApplicationContext();
++        p = ctx.getSharedPreferences("moonshine_pcs", Context.MODE_PRIVATE);
 +    }
 +
 +    public static synchronized PcPrefs get(Context c) {
@@ -14343,6 +14804,35 @@ index 00000000..b583013b
 +        String n = Moonshine.clean(name, 40);
 +        if (n.isEmpty()) p.edit().remove("name:" + uuid).apply();
 +        else p.edit().putString("name:" + uuid, n).apply();
++        Moonshine.get(ctx).pushName(uuid, n);
++    }
++
++    /**
++     * Names are kept by the friends service so a PC renamed on the PC app or another phone is renamed here.
++     * The service's list wins; a name only this phone has is sent up once; one the service dropped is dropped.
++     */
++    public synchronized void syncNames(JSONObject remote, Moonshine m) {
++        if (remote == null) return;
++        SharedPreferences.Editor e = p.edit();
++        java.util.Set<String> synced = new java.util.HashSet<>(p.getStringSet("namesSynced", new java.util.HashSet<>()));
++        java.util.Set<String> now = new java.util.HashSet<>();
++        java.util.Iterator<String> it = remote.keys();
++        while (it.hasNext()) {
++            String uuid = it.next();
++            e.putString("name:" + uuid, Moonshine.clean(remote.optString(uuid), 60));
++            now.add(uuid);
++        }
++        for (String key : new java.util.ArrayList<>(p.getAll().keySet())) {
++            if (!key.startsWith("name:")) continue;
++            String uuid = key.substring(5);
++            if (remote.has(uuid)) continue;
++            if (synced.contains(uuid)) e.remove(key);
++            else {
++                m.pushName(uuid, p.getString(key, ""));
++                now.add(uuid);
++            }
++        }
++        e.putStringSet("namesSynced", now).apply();
 +    }
 +
 +    // ---- wake ----------------------------------------------------------------------------------------
@@ -14445,6 +14935,7 @@ index 00000000..b583013b
 +
 +    public void setDnd(long until) {
 +        p.edit().putLong("dndUntil", until).apply();
++        Moonshine.get(ctx).presenceSoon();
 +    }
 +
 +    public boolean notifyMessages() {
@@ -14474,10 +14965,10 @@ index 00000000..b583013b
 +}
 diff --git a/app/src/main/java/com/moonshine/PcSheets.java b/app/src/main/java/com/moonshine/PcSheets.java
 new file mode 100644
-index 00000000..5e3b75ea
+index 00000000..9bcd128f
 --- /dev/null
 +++ b/app/src/main/java/com/moonshine/PcSheets.java
-@@ -0,0 +1,403 @@
+@@ -0,0 +1,359 @@
 +package com.moonshine;
 +
 +import android.app.Activity;
@@ -14797,49 +15288,6 @@ index 00000000..5e3b75ea
 +        });
 +    }
 +
-+    // ---- "Can I connect directly?" ----------------------------------------------------------------------
-+
-+    public static void directCheck(Activity a, Moonshine m) {
-+        if (!m.signedIn()) {
-+            toast(a, "Sign in first. Direct connections are arranged through your Moonshine account.");
-+            return;
-+        }
-+        TextView msg = Ui.text(a, "Checking your network…", 15, Ui.TEXT, false);
-+        FrameLayout wrap = new FrameLayout(a);
-+        wrap.setPadding(Ui.dp(a, 24), Ui.dp(a, 20), Ui.dp(a, 24), Ui.dp(a, 8));
-+        wrap.addView(msg);
-+        AlertDialog d = new AlertDialog.Builder(a, R.style.MoonshineDialog).setTitle("Direct connections").setView(wrap).create();
-+        d.show();
-+        m.run(() -> {
-+            String nat = Tunnels.checkNetwork();
-+            m.onMain(() -> {
-+                d.dismiss();
-+                String backup = "If it can’t, Moonshine switches to a relay by itself: it works, with a little more delay.";
-+                String title;
-+                String body;
-+                switch (nat) {
-+                    case "cone":
-+                        title = "Yes";
-+                        body = "Your network allows direct connections, so friends can connect straight to you and you to them. (A friend’s network matters too.)";
-+                        break;
-+                    case "unknown":
-+                        title = "Probably";
-+                        body = "Your network looks fine, but only one of the two test servers answered. " + backup;
-+                        break;
-+                    case "symmetric":
-+                        title = "Not directly";
-+                        body = "Your network uses a different address for every connection (common on mobile data). " + backup;
-+                        break;
-+                    default:
-+                        title = "Not directly";
-+                        body = "Your network blocks the kind of traffic direct connections use. " + backup;
-+                }
-+                if (!m.hub.isConnected()) body += " Moonshine isn’t connected to its service right now, so friends can’t reach you until it is.";
-+                if (!a.isFinishing()) new AlertDialog.Builder(a, R.style.MoonshineDialog).setTitle(title).setMessage(body).setPositiveButton("OK", null).show();
-+            });
-+        });
-+    }
-+
 +    // ---- the account ----------------------------------------------------------------------------------------
 +
 +    private static String dndValue(PcPrefs p) {
@@ -14862,7 +15310,6 @@ index 00000000..5e3b75ea
 +        s.toggle(R.drawable.ic_gamepad, "Game invites", "Notify me when a friend asks me to play", p.notifyInvites(), p::setNotifyInvites);
 +        s.toggle(R.drawable.ic_refresh, "Reconnect by itself", "Picks a dropped stream back up", p.autoReconnect(), p::setAutoReconnect);
 +        s.row(R.drawable.ic_speed, "Test my speed", "Suggests a stream bitrate", "", true, () -> speedTest(a, m, null));
-+        s.row(R.drawable.ic_link, "Can I connect directly?", "Checks your network", "", true, () -> directCheck(a, m));
 +        s.row(R.drawable.ic_download, "Updates", "Moonshine " + com.limelight.BuildConfig.VERSION_NAME + " · " + Updates.everyLabel(Updates.every(a)), "", true, () ->
 +                choose(a, "Check for updates", new String[] { "Check now", "Every day", "Every 3 days", "Every week", "Every time it opens" },
 +                        new String[] { "now", "day", "3days", "week", "launch" }, Updates.every(a), v -> {
@@ -15795,10 +16242,10 @@ index 00000000..3b92670f
 +}
 diff --git a/app/src/main/java/com/moonshine/Updates.java b/app/src/main/java/com/moonshine/Updates.java
 new file mode 100644
-index 00000000..96e9c581
+index 00000000..bde5a103
 --- /dev/null
 +++ b/app/src/main/java/com/moonshine/Updates.java
-@@ -0,0 +1,443 @@
+@@ -0,0 +1,445 @@
 +package com.moonshine;
 +
 +import android.app.Activity;
@@ -15855,6 +16302,8 @@ index 00000000..96e9c581
 +    static final String LATEST = "https://api.github.com/repos/IlluminaeX/Moonshine/releases/latest";
 +    static final String RELEASES_PAGE = "https://github.com/IlluminaeX/Moonshine/releases/";
 +    static final String DOWNLOADS = "https://github.com/IlluminaeX/Moonshine/releases/download/";
++    /** Where downloads must come from; only tests point it somewhere else. */
++    static String downloadsFrom = DOWNLOADS;
 +    static final String ASSET = "Moonshine-Android.apk";
 +    private static final long FIRST_CHECK_MS = 3_000;
 +    private static final long TICK_MS = 60 * 60 * 1000;
@@ -16128,7 +16577,7 @@ index 00000000..96e9c581
 +
 +    /** Download the APK to `out`, checking size and (when the release says) the SHA-256 as it comes. Blocking. */
 +    static void fetch(Found f, File out, Progress progress, AtomicBoolean cancelled) throws IOException {
-+        if (!f.url.startsWith(DOWNLOADS)) throw new IOException("That isn’t a Moonshine download.");
++        if (!f.url.startsWith(downloadsFrom)) throw new IOException("That isn’t a Moonshine download.");
 +        OkHttpClient c = Service.http.newBuilder().callTimeout(0, TimeUnit.MILLISECONDS).readTimeout(30, TimeUnit.SECONDS).build();
 +        Request req = new Request.Builder().url(f.url).header("User-Agent", "Moonshine-Android").build();
 +        MessageDigest sha;
@@ -17702,10 +18151,10 @@ index 00000000..32dd21ba
 +}
 diff --git a/app/src/main/java/com/moonshine/tunnel/Tunnels.java b/app/src/main/java/com/moonshine/tunnel/Tunnels.java
 new file mode 100644
-index 00000000..b8c97885
+index 00000000..bebbca6e
 --- /dev/null
 +++ b/app/src/main/java/com/moonshine/tunnel/Tunnels.java
-@@ -0,0 +1,406 @@
+@@ -0,0 +1,386 @@
 +package com.moonshine.tunnel;
 +
 +import android.content.Context;
@@ -18065,26 +18514,6 @@ index 00000000..b8c97885
 +            }
 +        }
 +        for (Entry e : idle) e.tunnel.close("idle");
-+    }
-+
-+    /** "Can this phone connect directly?": what STUN says about this network (cone, symmetric, unknown, blocked). Blocking. */
-+    public static String checkNetwork() {
-+        Tunnel t = new Tunnel(new Tunnel.Listener() {
-+            @Override
-+            public void onRelayWanted() {
-+            }
-+
-+            @Override
-+            public void onClosed(String reason) {
-+            }
-+        });
-+        try {
-+            return t.prepare().nat;
-+        } catch (IOException e) {
-+            return "blocked";
-+        } finally {
-+            t.close("checked");
-+        }
 +    }
 +
 +    // ---- words ---------------------------------------------------------------------------------------
@@ -18647,6 +19076,1572 @@ index 00000000..7b594df5
 +        events.onClosed("closed");
 +    }
 +}
+diff --git a/app/src/main/res/drawable-nodpi/moonshine_logo.png b/app/src/main/res/drawable-nodpi/moonshine_logo.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..d71f39eb14a6999b852caa579d08ac30f62c0019
+GIT binary patch
+literal 81453
+zcmZ6yWmKEd8ZL-Sad#<N9Et~T(c;D3-Q6it+})wLTYyl!IKkcB-CfG0=iIaA&io>4
+z5#S5^mB)63l7bZ42jUM<P*7+x(&FEtpr9cyp`nlvAYXKy%gmvmFrj3`#Z*0^XWx8A
+z?N+?j!-OW%UDi4sF8ri(T|D^(X(TdB#J}O&akvE(1?-4SQ;DM9!ITEr^x-WRluwqp
+zX~T(G(<r0lOHQ`BDHU^IfBH<i7Y7%S!#6GgqBWqAjr<f+;E8uZaHRnGb?0es)vvi8
+zqxJKzogEWf5{a}E+__hR7dM?Iqb>WHE~8DIexJDC3R}i7x{eb>t|xPNU(3VJ1+Qy`
+z9{*5_Ap7s<Ba(YjJd%2D=OeB^_I$+<bcT<`5V;&MxvE^(eBQcb+H9)zzI|kWTBzZB
+z{;472&D^nnNaDFxx#8-|qW{>|W3%pB<@8|EzR<NlmcmAUC1SfT)EVp7dFn(b!hS6I
+zYIn)^W9uboqU@Dhip|sWj$d*EwkGC!KDy?lm~%l%PgYkYZg<&xqZdQ)np4+7B*TVn
+zVY62^YE_c+QL5&Rx*kgKakJ2&3g->-z}<*9`j<UdWd=!aGeG|;u!!+d9_Y<}B(BH9
+z)^3$onYzfj!BpQE#UR)xxzVoLt6JVrgU!dN+ViT;vc?OO9@J)$w*)#RnZ(|RyXrH~
+z(ieX)Vot)+sh1F^catQh1sO+$D;!62eY0g7IThh=^Im$`@(dgb(fE^S$6&X02rb2D
+zHG<F@*xy^iAF^QRF#)orWG7t9vWfPY<mSc$kSrvQa_>pecIaG-*d0j?y{7+0aADcc
+zgu5_vdW_JmY%#x!`!ny~MZOd4q5m#L(S8&9j_6ry(E9wU{A_huNP6J|b&%(8C6y2n
+z`mMJY;B<{ru^-CHwzC};oZtJ)8eiY0>f~&Hu}`dGlh`MCg!<iC?pVO#bZ7b3hP|&H
+z(1Fdf<zdDTy-eH9S2YI<@Ug8MJw=1+$lg4c@_zGB#cp_BI?+>4;C3@PThwm9LYFII
+znn|)`FVhzzsyohHc{0jF<b4v>!IN!)ZQ=6d-SUIK$o9h=%;jZ{)W&+3y3n;)+uLWR
+z(>&OgE%?0gyuInGXjV{2@|u>!+{dlsH6QB&B+E_@QZMXAT8-g{TSBe{&%TJW^Cb(A
+zJhCT09TN}Zp~S8$J$_aUFQL`UT6F#Cv1yo^ZJXxb^KFiE@>EmKa#!O!OzLVx{m~P-
+zK27hXIgeO<N=`)YF&jIWw&yZVe2lN4jGv%7Y}REs_d6g#YRZ^VVL*-o&=1YHL7pu`
+zBXiNV^hcas&DQ-0GaSWeQ;tn`-$hhv@S`83lw4oj-kIqSYxR!K2V(($2|X7Qin$Q^
+z_`Cyr!Mg=fDia^b){;h4sPt1Em70vK3lka{rLT~AT_S=<1%5{o5y#0elIjkM)>sq7
+zrtxKSOxeVCB1W?~Y|UuKioCQs$k{#3y6#WnzpX?lz6gwM9E@GfwTE|?(-!@DesSmB
+zcxM=||17r8c(MOCT;`!=sx<Sn$sj+qdjYo;MwN?6-k#HJ|0!%ngn*MTkxtXp?<vgt
+zPjuR*&d}p+=@)}FzXx2Z4>AW|gdDm`QT_xs8@yZa5nZTd{RLQThiS1iA?WvS{c)C7
+zqpn=ENTtnEu#GpnGe?RqOq0hjokpo`LOwk<V`Emyp66#&7nQ-FP7Jk6f_X5iPsrDp
+zv$WOk>v1RG$p#s(0DruTrJlN?M8(AGYuDrO;pd1qvYX^sj!mIRgWVBub<Vx}CG$k>
+zjzVPA-V9gpNP268kKy3P)TnvdY*v7Qe<B%<#!zTI*!&+4?-x$!VID+lUptO|DB=ga
+zChT%IZ(Is5iS)1Rd&~fJv6(ArkJsHzV`8#0n_`=bzQx+l(y$7-<Dh#}`Q=+HZ9#z>
+z3*#+^x;1f&=5PuIm|LcI5vjY}bO!E`Go0Uke$;Tm+Zf_-8AmR{VM~hUYx%Vwu6fC_
+z<Aln)Pja)qn>?58mhHMU@dZrV9yZecL&GJ3IJ>?$qaj_leKLaSaIFj(ajn=wP>4R!
+zzgTL_5GW_`Av{#~_wnSG6Kh#(voa1Rx7dQW;yE;a(8FGC_yY#XyAnY_nEu_f$bd-R
+zE3?CMsTS^r9f_CZdi$ADx3h&{q1`iHVj~&0mG%Owgko&x!Q^5wVxBYM6ulBjjQovN
+z^jeeMlIW%|GtXx#d6)V{+grmTNCCf{iOJ^BtPGoXp`NtnE&qw4AoCsZ9PNs3$T0#M
+z<g)1R9+}N_!I**-n(G#kj%XK;XuO%S&Zh4pr_zBeQ}d26gCN^q@KJQhXSlehHD@7a
+zOQK|$V`@zQpF?Se*`s;2pAXC1H^B10&)2DaHzDjgu{+(Q7>2o={ED&We>r~gW7~7D
+ztC#vXE>A;rUOtySBA9e`bGoXdzg&!-fHEUgMIG!)HmXiVs;YM}&g2)$qPZZBar+T>
+zDizu0)q7(~tqTB}9Y7(N-{JU-a6G6`vmH|Cu&o*;jecx`Wg^l$_$*{)@?P5q?jSwZ
+zbwO9m_UPtEPDzV3eDg1~5q9oBxgu)&V$D!!q#oshfUHe>%t`lYynRXy{MyekP|psx
+zB!Y44cS4kw3B$dmKWMw#YVL7J`!E<c_JjW6+j)j(*UF=w0hIpDpOg39tNyVtnwtsg
+ziZRfsPeKvoh|ZTm$9M>EKt1lD?ATAblmxLteBOUR1@aae6trzN{71)BKRX;BY<Hjo
+z4@3GxzjkpMSddVofmmKr5~e_3)kuuk>hblrckO#*WAHoag=3n4Uga}A2bv@MArqz^
+z6aHTR-YNz?#$E4cKC(t4H*N{pB$pq6rllvgL<#QZJ7|<v3W2BNA6Wj)Fy-OY@PJUN
+zuy{KLG*Ap&-M~JpEnFSTOSGw7Sildi2f1^yppCivwpJ)p+MB6&EEJ2supd%e|LOy;
+z;Uf^FHu@L_kHMKsGl#6>Zwz5--m|C!2ZYlL9IEnhbs7?1(G}1#-N`k?dRXUOieHJn
+zWg<svwA(K|9q9L^D-J#CM*N>$PjQ_T+XcM_px2YS4$_|m<?i&F>*H|ZOadIdcUIe{
+z#}!Nl>Yc;)(8dj2EtADH<lzWgABCHUH2AG&Ldi+lxVHf2`(>o07oD2U<rv>N`7)o#
+z$2yXH%C<L(&pphbJs;KLUK0>6+P6A}RSb-aRqQ}h7JZFmjGE`s7CP=>%uBAu!OYa+
+z7wFE)aKIdK$PsOal%(l(OwUZ|HX$wPt+2}fFu>Pw23pQBWc_QOhd_MD)Fp%?dOjI*
+zC%W%Aogw{neG9C-ASFX$dtKY!f5c*|@*xcKix}g1yE8xD$@VO--wC+%i#Gyss=8Z<
+zDTMhLJ5Raa1qBp0ekhvmD12~J!a+>huaFq}?;p1_Yp7ahUeT*v1RcZM*q--*PB~4%
+zB{(_>kTdyy&XB#40LtC<@P+og`-iI9JZk+ja@rA9O`HtU-4ZC7^d`rSE2&q!%8l>@
+z-v%Pj!Gg8V*BQ@Wj#UEmZhC~oRVx{*#xv+Yz-qx~+&0#ZD*xK-vy40{k3$O8<!i#7
+z6`Wcc%(OuoB>w9jUtiuv5!d3f366X0I}IDy+H~|)yIFHIH!PTed``jpALh7sCp)qJ
+z{EpHo!>?F2`$LKciEAnP3w^Tfk^?m81dC#PP29XruGT#%)JU~X!!gexDxA*T8=vue
+zO2X9vsNYqj-TB$T7&HWA=$`~SCJuN1_&6)R*}uwmUmU_*Zo)b|YGlNBUHbHj$u<Rv
+zRat_}48nl?dSP~ROsGhvItB3OWPZ4mQfyh|L&>bVtsb|X2r!up_$xj6W>t`3XULvu
+z>>Z`BWXshPI%Bv3Bsc`9Fs|gk^qlhxoEC#P{rc%k2I#yc%HpmZ()>(vv3g-nObD-f
+z{;l*SluFKVt(etF`T3GA3~4aPT1UEW#wZkJHk&Y~(Jln`A(lKu@rOLl(0z;l6h0f5
+zU$Sb)*I~(Tn*T6CZ~n!YJMzlI{FYkc_<iWzZmCNg*56p}^M#F!7JZikv>yq0Cxf+P
+z16cIq!}zFVofO|W)iw8zX-7zr8N-ke%ZW(kBL@}l=G1CbPi=7AJj~2|=h*a*^xYgp
+ztW)uX26L_$n8~j645QCRv1a`NGY9f@B%@sMddy*eRH(6NqZGG{U7ziDINk|Gws9=H
+z@3oxxLYQh?X<ck-*pEB@@Xd97UyxF2$t)a5`UGjOPi?IFZiVKK*5Bed%E^dpNY@Q%
+zzA|Eg14Vz{7Eib-Q!6j6_ru&}^l+#UL7tU>hL_J9>SFLo=8{0_b!BfO0e-U^k^D(U
+z_I;a=P@M^xx;=Ce`|DgNdTl~|ppO&<JSuhw^mh=g_U8JO6tweg3WeNvP#fZkdWSkQ
+z$dg8i%VRN|YY}vM@~fi#((U(`mr;B+WACNghmcfV3$L+?7$YW-w{3*_8dIH$Y5mlc
+zYu@9&uTY6|c`c#eJ{<TTynYED9?l_>s9v-k_+tf`mo`^aC28_qLI3OWE_Qx;Z9;|>
+zhEJNEVKEjO8!nbrHm$(N{uH_8qYv&2ATwBKP1{e;>$U}WpOVgK88Xs-FOd6g-iaXp
+z7(Ck#*tmyO<k`X-9=V7JP=8Ld`1yFKf=ozBz(BqG@G)36iDVQg8<kN0SzyTb_uS+b
+zcbPPY`m7hTq`OMXVSQYMac(z5BsxL*cHiO5?`Y)oD#1wm&+`==>6Us)Z#2SA`-N5Q
+zAsM+USpi?e(u2~40pXB_R8_02@dYf8^e;VlaK^69Cm->hlF$1)_WXJ^zIVnLJTZj3
+zh=4(-xe!WP+x3KnK*j~bOfz9gQ|(VN9U+VadL|X=)I;4RJkogCnYpn56VENm8{8R*
+zxM5*=d0eo<ub-zUs$m0TLrNd{qy4kNY$o2o=i^w7XRJ=-*OU+bBx?>f&}C{vXNnf@
+zBg421S%<=h;N!}MavUVsB3s$UKOKc}FuR9L4sGd0r!_44md|CwQaG-549gIXQfFMh
+zHThuP_7knN8)U|&bbz~r4nEKRbH0r319k&l3|0_-?{|(9h#LD=1Hc)s&{WrU8yX*Q
+zPWz;6nX!2L7hTi##QTf6G!EI!H{O=C!Bo3|_JJ#WNE0(a@QOz)dEGx^<sMVdQe3TN
+zdzBbYW6`MBVM{oan4|Dr*-hF27J96Mt})t4*VXA3M!G43d@<Dzp(gwb{7O&!nGI%^
+z-ShhC^pDo_ZhJqCH;)de+l|-G`&|mDcr|8eLB40Y#F5AhyxMpe^>!sCesR9v>YT@$
+z!^&x(dEOI->J&ciZlOC4^`R?T=9+HQi3-x2715Z&8cv@o{=;b~2KDD#!-!fk&U=Pf
+zVR$wTT?tokgNUj&Rje<O(5pk*AZnq19|ViA912XFx7GLUaH&gcH1sl@9-weXJ`ZV}
+z4yLz*ITn_ETDr^8=64DzJ7Y_6=lRRLPo1aX`*5ec<1;Dmxo^4h1cFjm{Z100yfC1R
+zqQ^)6rv(7xA~XY4ZmHeaYT7Tv{WT!S{k19YuGIfVM;$^|MucH2w;c@yRCCX8Mi&2I
+z;dcmp$H7AwqQPU3(&kY@6nDXf|1YXGY+Q6~lwMNjSt&j{5p;&sb;Tsl=}T<WPNlQ6
+zW|I-YpbEe_N8YqZK*PbxD2zy#l*|*1{*H_B-ezXu&QXm&$1kZdJyPE<DTTvrwMG0*
+zNp4(03IW986Ij!*Xgee8Zcz_ewdx%`OoqceDUBg;Sv8{PeU`RMsh0mnhZ{nuZQcpK
+z-PM;FDFz)bF-X~2)!ESmxS2GxId~{6yGx@M5FHwf3Y9z5ud%(6u|Yj~_^TIDbb+j6
+zQlj_5b*ojkmbVh4$o2UQTdI~F+4oTiJ{u@r@)?GX!dv2Lpgna<6KfG~b9vmW{Xyka
+zQ7xmsD^p>8LHiD$bnNmm_4{m#*?YvZC)I%XS8jXu87!3y85q-cB?~$24t`W~suW@K
+z^txA7Op}?N)$ox)rjmm6dX$ALOmj+gGL=X3)syiZMGg}u8&V%|U4LMB;)(xQWXpD<
+zYhwk2WHpf=;73LrnZ>xL+<-rWXf&ahb+3+#RVZ#LHkq-tHpXWWDP@<mfg11h0!9pt
+z*iWR{?aIxU01a=VByUr9wISgTG(9OgZhIUSeA3qJUoB}k;xq;+ejJXI{KdT%u-=%0
+ziGL>s1OBScXB(b^-DOsQ6Nlz^b4$B$Jx~lQ*es5K2;mR$g>g=3SEt7lO=au86-{j*
+z780aC#$O|p{?joXL9KL5D<AJVi%!Xx)H~)$?Z7;T%wffjAIbEI$}1OdQ!7LoaD1G)
+zSW51-bNX<tj5R`BlYipkN3a)h>O91S{h+{K4?5+VipZ!k{w)|aR>3}eByP*j=N$-0
+zO0c`Lt5e8b6I$6@%Gq;~KXSzuinuK&iIyCulfrSlI4p$Xf0m<M>Hj~VRfvtp<Nw#h
+zG4zErSpq75%U27Z(LooM(7#&&f7?da-l-}2EKBi_O{$S=n|7_a1&t9gWi_9_?0qwH
+zDhg0H;w$@gAbGa=Ehdw_j5J&KD4aW0mkbub%|DPV9%g`Cx@=~<U+&a5#mxgScDzOI
+zMO~2o9GoC~q6GuTLjOxqQM5As)MJ2XDCzF`cRC-+U5;)XlbYUx?DUlNd%uuG9?$wj
+zhc4`Q=Vh$!7-WU8-;Wu^K4tv^6TOclF%`}O7AbnwZnPR}<-#FXOHy8!bqaFAEl?5i
+zSS*>p&?}uiw|+UF#On3{O7d+SSMelcc@3J15UA7KS9SID_Q>_N9pwMBkaDE_gO1is
+zw5*I9Scs8Gq>7tt@0S|%`2U^lfB$>KE39-3Z8j&*QStjeCuPl$?+u$5G)`YJFLk2d
+z{b%Eaf?|x8c=NA!Ii+yaDp^g2x!!{M8>F(oHTGhMSW)Ro6Znb5K2#f8Y;&GAjBCE6
+z?7S>Uuce)j0Ijvx;#m3-=}Q(PSa_l^=Of!JYWZ8g+JcVy37OdHmrBxX4T4vN%%Wlg
+z?>A=)?MMSurE92$fPwhTnMyq5@w6*sK^mfrS#}aDsc3M9F=Kj=)0Na+$%pr!aIR%_
+zDos1-s)pa>e#*Ngul46jnq_pi<2KIs$xySZQre<KS=oeO=!q)I8_eQrvCy0%iJXK?
+z@h!tqvRW=gLBb4VKz*Ka-m7Th)E4(=gY8^uV_&Y>ADqs@1uxm<aGp)Q-84j65srbY
+z9iwH}mC4E|JM|5XE@JMjk11t@CXSLAXch)1truMSab%fRwPX|FirKvrA9K<>)K@dQ
+zNoghTY|NqbwP!bl*$Oea(5Y{-6PA5>Y*=&9X{7F~boXPVB4sLTS-G*m5(EqA3@2d`
+z($r<@YJTgPx7n4B(X^V3vQuWf46M;_s`3N3r{yAhU<rB-&%?qR|6A^6{dantA56X@
+z@RaXi$jtBXE8J;j#Ssub$yvvUjtKg?w{+MTg108%?GYbEHAxI<;Q9$U(VOyl$m)fP
+zf)J2td@G&%4(XJC`oO_8GYQg9l*Al9W-ym%7gvzAD-BvA5<$E80wEj6<mZPszV!gR
+zqB(n@{iCcPi(68r?Fs2d*WdkiP`_v<iYs1NQtQC?FIwN7@!1L&NIML{($pn9nMwsC
+zr17?}+1rQcq`pj9Yb~w-L!G-1wE+w(s*{u>NZ|i+UimNo_VK^x{MBNO32Xz^bRnr_
+z9R)%#I@CZh(XF}8J&}`L*awgr+Y8(7I?D}S>-~q8Z)67P?}C-8?;AI1Uk4+lHZ%m(
+z3oNZ8=hv*v3jC9+Phw>;(NpWxdzutjhgO3N6}gdt7|}LQk2Xq4?1Om!Q1yUrM{4(6
+z#ZCtsHIgivK78-7pm`-sEH0hc$wgXSR(QHtw9TqZ=qNIooV3pVAU$8xERCj1iCi{T
+zPQSzq26g=+0(EV(+22<%LxdA)DNZ7IVKArQ8k31tMv8jsK`*F&ZDh*rAe;6plgAc-
+z^mcPLwWREaeYl2YdAZOWscX63C+A<**zrtgE@e)@k?~tFy!15gQ~`2@eGW<Mb)l?K
+z8R_a-(&0zHSdt3RyxAm~pKs&2-Yrv;hAtGjx7y!}q?XQS3+y%ne2`gQLN+roM60RL
+zAjJGsWSc6epI+PxB_OkO&OCx}9AH^P`o(?WKTJd+s}0EVqEBNZpjy`ks`iFR$;l9&
+z@A{Dk#+M$t2fk8jL9+*UuTD{yYX5_s*B9R6@yt!Z7@UpXSvrxH{8Vk#Idk3ogXzIM
+zeIAF;Vka-Ar*PVTuH4qV(VSj=qtb^~{IdPbSEkVx*HCB|GCpff-9n^4L(0UQ{!nLS
+zTVy*OE=&X%4uvY4EO~$M(jmMiaLwl9NU>d^C?Vz$NE}7(pXgD9J*5_NhO;toj;Vti
+z3bR5Fih(y|$vXQE`KZctWD3s|WA8CyeIuZIAQARp+w+1A?U&M+6gtwXj_Ib+`pJ5@
+z1wQ<mir_R{aHDB=Ma{J=Sq83=L{4DBnkp+Gqq~U$xYs@RnS!c?yDpipec-YuBdoWw
+zwY#a-Z2S-qA2~CJRDwbeYcj(rwf!w8G^H$JrxdfVZ)ApBaXz}bJGpA-v3$HLIZ1wY
+zZKj?x&8`13SJuuL6)%b4sgKd`)L(w_;M<ya=Whm<SSSWX->O1B#zC!{gzz7kd5g0e
+z(d48=Yb}!M9;3dl8L;2_4$B%`7-?ib`;{E?;7r$*$AvT209Dc+(kSI<caBsBYqn_z
+zCktFnk&nvrMb1zfPQs%@l1i&^^+Gk|UB@~qWIx|Q#t8icT)8}}Zj0+~q@@3rrwwWK
+z4?nVvS++K)*&nKg?^m6Pw?-h@#niJTRxyhVeV|@^8#>}YmMl%Cyi9Crs!{8v_~$2=
+z^Hj=L4166|XX&NXX$UhGfY=iLjWuU=if+hfeT<6eQ7m768hO-o+JxQ?b(9!4Vsgm^
+zAsLdinQUh)hm+X0<#vK_%2^ceFKIMt%B?DVzxD@5a88KF5V?%=X7Jq*SoC2xU&eT9
+zZ(DI2v`0JaX6pJ)NU{AAZrNJ7BC4;GM?L+UYbP53GA_c^86P<`7AIs@kp7m9yL!+q
+zHfh@SHK*S^OLz=Orfhpf1)5k*nv3F!(S4r%10hzFOWhC!rL-Ol4^qtKK!~pxyZ!TT
+z<n7$=hg{l@oPS!Fdx-V<eZEJ&Hq-2r-TxbKY@ojzao!A*lNet0J-+YQwL&6IiuZbp
+z(rr=g$21|NCm|eL)ou^J&Go|qA-}o=-7jUlj+&N|mjL}B1z3h7a_b1?M)GKXcI11B
+zI5C~rra@jDukZ5*eds;VQZi1<$`PF1o4cXsc;yi*Ub_gT1B185H70``#JCh*+J(g-
+z3s=fb7nqE#;k*e?H#8L4)S3qcNhe?9PI<>U$O_|RvoF(Q{V1+tM_BPg8IflgdHMX0
+zGFg--b6h^I8#{RuWKj!wMH!+q);2k<g%VA<uo?JgzAUR2=1%#=+9#g_2h8NWWY;Et
+z9;AB5>&6~sYvQ()?FJo=>a@E)w56rtMm;JqjlU0)<0pIEfRk+?({`<@6OffHN=Rwe
+z<{Tua@kfAzSSRpo98Mov#$^u^xRyWu4*)LNGA)Bn@n)M+W6F~47J-PW+US)$-yKnn
+zdgt06&h@RMRmKw8Em2G`7xzthzt7{U)z9UX)y;24$eenA-svSWDU?7bzcS1strJ*i
+zj~W+re>ig(D>sNUfC%;zLw}hjoR&r*q9?z)n?uk@FiCn@l*PlVH~PwSkkV~L@lR)c
+z$*^vv;}B$8tx`-e>R69Z2w`|I_ptl7W0cftIsq#O09EdG$M~x7-VliqR77_G7KFZp
+zEfyf*Es8@2+L>_zs=0Dw8YnyM?y}c&d;rgM%kqWBFYlVZCT`#lI8`oFR|6mL^q3|;
+z^RzmL?-nH7=`fM@v6aaB2e8lNX~?GD%&L>;nBJDjvI2A|k@AkIL}QQ_NW~qGf6X{a
+zs7ybM33lwsD=R7qZDo`zpr#kajnGgkzIc}7jX3eWR2F1$+)4RoQ7jD-@(!p+=lve|
+zP7+H&!_CLtgkjw}7+8IKY41FM#@0%G!Ll=#w>b3pMuH%=Z+1Y$d+)U?R77``peyyB
+zCBD!>aX{VV#TFsUX<=ccGGdR-))#HoyL%XM$dm<*9L0$ifyz=Fi|E2GvHO|zIC>W+
+zWFb85De~xf{fN^7TQ22!C_rw5P0ZEVsOMaTg3MvJAcHuI22FWzh&A4n`jhA!>CkWz
+z^SIzwdJVz{SNMbTT=>oWmD(2znTPk_T*)b5VpU*q6}vWQ*a$aEjH@SCBI}nZtK26D
+z(5z!2IRyN_`#c6a2e_o(_;0u4lSFnl*BpVTMoQSq8cFeW;2H_hgB`n%mFtV<NI}T8
+z)Qau%qYW6Bst!Rqm3&<pg~U5_*?;Kr0G<W&boz^u^cqe{IlnJz_o;aKTzIzYy5Qql
+zxfQuRR2I))4qfUM13l}`Dr9P|$WO@?clo|#t3Q<|A61uc(dO+0tyS$K$k`>WJs?Ji
+zrsDdU+q_Zf)PJY>oJz^^@zh3o8U)lr$2+aD8xby~uT0A}M=C;4LnA{UDncTHADZ%D
+zTgH~jG=p^uXNgn_l;4#efxI8Wod5j*C>ej=%4gzh^G3SQi>Y{{s}1SgU*1x_N(?de
+zWGF9fr*CX}&ZTpfL=8oei73`;$7^2X$4MyP1^EEQ{YPadjp1;xQ7JowCN*Q6$N1;`
+z2x^tFDL2Ww;^DewbZ3Rmn@+)t!Iidlb>D7?W^p)M4mrMVk8<+09A2%o9>hlD<?Ymm
+zjpoqXTSwKauz>`<c0St3dA8^8VsDK8XuC?MA7!=qOYrBX{QtCo84lC!fWFIPLndK$
+zyXh;&2_HfyzV)YU()!qT1IzMC(gO~KSdaD%+8nC|=PB;UkAv_^+C6v+jeE)lVkJz}
+zYV`3eIW{(jW>Q2-Ev_fJM|Y}BIl7L-NxGA0B?=%C<$9F03c)pF7ITS?5hwLr)gyb2
+zAGdQ)>#S0(ASglKgQ?~l<X84GNKII{Has8OI>Q(RsEYYff0b5@)rVLjRaE~0Fv165
+zqe*56J>mZcTOeKpO~jXw{IgG(2oMtkCCY9pC@@g;_a^NJSdLVL7Ir593Bm;1oQfQ4
+zZcj)FgKx#hS~`Jje*6wWXwI}Lm21bi>OQgFEcKQ{N;jMqb$**m{)LXTC@DWrJ(ua@
+z9V!3E2$Gi^>#noLjZlk+he3f;VVA}EBD$5M6aW=`(zt$OPCDwTnQ%%f0#0Pd;b`iv
+zH$zFb(vreQh$@e6#m-0$anXDm(P~A%Epq+y#M~`ls;Aam^0LoVV*XqH-+m68>r8>n
+zbe5RIKJWm>Qe*x!2~hud+!Da(A`@<M{~q4vUH*O%p(TW*b*mMuN!E}EcQqd_)n8uY
+zJhFH=Tu&MUFg4&-fo05lk`ez(<X!>(?FojLL1!IX>@GJO2Bdo0M00e6hW8w1lIS({
+zyUra-mrQj3gsp1SL~*n_O-}bpsy1OvLW)c8bj>xKQj5b;Sk0T3%1tM`N<yb!h`ZAa
+z)8dG<vdL3Ri*-F7|69K=%Xp(CCy<*U9*L;#bT77bcZFK*wMptSjI-bvTWSm$U`eaQ
+zSHYtsA_r7X`^Tf3as%Srq~uNI;B-f8w{|MGs-2UsL!_MK0zU_o_tNRT!L9`e0z%xT
+zDvD0y1|I;0mlfgmXA&6k1$EEI=`rO;M6w$$qj6fTf{eXluieE&8gglVO2ld=vT=gG
+zEO|71UMGT?s!eT~&qDeMnzjU3z}K!%<B>+-dv41mN99|vjS*J~l2z*Tju$&Ikq$^;
+z1Q-aQoHO?})Pd+&_6)86g*XYo>Uu3!D-!q~crXtc+IOBs;7<n@HXKO;S?L4>{mJCg
+z+%)>{D!zhz-a+&TT->>?V4}HX4lwV4{462*c35e&mZ45WuyCj*l*ru})rM&Mc+As$
+zdN@6Ie-!IH)1YZetNP1FZO<V3eH+JMdRY}R4BcEJ3;AM_))by56S=P|saqxNcaD2o
+z$bAmm5_-3dH4-c8`&M;1{4^oO@s8qU#@@Q#VKk}`aV`p>N0f3Pf}!BQ{290vVmh@N
+zNFYJEB7@7Ew`ke+e2rw**4U3CPob8(Xp8a{BrvNrV&0bgufJ4!%6)W4=JDtM6ZV+8
+zfN5d`o{GEc9k0$srogC!YQXtNm2Mb?+HR$IRT#aM!;2O<tH$)ozzMbMRhF-e&GQG5
+z-&3T_)R^VZtT@Dz0B7{AI%-Q8@WJjiGMF?Y;$D$XL44&>@kDSGP3zcdWc!a~0(>U*
+zUWv#>pI1H7i0jcLYxWh+5;&Zo2frB9V-cym2v)=e_Ty6k7O=8U)H)Zx6Nor)3U0F>
+zRgApeaSepm=tb`s8g4(Ha3o*vCr*7vl(VbtE;ajs>$ECF5Au9d`S?o$qn4uADdR#q
+z6=CW#S_46f7P&Rw!fxW|>YLrK)-qt0UQKxt?{O-BYZn|Q=bc^w6K^_Y3)GU1vlta$
+z3#AdX!x&gkAoW{r+isBa^P&gKgSS>Gyy$gaor|_|o!`7R&&w%<Pdi>ujSQNTm`#Dt
+zs|t?eStqA--5^GwPJ2P|r<gGi`+tyWXu-u8PY<y6YigaUPUCcjf8d-OVYo4INkX?L
+zRY>4!-j^+I!ddKI9NSz?ukY|*!%9=H0*@J%${glp6ic0|FT#HN$gaw<5Zg!7vaD=l
+zoXlo*)%o=ID6VDzhw*qh6&9{FORr2iyX|MExg)P}dAwn!y6^a2Y)MON^XqqF)dv%t
+zaB}Uo=~e==d*<OvJNbykv)&Y}f$|$m<Alg6sp6jw%v=dk)jpH)*Dv9t{R|Y1rbSe1
+z@PlM51X?rJk6PJA&g1Jf*awJzY8N^aMG>Ku^JuWGkR7k;S=FuiwYfaJ(F3Afc#>}?
+zqEo0yX}CSBci^@3qnI)zSY=Udu$id*P|2M=8!OJp{DA3m6>aJ|TKk7HiE&U(Y(0)2
+zIa%C_6j@s22+t|M>BZ;`7Z6QAPcM*Dw<)0a4b^!MQ)X}E-d)^3p$&Igsj#%0aba0U
+zQ)8Pfaw?Y2CQ*))Vv;v4GN5d$`K3&uCH?FMq|uvuasU0)yT_9KBWU81gD(5kqn8`w
+z2A`sMH0ez(I&bGwoC)fKpVE+5#QCOf!h}VFQ?L(f(>9lra2b*QzS{mF>~zCLG2I@Y
+z_%xnNVgI7ZI$xfmYZZG#m?RPfN<}U+OJ=;5at0#Xpe7}jg7c;Jpbj;EC~k2jsU(LB
+z^%64CJ=R*>{_3Dk;pb>31*#oFa-wK2CPlsPA;ss(^aOhR=XW755PN8Air2V(kcVc8
+zHGGW6&jDg8`K%u^gDjtxqeLO*mmvU>CA!AJa+PNV<l33JL?apMAlr=~z|<*Z$u22K
+z-W#T*_8LcF8ZGwEwfUf`gw1VZElvp<vD0xkd0)FaB%UC1D|52kUCGHOnekcf_LfJC
+z^9Cf*EtH{@gpjQN1daWLvHG$y^$WVuXr+|iec!Hc%#H|=_gYpkWMyQK$l`iyK+vQU
+zJo<Gt?={-t{H7OV=6SvCRnB5h>LEofl2R(1`df=>?c0H1(=5ZyR<}Es=s`RF@=%CV
+z`Y4f9b&fW2BCQ+fn(EjV;=y48(cpSSp%fuvpHIVo*7a~JWVcu98;Smkmm?;uN67!@
+z5V=CK27B~WhkzESUXa2H6$EdYfV(VO4(5zKT^`~>G??Hj_kllY>Nk@W8N)>g^(vK8
+zX<eIkgFXN+?;>fVr_8KHfhSu+UgtLNv;7QYPG~|ItLc>jxM<3{Yrx8iQ{pW3K{dsO
+z-@QX0GCeaY;wrvp7c1j%54hti)}Ys;VSqO?b!$XBV*QFrDAib>R7T_bjN1lDT5u>{
+zJY$)fe9Q0%C^9Ht7y<L0BlP1lym$S5$vJ~q8tCMI!z=%$|FrHTJ$Mul<-0SMB~#_@
+zCCP4?ZxKEp`rEDS7!d!>1v{ns7&D{Ib^Ye^Q97rQBtkMBYT#DYuJN9WIV1L|Rd}R#
+zn(ypUW+mmCTXgGbV~GL*vstO2(~(+D96w1)X^plmCflIWdMkArdkZCi@WGb_O6n!A
+zk)^Hh!{io}2E5=3)gh)%$N<D=lTe~OjmG*BQ1`;Xjtz=I`@aO!AV@yppDT`gEb-mB
+z2Z>-+sA>@o9|O}B*78dAql|$fyRLlXg|Uxg;k2`m*W}~ft@Zb)P<oV(;T-EQi!1iR
+z0q3u6y&$^D;X-@`K_W7W^LnC{j@_UZ?y(ey(Lnv}EqV>jCn8>MYfkhUK5wx~zsx5<
+z&7i#fRTl9oDx&4eG5H0CP{y*O&8VAXLwI@9F^T;6k+|M(7G3Ssj9@L-&{_Q2gQ4sJ
+zO**NvphosiX6WF?!|_j%RzNUJ_Ox-sm1(jmgx0~rEX^-6r!~gFK(b(okriKCgLQGm
+zCUB$%QTo(Rv4LwJM|et1^&xt9ggW2wI}J!1p#JxVU}dl9Lq%<kIzei_%HMD@(Z$B%
+zAiU2Xg7<*hZddbsd*yNDH?f&=I-2)REO{I$f*xS{4-2HxQRn*Jm}~;DYB>7sazwjF
+zfn!M#6wMsi%-I~HLA}3<75#kKy3}%(5B0xa<V<fDskTtxKzKSkC!G^+W^C%SFa~t>
+z$*!77qDBn=XGz1lNA@`D!S1LM_wRyMfXqxh7q?v)&6n~V>)6?dr}VHKo_!g+{RtfI
+zKl|x$grXx(Zg~OoCU7P@2OX}r99PFKRJE`E7#dyxj@O|V6qJ2Aie3#u4N`uw@ls%Z
+z{%uCwaK%w{R%>Qf7Xjw}@2JD?uycopyM(%ENhZHaf9;Qv;)?GiQe#2S>sx*A-<`I$
+z7jHk5!y9vLs`Z@Of`Q-i>@JHTV8?TJ5Bi`SCq_-8=Z=lEY$ez-4fwmW=q5A@`hjFg
+ziQMvhJUsY`2buUIn(|mNL=^adjTTEDPOy0HR%cg*{$GU-7W((-@v4s?8$XE|xFpH2
+zK0ksbjYqfc8#iBFmTj=(&aSJx>N8!|vuFQQbTxf^zlz-Pa=*$Ri6Xb85-+qsOYA6C
+z?UsDG-I_x%!TUar&rIgEIEDkE2b<y@3uQ|NKhNwa+u&*CeyKTZ!He%`!W+B&sg2{D
+zTI|C>`d{*bG5)$!#~o5n=*%}RYZAc(2l&^J(p^ytj<{5>p7Ig?)9B-yNI-@*lYR`X
+z{pgGlk&qU!TAjH?KR5=;(+aMD3l1VOnJmx$htLTZUZ;-A+PdQ+1p`^iT8&HT2_)$l
+zR&w@i*n-aE1a0$d7}@@zM$ptWhKw%YKe6V%$Ui-!)`7t#UF+NRHM8IPv0c8UO5vi<
+zw;W#2d$~59eo*z_nub)`l0(66sDdv-Fmj@-{8@v}n<n@Uzkv}+V6faf+tElc1nFAf
+zGk35Gz7QWkv923c=D2Z#c*L3{I7#-r3~=U|qvn)XcrrTWGE3gJkXq_aolC>b&H)Tg
+zf7Q*M6{_XS)r6|zH+kHo_au+jA1uD|&aI!F<KvKeg)h&#3_>WS6IA{IP>5|--Wa+m
+z6aRRL8uOra;dk{dNgzit^0+-=aGylf+igHrh<5ntELuFi!Y^b;Rk&bWfYoj^iytY;
+zY_}{Lr!Uk>SuJ2_u2)shEl{|57bm9%{9)QH`&v#DaDyn*yO-Y!Z6*%U75CH#@scR*
+z5|%E?WF@}a&`@mhKllsilWkb(fUaDP>me3mPk^YHV0{S6t}Ro`zW@OMw$R$P9jaF{
+zObh~k+qtC|>1H5tt20y6UeVMq!}u(KP3X!>$NX{;<Q~z0Qt?8@bOcU_&4>=4W<MHc
+zf7$1YCR7aiU7k<x8a#36Z=*if6XR=TUHXfA??^|}HMcK<ch};WcWn7rn22-M?lz*`
+zG56t<>JRdT!Mq(7x09;~i}vbLK<?~B<&(v$JeffrHA;85#cO-1BRhxUBq2qYmYcsV
+zL34=RNVN~osNk5q9s9bfm(_N=20B~zglVD~Z^HK|w*C0YD`tAc(|j3is?+$|4x}Pi
+zbvuv*tkF&jR{^oIMPz}UH>F80>&NF$m>7m-NlD3rD4dyfFMU%G>jqhmUk2ifu&mUZ
+z>eC+D7QnYWkaR_^=i+^&oG|WSriHr#M&epD$$sdg9{Yj=KU9oRm^zgYHq7w}QW54(
+zF|r*!9OiV|yHu2;f{>;BUI>d4G9&$wV*2e1I*5f%H}HR2z;i`~F0Q)OUh@{-ozbKV
+z$7ez1c;EDvvZ-s9{9LN!eFmWBurEKp6LWB3L)W-euA$U1+}Bw%-~A7~+vp4gmo$X6
+z4X(zy&nlw+#;p+;e7qaUgk-r>Wa^&5T?`I=fG44ioz+dDPJMz}mK}P&bT1PZvaplI
+z?K=mkeFwyYofwUasOQ6W4O0auDO$p!EB)sdK4*Uzx%D48ZLdD>1upio&VQLa<kr+;
+z!1Tq>+1m++^4xR+v>tGTr)ib%-=e>ku>L}*=$xSCAteqn`h7@^h{+CY--Q9@Ul*w0
+zuzxH@tzyRBG0$c2Nd*oUBXAODh;ci(wvXzp#t@U#_C&*SsNkR{QpCTy<Ad*o{!#PO
+z@vl1Vm$oQcjuAtjM91BugY2fnf1trtz9!0lj1Z3pE{WU3*X5{o_rX9W1T1q%V$#ga
+zN5ReWV)Mv-naRvK!(f@zExK|r3eAqZc)3k~s+}1#+zwS@-s)XrUv;|nt0%~9Umc)0
+z#LY8{z}fT`v5dRk=P<QDn00d0NxQ!7P=2=BSWW+4)K}_Mp6@QThOY1?zs~wMb@}FZ
+z`8}C~#tkTw_i7$zaEeQXB6=rlNopWZ@H)%v)H9Ey{cz?fVU~IFxrNpt%M*Gq^=AH(
+z&bfFcv7t<7pu9YR{@Au$#w|AsQkgx_GsEt4>^WsnFi})#NMDz1ePux?WstBbeQ)Cb
+ziPV`iq!Q%XVGW1&BWR7FutB6R$ovP*5F93tfeIkX*FVh+qOlvE{mmUnoPKxs+i<Mf
+zUs0J-kcu;^_IEkbnNv~k8Z#JZi6%ja>`kt$ZebcJQ15KEfs7!9Vd{&=*~pdMTjqO<
+z4KdkaO;e)j;}zr17rB#2TmGO*XO~Vd8Wg8jO*mDRA|BM8UMrXkS3FtA{*<~SJXf^0
+z>OsE#iK^(!nA9qgq+_xjyu!S`nVZ%_5+wo6?myB!Y7}eHyVoJaGd5UW7id5vPt<_r
+z!l7uvb%j4lIymaI%f}Sf96_*2&l_*Ts>GR)b-g}?7R|TuftVki+fSr)mrQBnNt2&h
+zIMPJ<7$u^PPt_W;(bxS+H{KI9zhpmfCffm;C>y4x*^@e&Re;JoKS&r07+Ms*`b5kU
+zeA+^*p@Cn1=u%R-3saJ>jO&xnn$%&Q9UBPU__9l+`Jx?K40EDg*?w!;@U}d>dzu`7
+zx!W#>5ua|Q&SL_HIaa{L*OMU0zukwlbdHJIhu<W<B+eAi%0{{vs+;?tdm#2jydN(M
+zw$v>@_;|r!f)D>y+~nTYpFLn4J{Og&iiznFJ7ro_dv^?n(Mo0jCmX3yQ%Qzzu5ZX;
+zkk_!nvQo2EP3C2&Ze2()S-VlJV0od(>^WgW?~0eYSkA+`Wn43x{kO5)D<A7-lsLX@
+z-+j5x_{^C{;e&Y`#UG7y`!0xXL~S7gbaqQpWDh-4oKG<NeEQ=u>l36H;)=6wnlTUf
+zi&OIMkI~V2+S~IsQy^}wS$Bu;C)z>sMX{$+eRX26IkYA5|6>qZU~nQNg++o6Axc#L
+zB)*vlG+-)$K5l+|V(}kW8_ZOZ-_EE=h<ma?d8uH#MqM_RtQ^f+vnwHC&2^x*xP@Dp
+z8Z29;S&4ei^(Q36E5us2cEht2^QBQ=Fua_^hytbdo+MhdTQzMSEHa|sc=1oGMA_sP
+z6i<3drpmt&Pj4FiD1|q((yhnGD}j7ggMY;V-zwh6bphtN)9H0CRo#4)wkirAchq)n
+zT(?ahqT+mSY19Ojx${en7rwCP{@RLI4Q;u}YJ04>qH(Aw{Y_^V7f?^qDP&7;W2oUh
+z?JsN+CLHi4$OLF{d?>lbMqIH1j5Y1;FLP{!zS(x~^DX#WbZXhA?v(HB#MslMeq>O5
+z@tV527B(LUEoC2EnFxN$>c&DM<u?e7>>o(Jr9zLbU^yV!EgbS9mu7JnrimYBA{0*?
+zI^<TxiN}EbR#sbb*y_*s;8Y-6GD0)zRTM7CvJ~zK?zIAAu#WxS{ybRa$Lxo?PbH&Q
+z645N#&doUJAC)x37b=CYq!AyXlB9|mH;wqD=|+!`hd8EZ?gm8&yt0H*kdok&w$$1B
+zzj<7tuUP{U3dE(&C&`jmphS)Tpq4><bL@v(_q&_9MrSX^TWb%IH$ry?PHNBrD5r<R
+zCJUMiK)XrK++^@_{n~79{hdT9I4x6sm8;jQXYYt7*LSKrTqUXWAk+&n&3-?^Cby9@
+zswb5GRnjML{xb8Pggtny3idZt81fo`by<?&^<MaLw^P#*tRmzz*`YOs_!?EbZ)~~W
+z0u^SM(R`oqW?Rzv!*fLVxj8fjl*!+dv6B^$@_;is!r{P2Aq3)S??U?<%^OCL+<Yig
+zbF)FC`T3v>e5ii70TrH6na~gxTCJ*1HrJn2L~OvE!J$I>yRmK1^+VO)9u^7u;s)#g
+zL~SODvF2>^79~qVb|gpMLjI|9*evX8#6N+4LW;I`1Vzho7`6~@&u-71rP<o6s7NuK
+zPr@W#jb6p5sl^vL9rG&F@Y6I!hEzegj8E@6cnS<(UlX`$^}2Y`6huy=wv+bkTqqm;
+zwK`HxLoxbWDN1A2?JP-A3K>>iurJDx3XRd^T|x^WmP3W$SJH&8m^*Q78odtn2H%z2
+z6bHK?%T@a&0{Zp@>N=cUqq2_BRyB*;ooVSO#WU|9m)`T1Cv@L*AJ)yyKR8c8^@zFa
+zVdX~!?A?a?#*aYulSGmi{Ac5C+MRD<Y4u^2oo1w(j2NSOFXeAz%Ljyyk_ir|PoYXf
+z_0FVEp}-J}0b82X&_8urG`fPy0&L;AWm(}Z>_lewpE~i72JfI}3UMkOMh^Zk=m=BW
+zj=LGF&Pg7)pn0&tE0YPe0_GweV4hG_@^s^eyWJ=`g8Fya@v}~9gJ>rHoI&5UbTNt&
+z%;=45tX=^`Zmn(ECQxmXzG$DJv;lczqb?_ZyPF?ZEbY?-upgET<7COlmJtI;lVx>R
+z(eSp=KvMI>SuqO1b}An>ZM<OGUg9Bw#1}wg@2}EuW^R=M3Bcl%^{|R@;_Qd&$Lxk|
+zKqApXdR;IeR~p0}C@BxoG7dP$cQeh~XJ(>X(b8cDJnXD9d1lXkd-0A5BGc!dBgm7C
+zEqnLI%rUOJn4F(P2vp|wc@f9ab2Sk_8yv8;AhT`hWW{`#U1hX&vl)=J|KQ*%pqs9`
+zGkF!18T|O!gfCWh|M!@%gA;1ns8h=&{PV4Rpu{HB{VbWLl5@LHC($X7yw3VV?n9SJ
+zuHB!PwIDS8cn8?64A1@S(NUarNBbVmodwI;*{3wVjqO+7jD<eW;Q45b&5A<*FDt6t
+zU~A{&&0TtAyvFU}1Pnw}HN)fdFZ%k#wsWbZskR<vF0@DChqNS3K|rm~kg%3ACF(Hf
+z*Kwr$Mpn`%Ldfl^Zzc^as1Pj+O@hsMjJfd@Q)L6F4N(MJSIzFiW7B-A`IsrTDA$K1
+z22r-rVj&?MU9t8PFZ`*|ESj>{o++7-7eZ`WLL7t?icu#ES__WS%?iv)!B9zxn;59I
+zj@ix6G8A8fHXfD?;y2!(stq#z#1~Y8K68}hKGyN)fN67wxG~2swl0}nl4NnRH%2+1
+zo`y#po=aH%x+j8EPPztLKHmF!wnSXJZXC$Sol|X=bPdgD$v0t&^K$Vj=I+whHOtzM
+z_caf#4Wo7T@aMYP%$lLzticdOgB1g#PB}AmJIz!_(KcF+0=f<&erzHvFK{T{k%LB+
+zd4&$lN3ISo5X9buf?c!@M7P`1iQq<6-iJ0Yd%hqJhRo&NZd32=6dXiPErhuj`zky|
+zGgeLPlu_pu7RWp}z<55LG7RIw12TU$OMXG;ke7qDuw^7T2RhRj`F=Q(bxB{)Ceyh_
+zVFZ(w$JGep;Hd=frcYOdv!__ZB+&d+6!Nobm0O7WxCahQFGq&uU2${(@n=AerwLNy
+zvRd({<BUMtU+B{R@#i5g{tqRmTDk3jL}|~xDmD8dGUCT<a%)Ev*tT*kToM*A3U9;;
+zU2Y1!7{mR{pIK&-E^c|p$zj>m*~VS4#KdR@hu3#I?HSQmv=+zQpHn3JU=@dvMKr|=
+zmPO8zx-GhGWS>pC_Mw=8F@vrVujToq%vF}$s^<1Bu+T!%D^JVHjY9KptQ)v4AqTt*
+zb<ZzpiY$t^yAItQsaYM)HtX}vA+u{WtE25C`%xkdT`T}Wl|kVpkNvjM?DgZsowi*P
+zX+HtOKyZ-K;KYjnyTM<D`aF^id%DTSJwIE~aS5e^h?^#G%huaOb|sn#$|L9E=9uS`
+z9Nl*6#FuRsYhTu1S}gwcW;ki*{MpxZ+=PnLG&Vp-8VhDZ!6wfd(wU(V*<hBB{r31g
+z#7N2IHd+5vZrW<qf36)5L^Q)>(Bb3r8h{_DtBm`feXY(jk`Loh`@2=!4d_~D{ByWS
+zr<!n)#tP{(m+Lh&mOD`beU7fue#OXNY&u@o?Z7RwE$x$p+TyqXp?h+%9ptI6bBq*W
+z>4h>~l0s<4O4xRMW=jUHxx4j0wVbR8c5w%?!d<XmaMpD{Ny%q#$^`YF*<sq*G23n5
+zB(KJ=eQ(|wUb+6c>cn~0vgM)ci<q0})84!KcqV+~>d-n`@Mq2w9HXju9a6~F^6|Q8
+zJZ5bt=DMiMFc#&Q6*P)9ChvyKTGkc7xghbDUst}}PhpbCrX;Z6*&jo8f#385ntTvo
+zc<GQ>qxHXqzt~B9NH*cCyYS^)+&Q}@f7%D4U9a;aavm7(3muSjhu(0e(T`_=UAd51
+zI^hYC&~93|tgAai1RiG}F&FX};=TwEP|qDNAe!7fRe*E@X&HY+oBD<WXMP{<!pQa1
+zD7b|ahvpCsa!2`DU*XX3a^dtdqFy9h)MP!W$YY-f0$P62$%bhp!;%1YjDryVD+9t`
+z_2Hurw`DZf>HR9?m+X!xW0Nd}#2+Cn1R|KHj`0lti=)_T9-){D=&X9GQ!g=F>*Ple
+z5UkPUw~Ll$pPh4WX~lGR<5Jl1%Ks|<Fi|4e<ML6l0CIURI;-W6#W9a(*8F3FS*|Nu
+zde)Em)DiEvt~`<-5_wG%Xy1GdSGyYqlKx`r@#^H(P+px0&b5@=bL`{uZdY%!@KWq}
+zE*m%(qU{c}{VKVsGPZApT@QSUEboFUB@}t-GR$xJ(`EQK)@n&A??C-{Nbj?TNN7x?
+zi!JF6%lZy2;K>-jc7`|DJ1>d#I``^Cr@Q2e4MAR~6K%Bp;#GGs)+POhQ2s4Cw^z({
+zvdU9ly>Q%!J)u|G=JqkCT)R=;%sFylI=IeIv{MFn6<|jcJIIa&2GJ};DHP~1FFghV
+zDtWk^iq@LYf<0xh+#)oV|J{d3$mc|Alr$@|6i7t<pBBKT&{HucS=7w~v#@*PuSwcq
+z4y7JZCD<fdr@g7fGvE5T;$FM+R5i8i*-iN7?v$Sba^;RP7$J|lFm)$z(cyD|m9scB
+zo|!6nN`d8G7)hD0Q$;ZGC=Mm6cm1`*$3Yce+PV76HV(yj>K#ru*IYunp`@<8T@K-{
+zI}&}*o~(3BR{Z9`-$!#lHe9sqE}Nlww_~HMCJ+<ocVe^7*zEz5dcRz#4J@b6yekw|
+z4U<@9A(t#nSe;?F^c*?ON68)Hng>^!2ex4fmL6hTK!&_p0{&59Cz7(GcpW>x-7k5#
+z4KdtF2ZeVyHLgY}sOTqWANcbvZdC_e!Oan*E3|`24zN$|ju{WVi>sGjB7V9vu_o0!
+zb&VsPeDpf8ABUO)BOKtKNWe54!FWGLo|YX?`>&>A;_5|5%Pm5~1H`dL50WSD3DK{Y
+z@HNDQ9pT(?i|Ierx(dI;V98C~iDl-PMM{Ja4&Z6P|D>@hFA%1)D!3Jk4LKf`7?cI*
+zyYhXiRqQLW@~hbm+Wk*fC+TpHNV80L--N#0s_wr&3T5tMkC+$lwfko>uu6?_7&A#3
+z?023l&ycMU*et<*9^H7#x&7Ots;lkRJ?ykm`MFQ0tCwZr^!dSC8H8LT=c@=VlG+1~
+zQ%Q5U)n%bPmUn$xA~8Jw4^?j+*L3u^|I>&lh$u*704gmpasyET5hkL9G$`FUa)f|N
+z3equ35b174NvCv<-00e18?pWN`P}#YeLQ}D^575tcpuJro$GpD*O~OtH_USB-+Zv-
+zOIr8dy+-nv=eshdy^ND6TPSHn?{Gd>SP~seR?tRMF(4j{=y-M?i!|7}QF1kOh>ZC;
+zrK#MTy!q=JM{%&aVT&-}2+0pYZHCRL8Lu6ML?N_V1kUO$+qmQoANqnhKM`3s7*{CD
+zMaei=z6hrnG$<|8|HgLKNBEX!#10M*t%>gj0XH&SM0OM_%`nuTiWf2x7KQ@ooN^Au
+zMoUQ}{V;;VX?=+z^&$v_=KcuO09NxCi96>Q==e8~_c9Jnl1a&C<tp3pu{lQ<3~j%U
+zT#Yvp)i#}v4<d;;qW{B^Xi||RNAj4eF#7*`3R{oz={>5r^2|sHvDl~Jxi_?=Ien+^
+zV!QaQF1;O%r)*NJ5Vy_zu)pq)NtSp~<@&9Q&GORcgLd6tb&CDHx;YCa&)>&!${46r
+zJV#qS?vlAVRB1VWawkHpPa=yN=1eK0p_cn`N3L%?*FBeA!12KdvjF(~TZ6qVGJmAo
+z$8NKJubbJStA(Rw{}X|I8P}DZC_o72*lgGIdaIMQ#@c;a%XR=B_c`uLhzG?jxLfYE
+zbGJ^^DD(?BHr%EkYBV274RHGYi%pRZ$-m(2)zs23R%%%9ff^B3JZjH;?$NUGPC_SL
+zoZ0<N6e4J-`u=iFfp8zeO-SBN{_>x!w9AT&+tBGGs-We!GYy9^3%F_Hx5yeA$gsC7
+z252jNb6IL>)nU_=8D>7=(J}0;PM|Q#6@|cPkzjw`Hky&%;8EU-DA;J%fY-*g)h6zk
+z0qd+-AY$$NggN~PpvC1aOIK6G%KU)mTlZ&ro5^KgkJ<EI;8%=@jaki8f_b#@^nVD;
+z9>yc7>sD<opX2}SR&GH$-o1-pQ9MgDYJXC@7jvgCcU--yv}NlPhsuBVttR;7d;X6P
+zK1UC~D(sLB`Le|JM1KBn-7m>(hYHIem$Bcr8|<v1(K?F_oTXWzd>$?QfJl>Q`q`d`
+z(l&JkR&EfjutdEsuw-pPqk%-DSwcfia(b{rtzq2aG{=6?oIBHu4y=5Wc9b1_NqPJ^
+z>yyG?kz?oooU3yDVPHU?g6(MZyQ3O~rF3bXULo61P^hr`VxzlZdBBp2?}Q=u)B@tz
+zt96$aQREFrEuH6p&Ld7kK^V%ra5Qb39^#_xa7um|PfI_3{4PCh(rT!gFoxY`3_M)0
+zFB`&>xjUl_bXu|B&>d~b>$4s5G48#tla+3H+{hx9av_>zPD7%X*wjUHqP_&+vSi_M
+zX@w!Oi>r<6B_amt%w7*L{4D;v(0}1wGr6TdW(e^{cc^lSB3ZWFU$9Sh(XAxur+xl6
+zy=rzCGY`13zusz&tboE;(dQmqU0`&Q_9mh(?Vj~7(J}SyqwfDu`1%j7-z5bgn+yUx
+zrSVaukY7l{s*9M1%vWnY@D}_3G%aL;epfMkdP!-S*r8ol!ZQ9BaIz`R>+@STh2%1k
+ziV&E{2L^Y#jebSY7JA0AskYhmx2J}`p<bo%yv(pnEa5reqzo&W#6UhME0!wQz03G!
+zwmvmMCVx>171WB69lph1JUtdoN133JQK-76K0>#FDE|9P$YYmyYQhZI%8%yXm+AM}
+zITR2ieXc~-MNU?FRKf2;cEH$6d%1Q41+OhGPebHvXSx+>LJSv2F93);E;5{$BYU2I
+z*p~g_^FSvI=rXo7o#TSb7j1|rnQ2?C^<9}_+;VXp8`8`<bQw&E8s<zDbZ=WXK74!j
+zBcL@g0C;(%G9dnDNYP!y&B1^Sz`2`*6^~Ioe0ccea6beaPkp}+aqUEuuHGlMe!&QF
+z!>KaJNbKx(xm^*cqQYn>gF|8YCgO&XjEe;KtTTl1u#w9<+hfE}Qp#`aWRAu^{0fcC
+z9yfYC0F{p$mCh*UH^KEux#fq)nszap+%iqfi>L6l68-V5$n>$4;L2IkwK$*Y_8m(N
+zUJ2=kon+rqr?Ium&PW3kb2&P-N&(5X*!`_qc;N@vPI_%i-yDm1$F={E2i@U(H|92i
+zX5W&o2_)>B<9`2vkhJ{#Cg}$y85g-Rn%}E!@75{n`a`z(R}CB|bJ#1QDI1iA?;QwG
+zC-gt)`z<V$zz)ceVgheiSL9f^%pf^}KCmhPFfo@-PV=tfGt{Gh{a4hJiGhTF65zI*
+z#6TeWPUJy@S{A*6r;o(}TYBME%+)6Uycp`$n#{-559PkK%a@9=I~T+w>@Mx{l}PKR
+zqw{zuBk1>)Ie4nk*w}b`&Kfqw91F@R55O0nuc6?-M+0`M&oRBgUtj`K0CUU;eZxZ!
+z#H63&RDlKHK+HPncc2eaMZ+mk0cWY!iH#!?#b=2DRtVYfLns!ztI4SoQwl5oR&DOs
+z@S{G#o@vol<g8`pN};k(GlRZ8;he=3>)hpyQ#AdG<Y+J5e}!*_Zfj;%Yh-N|wSJ1x
+zIFWTu&Zs}<XR`WHytp!%qoapPLZ>;ujz)j9(Os_=mK?+(jR2m|>%~RCXdKsBb(9_b
+zoBcFj7buaGqxUaJTp-t<;i<yvfPuLfKH*2w3txCi_m7pwhBA*2UoA`X@qZqFl1}2d
+zT=oL^iV`2*{gM-0!kfqe<P=rY6gQc{Y(dD!Ym+_{B0B@-{I5Tw%@)!y)@}k?VPp*Y
+zvrD?!SPYt89KQ0r3M`h5eFnaA57>$EP)!ATX569n`3G(o=MsS?ol`S_PYt1Kw$7Ut
+z2shU~rL1#WryzO{T>DF3CYSpxd5lIbw037(LfnR$L*q5J({G%t5X?N&nY2#3evm)#
+z3q`0J^yq>R#2t8LUyFb_<C;a6rT{R=bJI2c(c!Bc5{q+qkx10y@gYWFzQqPUhh1%0
+zpZ*#R$YBZTZ6l;);d+>TPreD9N<wzh!Q1`4uu10F0G-%?eer;O4b#tAqGCu1q3f`*
+z2<W=XxhL|R*WK!1Z#{i)_h6}+-7sdemh=^cdvQtiZQtO+8;#2{;2><(s^Vt)Pz+Z8
+zFkQfJq-(R2H6vn6V+8E9r_p0nVPiC+d4+{e<k*!e948Fc2UB|b?X2zhAL759WuVt`
+zWFzG5ypE>VO1MX7?pBpim+_&}%_(Z^cJ;vD*^+LY=&$c`P<pEF#E1F<ElS^!x$Wzi
+z81Nh5-X!v@|K>@ZU=nNaaO-$?OH@rigM`JNH+223@Pb`^_8vwa*|rE)N!HL&e6<?C
+z%ektS$LVT8HT)k+@pE;l%|cbFLy`*h!i)c`gZLK7dyeU`cfJJUvwbM5jBVm?0}QAy
+zS*C<I7@ds7B=7b~6~<>Iv9En=GApooHA-^UK`neBO!%N*MEyby!TH>%#c#A}<w<fO
+zA-HhvKKQ|oh!4AQu4uy?Bjx1&xV+Q%rO6ud#%*hn=_{{1K+Eyzd0^JbAp|9lxn+84
+zjU1~|>>s`e8x2(ExoTI%5KIH$z~dj_qo2eOH+T5aC4GwoItGF@nvAxriB=UVG7xw(
+ztzJLS7^|Zr;^u3y`xj+01~8Cm!{J3AM-E&dE(r79G532r$LwT#IPGKb7l<n@#ZJFj
+z=lTJ^dHs1eEpK$bBI?fw<>3?5Mu@vRok*YYit)+Ma`ztD7EZGvKB#EJ#zN<3yY`nm
+zG7(Z))Vxs2uOe}vPa~b(sAuSX2TH42IUZemGR3gqVR<LAa;Ch=otK$HeqwBP9F<()
+zr@}KD81kYx2Y=P3n*W9e{>zw<E|*rS1|-uuczc?+B&}oD2-9zh>?5*d>wYPr8R)SX
+zpNYCXo5@sDX8Ht{_&Kxui9zeVp{~?79z%DvEc;$!=kH`-lS3bA{uv$Lh5SrTm1~c~
+zy?@UoAC*_KH;%_AA+Fe-lShkF`Rvd}i;=E9$MVfg$yP~4W>V_-Qh6Q@2d9r{aDb*y
+z)m}e$L*94832ML@AL~9f>sD~2J4j08vZ&(Way+7)!%hI0x-wl#zX`ZvB#bfc`~WDr
+z?W+@Uma)4MJj9x1;<9OZ`MxQkll2s%Gx`|CkFXo!^x@%JvndOji(Fl&xXjx*WQjg+
+z>9zGKPk5o}^2=x_5hcWi*fSg2^~Ld=-nbx~I0sb5Y+k`nc0C<rUkwy*rYkRZk^UOb
+zAFPLuPtK4m*RND{YnCSAkt7aVRu}HGj95kgYkj6J7@sDd-_2ip#d#Vaj32BCpTpc=
+zFL6U*vcEO1V$zHiD!MdUgoPbtn{Hl=`V{Ym*z?ZNeDUO~wCNEoIO~(W_mzi>!L9Xf
+zVGLb7eRm4Qq0}?a{2!klCi(vUxS7Dm8f_GAP4Ve6<qH5kq*j2v_B}PeY3m^C0@9HZ
+zI+`k>yuK**JzQFuY+R@*<RPc+&xcx3*#;!&H{U_}`1<j5MZb<i7g<r<#;=Yonp%ru
+zZ8P9e3^&$Dr&5T+RE$+CkL7m$zk|j!RW`~rsnyXt!&?>@77s_qerHMhu20R;wd>ne
+z#q=(J;3qsSo1zGgwz`qaFkfU*C|FaNBCW<+T<wZwxq^3y6Y=SI)UE!Mmawvb8R3Bx
+zo?Lt!JR6!A-9p0%87Du9lfA$qXaD`(CO<4+YGQxYvom{9U@=zl)bmQul$b#{VFeWs
+zXRM(r#CmXx9x(!O$#+!_JjY^21CFduL09dFX&5dVZh(XNuQ+dm*RIe!gywSu5eXWD
+zpY)rK!|{#ST>&`h5EM;apMjl+w-Gw4(^CEaU_~@D^1fl0SFFY<HR?JlW1jS$6(KJ3
+z14Er3$s#$05V@=Wrv)@8?MpGXzCsKFQtM9ukqh<C_EyWKA5h|`2lN(k>A3brS(lOP
+z==?~M@doLVUD^tP({k#Qbtd=gKsx}zD)&6HJgq!-Qmsc@@Hfu<tvJSHVkn&dO!=*H
+zNegD-qtf%k5ud2fQXM5L%#F*LPibsPp^CpRlb@0pi6@jKWROgCZtroif``n1Jd_U-
+zkjzLRevtEuBWSkDLdn*$weR(h1|?wN_V{YzjnIwIlYgssKc7;lM9lQry<h)rI*=qu
+z^R&_T{MJAH)tG^q35Y?!lcFTK_)~6HO1Y=tD_>EygY<*(W|xxl@R5WfCMl1ss8v~Z
+z=K>jD<g?jZsN5wt^8K&a#lFT0h9mQ5tXuC{5yA9Z?WNVdhz>(H!yczJDT%``ZJs_w
+z^{rQqm!|~3(?2sU*X!$haf$?Sf)e%zqrblC)jvHC>`N!#cVJgEaR2}(EuOI0UDJ!n
+z@*OC?12#cC>jITS*C*fwa7<Y2R(asQ#Q8-mRGkNME*@~!Scr*ch0Rp!iEbabS*VPU
+z9&r$MH{PK+z={QM>})ay=D#U%UJu>vI(LU%ez;1Fy;QvF#}Z2jA6VjH=bgP61n~H-
+z;?+Nmd6(5UvVje*mtlF6Uo|t%{zZD9PKgGF!LIS>E~^j@TsC6kJND)4F^bLsk;^z6
+zqF2H(^P#=PCC$jCVVkjIdaY%ZKgTTk10kgR>J)ApB#KvOGFmxA-HhBR;R2jwxwlwm
+z1z<ul4k7){DWbj_PF>dZzodzBE^RR}MtYpx;@N`$@=s;r4_+1D;sVdPJs;#%Ql(i7
+zk*8Q(Zu%B#C})(5N)8MVecRHI^NYpeQ^BFy^=^7C%iobA&Y7xu8r<U!Dw2IItrR30
+zf#tu4X3l)vJre$R?|sZj-R*f2V^J*+s};01d`-#ssFO-pg<6_Dg;7k#r<3t$&^{?z
+zZ?QXI*4)GY2c@*<P!@eto~_l;o28-bn|QX?O3A$XG(62%&ARA}r@33lz7GW#q=_^k
+zur9lxN6jcCBHM@l%APvYDWujZ1S1=5k!uSM(x=I2?-S?!^1!1hc0<BB!JGiWZi53~
+zgVD5d?ioA*NV=;CQ$hn_Gxn<f90kI7pAs*JE>2;ArxNEkolXiHf9$^x?ufb{zn?aJ
+z@{LtvwV|%rL?)PP)c1SXdH^_3g*dJUD&@JrT#)|pw@?`9IZkvNg!|Wf`lAqLCVs1;
+zU|NQ`f?6Z`L!Ed;H)l)4sQ=o;`7mSPdjxK0rqQPH5xy-mY-JdM=5IYC#ml;)Gtly2
+zO^%TXnq{Q=FhZH3Ia7pnasJTL9!e&^H2?C@Gkvkt48FcFU81t^7&aViIgf7KFzn8f
+zWhB3N5<6->3iN`=+YPx&15x}Y!*-m_95?nL(b$)F1DOLWY!d4IM4Hs4+WJp#2Xv5%
+z&TM%1PVze*$Me^12Up=I`|D0ZKFQP3Ju@a3eKQ-dwgst69A5gm0V^}8t$Ii0FL_JR
+zME3y&P>kJGlI`m+QXt`x?S_u2kH_#E)>v|(q)#kx1vgt`tkL!xx)fJix;}~i5AB@2
+zB?CrE6#b968@GmjFr6;kBo4jtPE>rRarrB2_q`9rhOKE@$KMUKquJUE&GDll(+lf@
+z*%9W*pqfo@bWG%ylGC99?XVG~@mOF#ncf~?U?`HSFmBa=wBTVx)3#os=j=_fAEWo}
+zO$lkhZqs>C@5~h{%ZD_|?zmq0nc^OUvG8)}CNn&jh!ceU>(#$@0_^n*l-1JASr$CZ
+z#Kv89)0bEN{Pf2pOxbd*@~x#<r!1Vu=iK!QlMKuOT~wO>gArB`Q*d+`qkBp0@xid>
+zgOS3WL;9rG93#xqhuid*8r{916IaEN`t;&vy#bKua#KJt;cW`>_W0yU;(G~{^B_gV
+z(vVOc$G(^0eusI-U#~)Xr*jS5?L&*|55(|_Qkc1X%p)+Ci}f;TQ~)*=K59Q`I8YyS
+z^Wq!){)n|)^?D0nx#Ilv<%1cGcF&$*H>aZ>AGI2r4&~^=x(Ls@cYl9Isr;fYlAn6v
+zB6Q~itPI5l7LhZF)=<3_>)=KA%zJ3)t&@-T2d$<Z3D#GVFEnyv?WGU1dVF#lDMi04
+z*?0dhshcy>@E?a9xch8-50bQWUqfw*MR=xooK?-O-L14Knm)>3q0z%lGv2XwvPSG0
+zt;HL+XUS?a%%054Eo(RBjvbz~<jAp3#L&BGIH~%l2yopfC>22#_;$LiB9Vw{7?-cc
+z(sVUa_M%!uROIyR(64!U2$V34E^z=K9b)hr1QhVfAYgyH5CaR?pYU|wEXE>mJ*c1M
+z+jX)Q8VG(;=L`+jW;>OJug)YiTl-^Kw0-{>-8H6uEwGkuU3m*GgYXpbf*^!=LkNo{
+zP=G+dVrzV=7{I>3D%Sz&W<P#oC8s3W1fp$vHK2zvgy9vSFZ|O4vA=s{1Ez|3NVSHW
+zaBG>zh#2YSXs^YUizTfHGx$t!A(7OV>9b+j{?{aV98%BV*LL@oj&~#C34M2)cvj&>
+z)=S?}Yo-l}en8Ms%xGD|u+UaD|FYq_3`g&BZu%qzfK6F+;X3P4S6#E|;(JRHH}HtB
+z@gtLLnggrHe>-u?YWUE%)44wL)tFZ*_dH$+qr3ZJVT!p);j@axW5)I`VI`d8FoVB;
+zg;*5TV0!~!sg_>me+v8P`c-iB>6eyi-z*^&ur22CPW+|C#`e%%m4{tq=VkqjOR_ZI
+zldx|kUI_3eCSeh`0OE<(VFDv#G_|W#P7SN|H|Eig=1{q7J#8zUa+1Zw5!jv9yujYD
+z`p<8is9w94%(N2BH+Kn?<-SUDCty!JqciY$Ja#wK^rDK8IZC=whL>ZZsfY#GYQ4O3
+z$w$xi*>dq}qewa%Y-wSQf5Yn}^jj45VPN#c!v0tG7c(5dkiaD%elg)(1AfYMH40s~
+zK6MT_P&pr>2UlH_T)ueEYLM4p{0%W1wW*H3bRXRnG`*}k8AiQi33~{AILqZVz@sGU
+zY-(3MXH!jIH-AunY2R1ol8vlD>{fubC<1~-_PiExhMNoR!LGDDhYkJJX3lt_I{&2c
+zQ-c#W7WYq?eA6~lvIDC*Zr|hdF`R%9FQBC{*Tn_f-;Cmu$S0!;{db?P(B0(e|3$;!
+zG##Gk_we_I7~L~y+>^-TToq*!tVA---&Ma_Zy7Vn+Aq^=2pRNDeN{+Z_u-9ob|oA6
+z|I#B16`vWe2}^5CZQY9YXApBR^a|2(`0H%&O;{?pWU^msFx$tx>Q|RpCnIvLCjwD<
+zZ1x0j_(}pyYY!MjL7nE`$U(aFhH0#f<K&M#rDlDQ*tXhKvfgJBi11581VQm~8S2gj
+zpKUw;RlcKgNX!nzSHu39;`V4UP&`g_*P8o+!Y7`S`KBZ9kz0n*ksJO%LiywMNJnpB
+zk`Wg={zuq^j$}Gp_vG`@{5<9UVYLlkF}+Rj=E2jRL($8?(@p?hz9YX#YV+`E2D@fP
+zGXJr<{-`24s_lHUe5=tKW;w!NZL!?uuIg>#8NmT9<N{;3z&JCg>)7hrb6SGzG3isZ
+zeG%=Sc@X#4Oo+-nkbUpui#5V$9tBsPt(Hl)0?AjL<_pu~Y2cd;dvayEL&uWz9FkH<
+z+xWCnezFCZ2eYpzIk<ghmFU$HYh1Z(=X4Q5-uD-%4XU=gX$*A9MTNX!CgTNyi+u|X
+z9q}_&wUu&@M!vi6(P-S!(&fG-+J4{g)uv9YvIYx?TKSP$TikWsmi!P%D(|B53(~B0
+zTTH-m%Rp*7kDOd;W1KDhUaD;(!tNVhz}}-=UFeMG>|~U@pefit@17C2%57Q+=(nt*
+zIUz9NCOFziNuDL_>QmNP^_kHvdEg}%>sXlq$C~C<Y4+;tdVIh|0O+XIcQ~|MyH4R0
+z-A$zBxvC&^79vKSFR(kTxX1to(O$j7(3m7K6*+gKV+;Sn3_80TT+uo|`tA5VK3a^3
+z(*6LZHe_n&=SfKS`P)AV;Px&XZM?$w!b?EdW78@41wM9ba1_)v@h+QOe=cV4gHimy
+z2{5R%Fw6f>0Sn4|P%~h6#4!x8IJCO7n$1PXDku6mU8;DrN5idiW_6N@L3SYL8kj*8
+zAZXO8t5DoMo8wF}RQ=x&N;X(lP6_3#d`0%S;MnP>2GT=u^AJ3F#_qY6KiM2)nNg;`
+zY_Khso%Z9sl}Vh@&HJpH@vlOF!X`>-wyZoBG(x^K6S1}u`5rAKnj85PGv1oj<_ffV
+z^|~&Rl`B|M#)P-dA~`Plx7B9YLi&AD*z;D9Yw=vTu%D7mr9tjyc9hLVUgWs66ZuSZ
+z?9`5Ik@_=0_OY$qu$@Wvh}T3Epx?+cTS{|_ZFz-p*#=oORkKd9W6C42572?0fHi&Q
+zdG0kbLe8y~XD1W#ZP(T^XTc=dzV*;I;)JK`t1z(y+h$4(B9t<=>JhC8L1$PPu4?wz
+zzc5GDkPeI8k4b78Rnu=ggn=k+mh^twrU>zWFQoe|<j2Xpj7SX%J7NywcZEzI3B9B%
+zav%+81*wIEd{dtt`*Sqx>gLsqDX}Hyk|9MFlrS_Wf$xz`r}xIQ9Sv2FKE)cW(`2D(
+zfq@Kr&c-&qH{qe!dXZWbOpDQ<em0a6LBSw&gH?!%mL-^yC>IB3+XHX_CEDSS_Ha>k
+zgMeUR*y)Il;;HvmxAhw%3C+_gv*KfJnkZ7`m+9^Ma#P{*?6S>%<C?m>GQ3>zndf~K
+zQ}rDmPr7X<pBmOInnJXxo_-yE-n9OzZSim9bXBd3Zj@LgWoc6CN6qQwB7T0pJO6Ig
+z=%dJA94qyFn(AnrZqlQk(XAI(?MW>A5S8<@N@DpQMY-F(7Z?rhKT~peJ|=eRai3}*
+zbaX2Fsljm<bHBxRl<$clhto#%U(<{99RP^O(g_oY2DI(aCe#hjyF79Jn8#Yd?SnZT
+zAijMycxDK@3JE-Eg=a%oRiI#^EKzIJ>D*8)D<EP(u=3!Q8|2}^;;4?BA`r|jdM^+Y
+zVtzBmI4x!xbx$Js$9LwQZAFr)or2Nd_Ol(7MTQhZ@k-!X&}c4}8Fo<t#7tVQd90Eu
+z!lp}lLc}$h6}EpRn^-W(JdIRZe^pipqHjMt`z6h|NKs$g=w74<fVMI1;SAfI>L+5T
+zEt5I2!u;yz9-HpVr&*mP6%vGOrB~h>Du@+Lp^}W&jW;;s3gX+AIsB)(F0leeH6Ns!
+z<P0aZf8+$6KRS-r_@d7KQU!BM+h-@P=EsYe@To)A8<GLF?0OfxoIp;Vh&S)q3Iojl
+zv4CD?lWPT&3{By2iix=?RZr7+$0kW{lBj4y>I5S-x#|BuOtFw#5*XJ`0w?6PxLuhW
+zE&8MTvR@hw(<iYfq+1<O?ERk>z~US)B^3nd;^^UDj)O_rhr%<{>lDPjj9BpA1O@S(
+z9#m0{-Z~Pde}~_02yv}|a3^8%-bGS<tAR6Qo#ShM^CicXDB=9#6neD@8z;tsP813M
+z=&NqN&jwW*{rGaEWS0kR9^$lIj`w);M3~dDT2CW{GM!Ang_I(?vuz`n)?{uI-0f4r
+zf1TcO&A(nwRRVQBw{Co;NmxFvZ#$+|EELpS#7JBNXCPA3z2}|si~7x8ffp}H3Wg1u
+z5~|b;-GOE=@eq4!u7c}}TahtUk3TWZo=BM0FWJ^FvD68X8QiE-xbjB7!oLCRLD!3b
+z>s!LG8KbO385>AKX;1O_zobUpv@T9o%O)-Ac4sRp2OW0`ZghT<_G68jo$uO(9|!B4
+zoa&mL@7m9mY}O7~jtj~CrzDF}1YjwaYu~YJPoXHNT`H|Q^(VN?LNB0{)8mnvHmfn4
+zhbuq}KcoZ1KighY4$$)dxP9a1AMOtLEj`#d<PIqocvnB1P4aSNs83JzIQes#fOh^#
+z5p(qm>nVmFW<(2|*A<dmcf5fRn^Gtei4zvEkvEXnn$Dv4=#6Mw_a@;JZmJoPp9lX+
+z0tCU0ua*{YmZpRVF$=$gRMK!n%!HQ`PyL7mf!oLBE{|K7&j!o-{*9$fC5fmS(mic1
+zkVyl0fQ>9uEI0fz9wR-qe)?N`bvW2=YI6^lRdER2_(+|?mf$|C`Xf6r+*U*J`+Su0
+z>bGjzYi`T#F|=+Y>G@#L#ZN-d46tw%M64N-bsV;H*RfCFA8}?0?a_2-o34-G9wS5$
+zpX?J-i8<0BOu+o*k3&H&(z_5rRZ0%}kEIt3&@>fs4k?xs{Eh_$bGlBLxqsb1H2q`n
+zL)Sf{-o*&^rf@tkat@)l^D+FA@r?=}K(UkY<-?QZ^AEvgQ3E>AjV6U~+5RD=81nHw
+z)?7{ip1PlgO`<{a^shL1-aRc)&yU`0VH3Ros0Kr%mm)%jN7CCRH}~3|8(a))Ptv!8
+z#P@dcUKBb=n*^E5>vnWAN&n%UD@b_%sjuW`X{eFxDn$fIkD)wDdsNTAJ~5_?rVxIk
+z@Wa7HtV4%%720K`Stmt}E;ZAA{?rqGq9_K2+hFW)qCnQUMBvJw{+Ckfd(QtzZZWMS
+zA+oKo4WCcggQ90JMEvB%PXX?U0qM8Ob3&<l&f0?cb+?x$ZZ9a-3HM(ge<<8v6&xkm
+z3f}u(hSir;(6}b<5ga)&XA|79C0S{nSmS5nqLkm$Sn9r4P(<!Fu_m>~!V}9}hy|e=
+zfP}q-v<7p-^hu;TGr(2M8DLj0Qggv`#hkVbA;cEU2Gl~DiN~NEFP|0IjrueLF=>T;
+zz(mQgK2>f<ou>bC(0YoYpyFS9O^!1~_c!T9i3piGI>{ERO)($)aASv|jlBZ?yG>42
+ztsy_<jC_2Qqj=qZkl0cQCn-{)*SPJfTjCBy=H4T|yKHiy*_Ry;AJ%QrU_S%{g<Zvq
+zY3yHyZNFZBS&rUJR<GZven%}++Zh(Boo@7Y`5C{jkX{kJ9Z0=mK%D6?*g|)*>QC|0
+z%_38ue<<-Mw=DBtA!@9qprtILVB*9f!Dp=}sczDlt#*A)#%7w^p;4{s-d^9Zf~p&n
+zW<0w9asLpK&J8)GeDSY50I72hyE=tULx(4XBizxDKU<R@sI_I3tlD4qe7ieh+t5Q7
+z@+)vdH2}poNBM`Dwl9IT)hux*KC9r5aOEAZrn=GBJiFzWOQ2~n?7NYSJ}!BUirveA
+z<G<FYtJYa#k$ZVkgQZ292`x)DzPk^xt@v6811c*!TnvJh$!YD0Sxk}CXKh$&!knZ*
+z+Q*4UDbC~)v~%U;YkTPe=N>=VRi}R!Ia742#mFm~y}_zyZ;R{Q6m@Qzd9lf^`9W-F
+ztmefN(F&p~xSQu|GMk$FH_^~n&!VJGioV??DQMiD<HsS|3E2Jx&tNTkkC_4FqbLee
+zxv}SpZndz`|0dJxK9q}nT_`fr@~718awxiCSQYSGf-RE0JtDP%bfK8TDVdEYjJj(<
+zlyxr_+dW+&YY%J{#7l&04Mk$P=sV1v6ixy29r7Z-NkhkXIguev`}gX@e~9--8}P&(
+z+T}vfRXtHB%LZ|$`L=Bs-+QUNkz4&QR)gZ+akBnxA{RaG{5YGpJis|4-ZJw3-`L5w
+zXl|v~9#RpH(xdoZbgbPK<s=o$K2fvQdb7^S##>q9t8E6TwO~~Rv{)O=f-X8Ie6yPG
+zTT&j&zA5)pL)h7uL)DPq4)>fpCQHtv7AAe{(x_*#3a5+R*6{mTAJ^2GVf#^9i@zN=
+z*n6jIUC7W2N$FD*dCCb?!GFS8d8(<SNPFsI<=b3Ia(yq=x~FGJ@Kv3Iw_grbogi3X
+zq4H6m2em+n$n!dRs!&b<y~;FI(lvJFq|)c!qgQ=Xf4XU<o_(yt717aF(lQ!bK4bAH
+z_YLR5|NVRT`>~s93ST+*!D?_??0WtSRo%Vst9N>e%{`7U4o4pf7@cy6!qF$;kxydE
+z;5WekdNet*t~dA3yZWK55Yis$xOqf(wOV??Id+{NxxUf5S?WBFn<pmY1c`7=Bq-1N
+zu<cQS$Xi{M>$cnbFm9A)zQyXT?Cc(^n1LR_N{_n}<91mVZht)_bJHwcknA$CITh?&
+z^22zBXGo*a2bq;p_t_(o24YN1S*maS!d)Lhd{*l8XL*l#(lE{pQx4DV_QrF<2kL`S
+zZVVC}Km+~@7Gckhd!f=QA?GDB2j51MV!iOlnMueClw6;()S2PT^^7NKPoVUDv$#{O
+z)X<*QF$ri{J#TNOtV@68gfG;nw}`x-wV|o&$$<YH*p}v9&z%OQR15Qs{?S=p6CT4q
+zD9cF&kIMU2UB65vmAz(mQ(-rze_;E`+{J0*roYzr^vyMp)BFcZ|Nkvyj;FCVc<5<A
+zNe#VnP}M*p_gpsjMhfpXh(D`%@%lyDy$L1jVvlMhWHQ`ZQ-P}_+FI<m28Lr1bL|43
+z`a!{gg$0fkQK?q;7BQ;J7@BAh?kXLQt3F2`UWCop?}z=hDoVQ_$NAdjcIFy0-ed*y
+zj?X|_F1Oo6CTSvbjY`TpBfqTU^@xdn!6Js&L=R#SDPSI2#`O8t{Za=O(MayMZxUoo
+z-MX^p-c`kA#@LvbfknEF(g*qa|KcY#M0faD7&oC}n9cHCLr1-$oTQu&1Kc};@_wiU
+z_W%<e`?Qa}Lu~@!fr&tAJ!Sm#kOiprRcqqzuU`ju){nVK8bN8^OEj=r^igA7kOGaO
+z`)3DcHa>=1x4HOs+N0yX{F^1=JOd>0f9~Kk$w97CSr@7-8Chob#W>(jZ+_b*Milk}
+zu(eLzx10nPG`Z#Ovh7bX*-gJz`r~fN<z&#n-9n9mhrLV@n@{y<KI^%VF@64U(D;xC
+z!&Dv0t*OjU_KMxfB{-zyoVnO_y__IX$ZJXqxZ_kbccgrPYxl-=c-al`#7aXX1RU-B
+zzbdG6`{Ft#K&Mv-D8YG$NDRh`T!hWi>IgehnJeYx&cAb+PVC}}Y5^GV8-J(xRGVWO
+zQ~cXoLml|XX)IY)FFM9OTq834U-%8$q9-HTA|XvfgJ`gxg61x|r(vxKLM_0+xbY48
+zH#!izBSQS-`zsk|JrQhe3Q^V@g=e#Z@P<tnhNkAoi~0?d^GWAzwfzr-3v#5)GwZWN
+zm7&^rVwkzuaU+fAO??vGe;$l~qazR_;YsqKb_^|-jn`VbEcy3xd-!hHmCVM6{y7em
+zsN4M=rPZ<W>8tIp753+G*S9_nUdZAnV?MR;_G)KzKSikA_~=2NIiGEyTPw%$&Q`8G
+zXpitt!p$Pm1hp^2m0vukSZ5x09``!mx#Wdzm(b@NK6jP*q}8?u#TScTj~xbwAr<Dq
+zVkwJud?45Af^gQjg?H6-`lt12JKJ!2zv)1yc`f$<=GhVCg7U7V@KU3@2EIP9@@f`@
+zGd#zFP7vR0ug8D*=%RFsPiE_j<x}zi2X(4PHy5T<`%N&NZciuJwyEeZ*hzB+Ynj80
+z+P9dWH7+%p%bR1eY;*L35R2-H>)Wpdxv$ZV{5ARYVDd*UuX2h#n0&CY>ek|BLGxfD
+z@ixHGiNI>wRLqK_Il7D#-H~M>S43xI5mQZD4j;s&gBsT-Mz@~=0^6vC%-k3@QdG#0
+z>_7N{SXnc3*yK+ELil?6al!Oc*sjAXz~ywwq!fmV-E;Vz8AqK%kU6R2?6yfz0eAYW
+z-Pe#K^1MIEA2@71@13oAYMB}OjQ4v9{g1t%-&SSth1Ax=nYZ#H%3NIGk1i|l%lW66
+z48RK?^Ej4n!2-cj6ODVWX#$Nw9<?@SRRcOBfm_K*)--oHyY7Ome*;0Tu3uLmzG-hq
+z8XmH0Tz19}ii=TB|CnMk`?N_aSrK#odH3pCnWXWiN*uovW>|av&2%_(RT%mvFZgN;
+zata8s5}~rS(uSZHmP;H!1PxFj?0ltsirn?<9zZ1FL-E6H*_emI)P+rxWY_<kmc<%i
+z*^*_9qyWAC9Iid(uI^>7Z$irtQ3`HR@>BP1W;v-W-dh~aapBJbOUjRZI%!3@4sRo-
+zjP2yhFb@EZ!5jpS2{<k!Yu%PG<UYE+O`@dS!HT8LrhZ1Fgj(1Hnm9GOOS(b3tTqx)
+zP^XK~Gxw&8sa_B49O@@AQhlwdVX)KH+n?Et@Q^;FA?5^u1^^#~HnH3~-RO~=i91Z&
+zMSib`Zm`q6xB*dV4DWWOrT<`DwhOWF$NaeBe3JbG{%+aZqeaMT)zYq^=SeoI#PxiZ
+zdcq^%lM-*8OOVmYokDHqLrI1oO=PJ>Id>iueYT<!W{=BX&26mlSudf&tZ_dkiPDyh
+z3Z(LPc_$AA5B7J`sdv{r@0~mqt(jd@FRQJ<3eVrB<)6B4SM%9hGHhFrf%Z5*D)WeA
+zJ=f4<(MofR4pbbVi@OORCP8-9J7VBuheb=;^<njU)<|{nJPwn*vtj1|ovZpQBEs~7
+z`pS<7ch{Vf(zEZYWL}iZ@vz*RL;;-ytI5{({8d8--5#~f{gH=lJUXxQoR+LPD_O!H
+z=w&Zk<UO=KWqqMy*hxcUlRARoy7pPVYKL3cSXd_h+JW1)aqy9`Q+P7&ocI8+O}|(o
+z>avdPhm{jYfy9<9D<%lZ5XbB#fVX!lop=5+`ad5fW|~f+p;*1sf3%=rY`%%_xj`$2
+z6U2HiowjQd7u@TwinOd<<sTXLpX^p1=7i)(Y5Hg39SW^#4F*sPeF9m1wOh~2Gg-=4
+zsY!1t*bG%}(U6jsf|9C+FYGole17)*N#^_F5ZYHE^`8frHiXB&Oq1Fe|F?5tPFuHy
+z^!x%9dE~0LKlh)TY{T<pd}`MV_&~ZTo<QK=OnvP?1-YK?DT&|zPYXz<yGNaQvNg0^
+zT*iBn2Nt;%i0m%cJ=f>4D_!oE>iyx+9(-@^x~f+7b>_wdJ^0lJ=#30ny7c}Xfd9HZ
+zbbX;c-=A`}Mi+6N|AdV=Kco2jvizJt0@L8QV))zUyM|m88Pf>m_w8Dw9aM))&cp>A
+z@Mc*>yXn_iRwYir`2!$4%WaY`fU9e0IikSg2OGzV(4qJ@UUSrjmeic>+;+&PzpdVT
+zE8Do+4e8Egynw4ng`)M=Zi*uXz=69zB_vCLSiQpLbZMOh)dDMGOWe?)W6Xr_T9Lph
+zE&;sLD3CQ73HH|!1rqX2a7Z0r!nQT0Q(|<-=V*;&8GMH^4zD4-wgp*|&uQ8TqyT(8
+zDpwDv1GLCGgFNW1OtF91#;4g%*&<wQ3chtSH2k;yk6w2zhNiFDHLf9lL{M@jCweyo
+z-S3GJEPkDM#J(@^7AW8OCk(89$p@>vn>F#pRotei%gow#X~q9Y+BSpo<~=4QNmzhZ
+z_WsGghyNS8A2FP%8;tla=v;JM^#<YVoI~mcs{F|A5_i3cU)5|(%X26=OG%<yMB%QX
+zj{V}1uI}Ycyic9<QBthWZc*UwA<h@(OpfnDgu8Z3rk%(c?VWBJF6YDWL%kU1%QeL9
+z?U3%uhV#dBx+Week6G!ORhGnzc$xTrZe9Dlp7PslZEJ*1t@rCs4=CcGO)=%Q_n7E^
+z=rze2_3~Sw3P^O?zdyq<v0tda-dWsy-Q3x>maZg%zcjrq>arAOYT*hcb!o3q6Xp&Z
+zg{b@kcp{au2;dXum40iOHcN0X%=fivzzLmV7dV8~y^GfWbTpcDrVvS+S=VR~D+zog
+z=J8e^ZW-;2H?kB=|8$0;C5zgn#E$8}F6sDuS;FLSQs;43ssBlfM8R8)R%(qNu}a5A
+zgJH3201dAM<(jV&8X6|QzPzuqIH@}hB9m)u_fo5)e|F!6u0Q5k2#G>r3j4sVQTOBy
+zJulDudG>(em5Cx<<B^B-Tx`11z5}eL`A1?}J|(}jL;p;DWB)jnFD>K7^j_qK{%=d`
+z&gX6xpAXh8jGveUui@_1Sl$nfHc)GC6KI#xFLqy-w<QF4ProN-!S6S&hR*iw*vxM{
+zX^)Vref25~(1zCz*gG!YH9c>H{|GfReVJ>@elbdz#aei*?I*wd{A(iEBy-~llWP{>
+z$(Vrp_n@<-?pkP1c<4~ieI;=TOHf*lZ_H!cF~;vFk5aPr60#HNEnzfK{(<P2a%^M2
+z>4t3v;zG2&BhsH9a=gQ*2)=Z1@+YidZ-9wS$3Ewv{$b+q)G+ZLf~<`kNW#f{(_Zp|
+z39LBE)kxBg2o7V_r^;G2?6_-s6+4tkydWFb6B3dg$#yMiWa%t~pD||;fbATqxJyk}
+zF}qxM?h|3&!ux6eZXKq7j<J{Qs4VM$=oa+tY4Wag+DX$$>~`u?%VXPA#&tMq-xTVk
+zF@phaHT5+A@!Fq9=^T1_UrbhVMePT1rr#6rQsX7(q+()Hex5;fjeG#`sO^QC+J@m5
+z93zf~hmQBr4JLi@$KN@F@B9p9+^=h1>RoEZmKoO;+m&L)XyJ&fC~*Y7?9USIoy}D2
+z>EcYl5*8gLj)EX1dNb^&{-7$U%G}>so?MM>ycOs=&j0;ZBDS6LI=vkwLpDIPfZI_p
+z(zH1&&FuO{xYL-laNqNh@bI53Tp1_ZhL|A!(oF87GrRP)fM(Zc75OjSXNFceFjo65
+znu3c468;a{D9?voS40dC81@&(m#z>2s1KJO&}1$m*Un`(v2&@%xV>i|igKn(gKJn{
+zdbeF<lAtitLE>IH(e$K$J)koqMMRxZu*8M8D^tq%w*GL-3l;kk1AQa&HOav=7OG1T
+zpeh0LWoT7qX*;2xHMtFP>ybx{AunQV>y{mZO^(X<6ozN`<8LqwxMjVCL*L&vwnWL9
+z$fF-bxm*!=6Zf;60)~?c8eXx4(;Okam~n9k@<0roDK$>+C^QzDVR}B!h+8Hi+pjL=
+zL%~?aV;=5+;hB)5SN_-~Zxl97IC|G&x-+SP=AbSH`uC8!yy~xfr(Q{zx5?5=;&<_K
+z2!r=Rk|rq5xtf1+UMmLp*<r!s;f`>;mj;Qz9FS(T>vg^pr704oGx_}5$AE&`59*P$
+z8gIT@*nhs+`P_z?g-&vP`%y!|zM(f+PGwGm&b8dnHbxRR5+m!n(@loiA9=GZ((71m
+z%vZ)VeQ0NBu*%HR%8Pm6rFFh)@B7fI!x*%>YTuq#+VDV#2gWHX!F}Zfr}qwIhOcS0
+zM_w|FH?L$$3YZ+zxzx)RH2R%BC4|ACc;YE^7>;f=^;<S@mj)}9(WWpJw)-&3%Q1Hz
+zVSZ-37v+TbzK&Rv%4&@Hu47D?Om#e|5B%`BtD=9K5!aMv{MN`}hrup7#pU(hm+RaK
+zt`@ywR5W9#EHIXKd6Cg*(C<>Q@<?mt<}pVgvshL$8L$!522F@<q{oTFws_oFkIvGG
+zl*^ZacX6kT(4VF&F?&DeRSDfn#P)*YzRd0j9{-fyh~B*+Vq$rK?6HOKvzy+*n|2Y0
+zM2IB((AmiE>^Fo}EWO+KcjKVV^rQD*18OoHvD^RHV)M{GqV*;Wkg*b@&Waq_19DDa
+z1<SL;#8sm?wn&JjAc$I)KTT-r%htV5l2=8dsoXj+3K<R^cLkNjHLmGj5i~D5)9S88
+zaMkR8aQ1uTZo`FOA?Hv{&TpBtcnDyn@S*(NdnZ!IoVzA6-5%U_$z>^B)7<6k=5-{G
+zY+jcsuR~@oZyKK*R!qP{iJis5%j7MCBS#GMFI(I=We3)YGY7<@NT>v{8IC`Ev_)F?
+z%wyBs^W^5;9<R3}X_cQ_4^!az4U~5%fq^nlF00s;I9|sKfkidHCZA?Udt%sbZH2N9
+z=KOTaX7S%P$rgm~s2Dzvm0Pr#xm4z7gnnXT)b~86y;K|n#Wh>ILnsgCZY*AFp~T@<
+zZ*p`51P*arJ_Jx6Pz63}VLq}a$59_p1fJ$GqWp+qfXhym%ZKf;xEz=DdARSXR@=xD
+zM`6eHSsZ4$%GLZ(|4#XVG!WlG)8vYxg*+pWwM;8Da;Qnuh&pr`Yj{tJXF%w;DNk<h
+zd%fw;lsW1D^Q|^Iw*CI6__`I0=CWNW-a5nf=ZzQz<!+m}2^Ce)Rh_%Iq^nzN!&JC?
+zhZXGu8FWsx7xGBWa>q%>x1(b2)@Y@CvsnWUd8XdeTraeLx%?trwp6?b{<1IgXe6kk
+zTE{sfn3S=U54H+jJT6%}HRbc^r5`P9g<bZP^Xu(Eie}jmP~w$>Kb{_MdYMj?(|O>+
+z>A(<nOPmCEUdj6Kxn*2Uegw;0%8lN7#Oz`pR=b|6;xzwfLZ_*-U&RzcvB!y0sMiMv
+zQM@@YdVX+OU+X4i9<7fiNyUX$S|vWZBQvPrU3u7vf9C}amKL;%!1B209i<^CfPBO!
+zAeul5|8*!1IWc5R=1qY{5`UJHwH$+vipe-SXjc#fLOH6};l?t75!XiS#)11<k$_;Q
+zVZAoOR15l`IfDh<kXpN1*o-*5awgMfnS)HUyheKG+#LO9HtYbX4L&T1J9_WkT=I(^
+ztG?cezQg<vzX&ez99$BS!rUJoM4t0MOX;7kL8VOO#jt5$>aR%{d*V_<wRReAbGla+
+zAGpdMmI6zkQEzpeT7*TL)M(OI1x1$fwFRdsP5lZBmXuw@33G%5tcPlSuJMYj_2PI@
+zGrYZE-KJd(1aim+&>n20i|cu`Er=thiscWe>N=Vo)(^>AVb{Ee+>@>BPbNU<3A`Sm
+z6rL2@Sn80jOT|b5SMK}P#kXx9CY8e~h!BDag+#KCg{pk>?6PNcYR#ZnoK#K*KP>cB
+z&^8Im7k|K45u;&9#z>%f`=TaB<4(z6RvSAtrU~Vt+UQ|0UX`UWy~F>c`Z{Ts$3g%k
+zr@rjMQ;C=c_~s&kOF>Wq*Xo0qdE5YE-c&YDw?LoVaU7t_VVpHVemx}y@Tb=SxFM2l
+zgxx=g0kvJd%06yd_8c^_|Dw0iLO9HB?OIx0DvtKl2IBvEmE=UhYX71e7t)#?=8hIv
+zvYg1dOJ6!af9iP5g%IIE)3INx<xK=Q-X@)!*V<7wjuEw*3sjN7+s`4J#zs$H0~-1t
+z{t^x|&qIH(6wqgQ=2dO@CEN??Ey6kQ%rhk|XhbWIb>vx=xb?EnWcNt!H5Yc*VeQcu
+zvg;B?6p1Oanaz#9sc&(Da6&hi=m{6|;xXx&PoIb;J)=hNF+^&E(cAVz3h#yRcpS7C
+z4~G)<PV|V&h!}SXe-d`(fLgJjXpnw;L{jQL#0_zd)KXkLNeVL5`noh7$S>dNk+l|L
+z+3theh161xqDtE#4)+M36+^y}b8^@L{N*0Hbp7f~xW@w|^A2QexM6};7hOIoB8G!^
+zXWVIz?$m<Ekr7HB0J1|GU^p>_$CUJZH8~)JF%|&7%)6MuV?pQ2gy~q&O7y6$8TUUF
+z4tW{?By9EC&KS4*nO;5+cur2=B~`6_g@N9k=}xNUm$UC+jFcaNt~2~_d)jH&e|nEF
+z@<LA3teyVrXZBCiErh->%>i_JT<$6^b?e&W(V$#55FVwa8D}*s{uKl4yw#Iu`MR)-
+z)vkVaXF`xtd37ICHTHKpSL%!ALPn`^%YU}?0>;wyg_yG4mJCA-hmoVkyXAaGozXv#
+zikm~<gcWxT^%EQgS)&d3ofeA@%UbLK*4EIlvk_x7gZx$Vn$w_sAccdWNk{9}o4+_@
+zF@j)4n1WuEM}!84=TL^szJ0KDJN|!$nXdg2{{^!guzbLt#LemZ_dT=M_di0?{IgW$
+zPtSg{ks_jMmVzeT=j~}V)aPSqQFmuny?(xU18`e^IANv<6eYH=!L2`oDpnDpfFnSj
+zaV~V&nXDY8)sA~YxF93gzb;?8Gy4eG*im={E;1%OA@;-uN)T*S)<f5;Q~elt{EzY+
+zyuF{y;0zJ?Gn}wO)8>f%fp5DXEly-!K4i9bWhp4Va~gTjUe}>W<Ede(7;i6o5UdH3
+za<+}yuKR5NT)pm-zxjh54<t((i+J6HfTJm|stVV1r_$?da*r@ouT6q9<4P&q^;{xc
+zyxHJiW?$u5d5C1By#-wf>oIFs-mwgqpoKo~8uG`QGwlhCiF?%y&bJoW@Envk-Vo@G
+z5=yzx^03S$<j2z7Qs!x3@9yVxfi}|Gu6(?>f0anQYb}=X<nVWcWg()EwT1XgbQ6k>
+zBsvA66L>~5GQLRbhbW?YIMe8~UiLa<49;q1<-$^6OgGx?r?=ToEP%1US4!Zl@SW6e
+zbm9?4;<7s2R3N&>LS^x~d=+#`=UC;;Wt_H}EQCM3vVg@W6}p~|{{a9%uDW>^j<*j4
+zuI~CpQ2)P-z{XWKG3D?ChEokO`^#wHP05JAx8F;<vF3Maax~LMv^P>8$&*L9_lFUN
+zcO(3dx)|RrLrgd8gRpJ5ECDv?G1k{_e@1Th<SF^WIWvXT{JhxR`aX_8TDC7pc1vFe
+zEZxcbQ~EOZ(e@c7t!Eb{*3$~<)Bm_$-Bo#J{o1J^O^s7fhErPovf4>2O0D;|ERU43
+zQYCWMUU!vRI?D>u7Mig8cPqy;=b9rOgS^c`4OgY{a(1G(n<H}+<r+l0dN}WFOMigF
+zGq23?<Fk;+h=&X=ivzX8OVbVzR{*fmVj+oeeZMS~Yti`X!{Nzy!K;y_o<cY;GR1q+
+z(YrsKxE1N03P-`hZ)E_3gD05pYB41#r?G4(so2NS{AX^j{4hO6d0kw6zDJb-!5)mr
+zgSk#mZ`;Z6vd7*w6tqv8o!}A|v03}w^_jdCfcH@RE^SjF0*SL7-scKJoFa}2Zj~Pg
+z=E9G)$Z*?4I{C{&|IbGg1ZHVkG%O9xpyV8gvn23<E>HarkEK-CAe<>cD*Os9&!+{F
+zS+#I^antaJX`)o+FvoH;-22eCBw~Y$CB*cmX`%vpk!$uyPwcoy!5gw+0C1e(RvV{C
+zV|i<Y<am_lY+Lu~yz_BnsiRnS`9J!aR^+^i`|z=nJx8Z9V=k+zj4U2WIC87+lf*`i
+zM+;HdJ+}=i@a|<gF%*hsnruXCGH`n--sc;10;GPS_l=>W+~_Q+wYy{f0;%4hLH`2A
+zDEir|@a*r>+k=Lq78Lq>WHvP7yWUnOeM8R01O1B;`NIw9#UPPfM;rvsQYlffs+FC2
+zSxCHWu@tzn5Sq9TM9Ew`u1d9j?BlShkhXR$9>F}KJtF>a)af#<b6wa9%8wz_$wYGj
+zxpE}B#L*-76-K&M!;Dgx1)(=`dorL;SG)s{w_7TCo@L30fc?96Q6ekiJPE{<<}mOW
+z(uoYT*i7b83odzyMVJeDyK-AvNALSj!jZAJM|r5=r#gs%V(;Zm9mUXQ$Ms~Quy?O7
+zM9SWBbji4pIhzLV>OK4A`%ucs`!p0k4D~HgK{5Wq$d4~%olorc;~R0pMz^RK9!i~-
+zU98&F7dVx$o*4di#iXv|{cn7beIR}6ThVARRK1>h=Yh~Y(|b1QET70dOC00=dBxR#
+zZ1&*9e|h}>QS}yHQFmdxFeM?)DBZ0{Gvv_SAWC=FP(uwMozfxQjf5cGUD6@lF+(>B
+zNSt}zv)*r=?;l{TS^W0Bue$ej6-y#)dRfRGiamR!&8XSJ!ZI?%&5lzJHh}kmZN^)Y
+z>wA;i#}@YRsD>uho*dB)Hb&Q1p5|KSoQ-W^_Y+<m_u@||6i6VXIVL-ll@(=-P(py^
+z{z(Bt2EfKtO(l174ds1k?#F+C(0RK8O{u(ttgX}Aj3)Pny3%s+rRs(I?h3V7LvZmh
+z!yfZ{(R}f$OUblpJ!bPo&5zU>=nm%g!V2}&LMsf;8sev$wTIo-CB7tFYwGS7nd;t`
+zhrPGh@%LyGB0-B0FDXLv&kq>g8Hmf7P{(Tww1%U*Cw}*gU%$Ry0`7XsaklRFojAYv
+zA=9J>INv%i_m!_UI2%Y^+y8u)*#hHt1J`??`bem*X5>*jb1cs`>>;BWxRS1h3eM{`
+z%4!!e+s*Rp5`BR*d0sZzweR(lHN@h#HGEcbDFFyp6(Mqb-j_CITVa`^!QLJ8D}q4D
+zExhC++%h@N6!ieNU4T=xKUJH{C90e_EG1&K$A$Z8vZ4Ps2hQ~QQEoqSxCoCsrM;TD
+zYk8)~?StheGzpm^jnHwTvOT<$mg2|1@1rqKn=cQWR;&P*7$lYEBx?dcaQ=LM+((p{
+z^ia__QjzNz2tCC7YVtwop2TCGYb<@<PHjp<=~R(Z-jSG+J4PBR6G~PkA7&vhnmMZ}
+zM6c+`T2JFSDP7lyQ*Zs1maX#6ca)dO;*k?Yd_Q^B<XQaBT(-JL_rHG?&)kopoA(h~
+zyp+zMY~d%CB2n1OT~<Jz)|I1RIDAy<4l#(YqXJ~pwf-@SU+j2S)-lu81nE?Th%AJf
+zU_8c-s6RDwc%Ct<Tej4vLg2L1RE#x)wPJ&mWL-*;y2B(pv?s&*c-#yj17ybNWT!+*
+zJi_aEQl8MbkWuF#%c#%MJVPLqYnMm5)HN6TlvmCXLpc&Dld2XVL+onsUWr4NgNQd`
+z7`OgE!?-Evixn<Ov7Kf)n=H#_xIk80q=%_=NS4hT5qAs<puN|++u!d{*+)E`yU)ow
+z$esPpP%CQ36Ev&b^UjrPoq)sho=h$|N)8)`1=O^J0e8h|tOKiXx(=z?++{T}K1QvK
+zxcqI`hwXxjFie%Rizh5GEUOG_)i&x#o?w{`S4CQ^FBo(zcxlBEZx^;bIj?iFMH!nm
+zMb$mZk~UxcxwCuD6zIJleIDmb{D;N)*kIy?Lej+#8hlXyJN)4^aTCR#p?konrzuR}
+zB-NPwPvGNL^FlZK0e+Cl{gDowPvGm>&pIdmGbCaE1x4Nf-f7^~>)ytOg2oB9BY}kp
+zDnAOw)rI0!Qw!L~Iey(X@bXCGz`QDT7t?`aJ$wG=1+>?~BMoZKi=H>0P@rUSJM5#>
+zG+ja3=PMKg$9k%q_Rv0LkAv1CiDf=K*Wkek>=MKz&WYd=$QkYBHGqY+q7V$7pnYzs
+zC8cDjk{VP+q2c%ry2xRP820w*$R4;p4%or&PV592VshpNpww!%7l7C3AEKS2UT$fg
+zUyH(jk=dc9RHmudLR3&FpLP!7vPs4MwD0M#Kg};=l^Nu!EI=ZRN|Lv@D@7N6^KPY(
+z0k6E<j_-3``AD9XyhAzpj-Pjyu(d=;Ijl(#;Zu^pJ%!{}T0lzp<ht?9zeRCxarRma
+z=KFMaZyAs-{^}0x31IO!tp4{=?1C%c{l%!}KdguN(HDo!fB%*_u+9_REuI;lr}SJc
+zHXj!j=b$GU9!QJ-Ua(rETUVRbG@)ga7;@VPjB%e_a#D_&F1+pYEP^t%%Pi3|4f_)K
+zH~0)MFmE4FnUjuIughTby72JSnj_L!!X$lV{7~1`^7jCx+yvzkZ23+_0xR@h@=$WM
+zfl1*PgS-Ppf0JDnyvciY#?|Z^TT^P<5i4-TrUA=mf1h4Zj&C9DCs^V=#jTgbratnG
+z#8b^^4v4~k>;&d@Ckbf=FOyF{-d!aGoTfc%r-N>13Nn~=P|doEXRx65CWcH=DzEnn
+zYW469r6S(YrByjvIC%4MZ+bquU%3+vHqVtAQ3v-%(UH@tUC_o>vsYmmQ*z9u%s~fa
+zwp7FAP=-lt0pF;nEo6-Y2Nw9RW*aB$V;j(=God3h9917*8n$pZFU7Z;1CbHz`#oH~
+zPknDqKj2}&2#MxR-beWPtG|A=wWZeq&!+(i@k_LKTdHH@1~74g2f_fxk(>Jmfn}u3
+z);~2t?cg!CNE74@*DqWbHD0aCybh5<Y9?-~){b+R27po|S>*XS{LQW4zJ_wzbrj{X
+zI~?W0rZBD%J8Y>rlI|*_4)%NM9k)N=-4G7&HzLDBG`wTmgxZSBB(n}!y6*rlf%SEU
+z(I6F8uVY+k+`v${(sP2V+K2|9gUfOI#QV~2jee`rn8c~wcuols5)U|vh!Ypdg85KJ
+zGTsS~7pj%^#Hy&k7h{WD!=6dy_NgCjUT?fL;Ud(2tHKs96YBn4a0!x0pX^~Ku41=I
+zqRGn`7dB2wZPXQ+UlM1Q4tyxE?6|jiqgiOMPzxJ1RIYyf^X!z5ZnZNNJq(lcK5ueL
+zP%8(C%-#s@DYyypJxsya-B)<eF<W@Jc1hpJF_>y??_JF7f7OnW%SShcWq=#Lb=ML<
+z;zyl9um6#JrH(v@&WYF3fqFUTd6+^PavGc9Kc2UAv=#v-$n>mtTmNXd%&v}pSNh#L
+z_~DvnJD4&w*D0NO%U1!DEY>M=Uwu9!raBQ`WsJGC#i1IOtcP?^nXw22noPqUFOpg0
+z>B!!1-}I+>cCh$?$B|jQIPl-?@rGv`#$s`y6P9PlM^cWy!~9%9mgVHWiLwpFf8F|O
+zdv;lI1+Egez`xL-y4tb6Voj|oIQ>n4!mkLwYq=b-o~fO%DIuM$t0+^8%WqFS(qqs`
+zn`6EDE6!h_{coj?f$=^E1cQq=(PG?4pinob`_C6*W!nSEnW!c5Z<2B+Ed>>d4|oSe
+z!VoFykzca{a|tP0)O6F)?z48-Ti%KeIC8>%N+}Jh$qf^r8(Iv!G&@xvkU71KENb0$
+zCHhr{Uvk}!@Y*B~9ey$5U^ue7N-s4`EEfZC?O=4`ul3)e_(_!1MVNx4$lDt3rd=j{
+z9yeP`vld&T>@JJ&{Zs0zUzA+14_k=OSh;)#zo$3uP$7AtCa<3Tq`HqK1V<T(n<fja
+zkMx+?rG+OIf@R;X&Km4|pcb|Lo&JM0q!jF^>Jic;BY~fqJ|pEYN*McAvY$k9t2W%J
+zcHgo79cBAK?9f6`LH#akzkA5C*`%wyKasqR|4}uvlTf9~=W-+&hjrQIrZ+uHp&0$#
+zSdH1!JJNlS<z3GDwaFf+QoH`rAVr}IRsZcM)!tdnJ9;_rwSf3DZ2(;Q3`xp@5-`Or
+zit{Vo=6zhhs{bV!(r?rg(k(uXSIC1kkoQ3u$uq^N1-NwxOYhG2I2(f7h_Q4_aCOXw
+zj^vx6Q>%bqyZV@E;`)2MLM$Ss=5_s!ka}X!4*R^q1U9p{o07S)qkAha&7shw3sJo%
+z&X(|{m-rLc%SL<vDKYwDMq<Z(ZcE68_*=YFHWN4=(z!6{bSpnU@vj`ibeqW?**mHp
+zk-+Wjptb9w(Ee!?RvB?%+{0soH(rqzKa=}$$KQ)q=K<4n=#nNL<g0YHtw-Ejz<TlD
+z3@k}h8{_qin20P?iXU<MHzj};6*f^;DTCmV6LW_wVzjN_G6sfo9K~3C+owzXVjvfT
+zlww)rZF)k}p(tQho5CD!LoYIDMJ^^Y^{Dy;7S;XieBc!#($L<D+Jb%W*owL@B`~^q
+zclWQHYMLpg*Ikj^;1Y$z%pa7~##O*!jxjGA7tU94h&dj`5UcWu-VIG}o*Gwcs05);
+zu?SG-N>iAGz6vi6vuU&zEkv&^P(%n3TmR`6_J{|O=9n1k@OW@H2I}S{GjB&`^mmB1
+z81h#Xq)iXNiaJ))?)O>(Z;HYlubm$c7VnRmFJWjMLQe^I2lC=^r=5Q{vI4lvwSN+y
+z{ahF{;yvDtyS<6|SvoDWfc`5Tw;}d&p%_dW%%bIu6f8s-H&a6y!gY=NYs(Tx)jY1t
+zRFIL=V6{QDR#Ka-H_&jE0MCb@Q&38b(WY|L5$_BKl}|KlbT;-?-)FDL72JfOg-Mxx
+z;4t3_zv~aJ{`$o_y0h9Zk1^Z6M3S&}qHL9U49b5U(x$I(@--yaDN_{KHh*_aLj)w~
+zOg6oPyz&lwCbQ+qxY`9!5!)>OA-T|l#bOtGQl)Quf|GmSa<93<Rh&`O*rnBY-tov-
+z{ckQHBg1w;%UJec3L0*44Ju1<x=QUEwNns=nHBT&xeZui9;QtgLMA^Y^jNR`;^Ay1
+zYb4s6W-Tcj7)Nf%aOhZ;79XPNSJVv@abL@fK#2*xhu5+Fh>`0RMhC{sCTNc)z{w%z
+zM-`;vz;c|jj~*8<kG;+x5=V|Z>ro~}kcjTDbh<(<z?Ao~wnf(dfF)Gaaie==6IS@n
+zICot5Bt3P_CS2gXJ1phLCQ{Oc!5~LEXVo$lC+v&M{FzE1WxSaamk@p*<x({>i)v?+
+z{k-SEr5eBPeOg;GlcU;%PidP}o+N=mG&6yzQb?1|CWlzxOk)lqCF8UTV-#n-Cb4wo
+za#8JF5V=sL>=w8lm#7i!a27KcW$+l(uH&_rB*Nq65#d~#>X-a@sxCJEcf+r51O@G;
+z$DO`O&PpO}Is@P)6+`d4cHk{lWtU|s`Q99ZocfNk8pzy(;a)C^=8%<3O&z$MNiFPD
+z#jX$N5Hy@zsKVf&i#kl=Ll)I6G@ul=rx$l~ld3{(ThiabQ{GejB^`~+E>T_mOG0=i
+zp|rdj@kgQ;rb`AR!X0vHHhsNw0?v17tXIbi1n&2e<F9WHx;04o13Bw?_~k4+PT~&Y
+zY^&2QM!Ss`$D4o@!|#CxO$|4yZ9w+vcszA;XFQ?xauQVqQ&ns?q+AWH+5cx=$`wl&
+zsO#&|DZ0pGoCb2Fd}!T{ENF!WF4HZEYNQq@*0f^<0b95|qE<#@)yu0XMF=3H>+6xM
+z8Maihh{kHqAxe={EH<@q(xXRrFXLkjTV8AQ3l#b$!}JuE;j_tT|Fm0~38xF{yBEKk
+zRW6%9tQv6hT%oXS+ofOhrlEMc`JOwMpAx-JY~9@Fu};UM$T~(orBjr1J6&1IwV#fw
+ztIUiR9N#Ak0uO%66=AmL%wB)gCnxMpp+?nIct?ML2g;)ee%o>^*h+3XpDx6`%gh;~
+zk~+B;>h4xdQi?uu#doT+a7_{JZiIg^b1)v=eYx#S=sIX*;Foe<h5ho`Y{2huYy){D
+zn0z7n;7*UXDu+4Q!OU0i9&C<Djl4U6(~A~SrY*g5vs>ohB9fjar^<shMbxV+QI}5S
+z@cOM@x$YYLL+ZoYkLB`S)-L86;ja~=k_+|Qt(T6qcn7TgZPWZ<tfZ@HDTgRDDT5TN
+z>JB?~#(M1V{(_k@5Pu7GS`cT8EpwAv17_U%^r*-gG1w-ps|aVz$ll{@S|Ie4V;DbB
+zaa(nk|7DZrg|^9B)CEhpRC#tuIJYaRbxZaT&7Pi9G=KOzPkwZ@>~U>_^hX+1<_6RW
+zpFP|ETn1(lF$EcyNXg6rE(9c|>5cwA2Nc7c-&fUd`|k?gB63$rE5<sABBGM$6P8f5
+zEWyaY+ByWeHKewn-66f3sV|6)bIz+*MPzJOn3rfPzezlHFYgI-6JHh7K5K7Lzigst
+z-#4RlDmzv<@*IZ(J%@h;QXCI7BCzIf_hG-G)k7*&=PcZYsjkNF85qLEUq9Y5uPZGz
+z(7Kq4&r|?|O2ruUCUh72kPdNvlE0@DZEY%RX~?1`@71wtLLR5uZd0zk9r+z9G7-4-
+zJz{;Nje<5-PdU{n=4jLg9C%G-)0~&_c&*7GU_;o&fHmwZP^)Ey3mA=4)DYUN$Y^EB
+zm&tSV^8UVj0w1QyHRY$aF(m0veZ0Hm4uAumbtB!ZEkiAX>@udx%(F*TW9bxCF2Adr
+z@<E66kgRdq!hdD6&P#9!7K)Y(pfh5nqRY=FZ2W@A$R=G2dm~wFu~KGOCF=;9`u{p4
+zE@O#s#Swh?DTIwT0Al36a!EF|Iwbq)Ml?1vGB)sw`;3-NnLX)GD_q|E*Cj+F*dd3U
+zYbeoL?g~y9m4apE`y4_Okbn;t2k<iw-u~Uh361T1dG@VJF0G162)XYfRkd4)zSaV(
+zUQ(u%!5~QF8ujDXEBD2JZBb=Dm?2y==X*RaBW#C-bEH2czcg4gDX)pRfdjk2IcpW8
+z7D@?o^TvDfI95fIhCFD4j_m4K*LrDcdpD~2cI^b9k(rgDTJQ?&bb<fcR!{?PWB;%j
+z*?G$PYI{yp7CeWW?hN?Sv^Sp*#v;*&+v+EjXex<q;mQ7pV_ErmIUMjvsA-F<gkkn5
+zQ-X050TerkG*jIx0RTp@QC+G1{u7r*m;^^O>@~E-eYOw=hU$L<j#2+#G1w1{GxNZ$
+ziP$QzaM&&uKb^dXK4}OMag$940BF-G-n<%M?9z)@2@&81QiXEuCl)oT%BbbpDY1?w
+zlq%}~Q*j`1{#PaNE`Iu^?_%@mPTnrc-hAp<-9$PSN|Jw)xis5g<v~E@e}=SWxsw^J
+zrm6=iYjQ7S1_$x>Y7IrAp-g9S@zpxAzm0vgEGponS@|U~wDPvuyLRBP%wZ<O1E*_%
+zVB<h0^8#Z^#e&4uh5)cy(5hA5TK_>&a|pf9>BiIFO8cC2SZxA_!3_t+@d3M&-!vko
+zoux5#TMnk+P4C!3E!che_<k(VZ3$V(_;akuO9(tz%?U1aUYkRM6cB3SnTw4fNn03t
+z7(PeGFzpb+Bvnx&a08-b*t2Il)@Ar~0LeAo+b<Kqx?gi$P}}$bp&Gsgnqs1eLLauO
+zsMA@5{?K#lwY{@eL&uYy)esCWB<wFi;_r*@cnGTW*Djdq@N{!`aIt{+AMpMF7HzoO
+z_as$xDk}aC%?420z_~+Lx?e8wXN6J8Hr_ZJcTWyB${o;P?9__ZFl-WFTdjwRAm7Ap
+zCK0vRYD-6)V1Oo3ez|suu}tAIZEFP>2ZSh>&M!d>P3b=!Pw<4{T?#3?0FMVSCxr&+
+z<V9D&#<#4Oti*V0eyNk!?>U2djDW5Bt21q(gERVX18EX#s=ut@9n==O3O1&YG~1=I
+zD13Fr(5UTwr6y!G=9ty=21w!GE5HvawUfQDy$~5@oJaASOHlkh`qEcM19ODQe3inB
+zR(NxA8=Dzftr(BNQNYWxw_`;e#+a&$%@g~bxo9=WTGWlNIP#E|>dS2rS<%?%5~V`K
+zS0_$7a~9}RZaX_07LHJ$1cKiYhOLljkM^vYesb@Knqe-cV9S6xf<vr?6_QirC&P)S
+z3lTj{UwjX6t=#ph5$xufIAA5Y!l1PndJR)`H1UrAfrR_o1=0AdwD)}_(=lfCZrir<
+zzMY^HG~R3kH4iUkvY->ZX4elS2cgthxRi3>z9myZSwKT}`0v<x9x^ew=tDpozbZFi
+z@1nQZej3PH3%I1YERxo$+nSp<74!ZW!sO?AbBkIuqjw(qU{iZ~f4Zs9e32aBW?!68
+zU(XhO`xMbyv3v4!$|y({C1>YL&xbvb_T4k{uS+tnk5FiTy}J#kSi?Q7>B%Mpq3fV>
+zF{u5N@F`7KOkr03md(fyeFN$Y1}58lw2-jADt;5ez{^gCDf;fgV$DZw2!qmU9ln==
+zW8gvH=&H0$X>L6<b;p2Vqa=eHoB0{XCVyCfmxt=;HCaUUM-LQ82$_6F<{Bv7yaST-
+z)0E3%8aQROulbHVPJypK!)b_AC60X70>C@!?eR6Dave#y`}QUgB{lx#3(|+bKhAA(
+zy}B<rhDqDRwhL;$>GA%Pn~WqR?bX#)&fSf^-U0Z>#s8hl{T5a9^%i<W;^sz#!zAxW
+z730mlD25#V>$;F8w+N9d+!GTou#Q?;6}(=^76NV?zsa5IDO*vCpGUC6|ENpi(2DUF
+z-wRFc#qYqjrpPd_`x|dZ?$4jao>qwj+z&zdyHQKlhjX(bvEKdauR2B(SAP=T)GX6J
+zY%rnTZ2oxxL7?M&J3|<n4kS6W3JFRqE?7B2bSwjzOUF`kA#vJh)vhWLvjD#10>%Ul
+zQ|WOgFoge5hDi32>=^4aMl60geGk3H(D>Js1T^AA)+G{cMY#y{6g5los?j}$pk3^S
+zY5hW}H+$1~5w^C-_TbOxvr*xEvfxuXU4w>j4t6m<!|N-_^!Qxrt1SE<1xB)dx_8|~
+z3?m}vUCCTs+nNXHla0Zfy3#p@dRn#hf2LQY+b@Hh3&a}wB9DdN$gWB?*-7H{d=?P3
+zoslf{@M&*y2&FE^`h95&mY&I%F8<FJ)f!#-y|ir|;bI^`E<I=Bg^PliBu7M@37h72
+zF{ae~ydPP5A(T8fj$@&^k2iVTfOMlW&p#Q83P(Y2Wfq}OpMIOa;rCwX^ZapzdFlZ-
+zCSRT|Ghf#j!Ohg-O8~HeUl7KVabBhh!hE0a?&X-N+tUZ%LLq9S3E%1kSme5rzGW;*
+z<7PvF@cXK=11@<3UiFlqrD=u<J*v0Fi34#R!DRtiHYq&1@6qhO=f{cm!J+c`JDDb-
+z{`PS<nx--^VL~3F*P+xox!3h9K~QSJE7E&58_!lKH(kH~{e=9l%O?%7Z!~9%7=bTV
+z`R63oqsx<xJk*zl>Kfs^%arFAECTPux9Tb+L`n1hfPy^I8~0c~)dow&5W>Ad;iUz~
+zfs2&Gx^ki<thnRJt}9`hCEv$GVv8{-rdU~C6ABs7<%3s<82`JpV$D_?CLjhKrw3>D
+z>>yROywX?OZ<;LGD!|HN9R^L7fuvtCWStQoCEqfhTBL_$HE*c5L9^Gua?)nY3u7?^
+z0s0Ct|37+5D%OCP$r0ZU+dFv0I6NM;gbXoHa#wgKCY_mU7=St#UY6D!%hUGN^Nl&7
+zQsI9RB?`hiava1q486Z}FWOZtk7gLi0BbvpM<u7oXg&0+Aev`B7%{sY;NssaQQ$h@
+zcZTL$n%?|G=ecVX$b;QS^z2<;(%JaJf45<~fVqrFzqL)Wrl;3j261(zmdXO`3TYe<
+z7siX`@bUFyUQv>y`cx69BoKtjM5C}O|MZSq@YF@v2e}AChsp6^c1OA&cpTJE-qs6$
+zLGNig^bdj@x190YpK%GTxOftFYBX6R1Td`b#gmh^WQ#@esl9&}%6CV3%d~WGqaHO;
+z3Z`xXE(*W0R6s9BAX(($HcSW$HYa$}v8*FX*z9{ls!pz!cfKC*OK@0_m}|O~0L!#E
+zJ(ruP*unVl6m*&B6*Fw~Oe*hE?b6nZXcSq!7eZs04}!~t*4wD@oscTySYRT`+ae3$
+z5V~eOJL}#K$D2*|DcABc%A(X<z)tN28K)5%;t3wrA;EDhbjwdREq;V@ntS)cN+TwF
+zRI;%`byotrAJAE~jghxo93Py;$hzB%UxaHR_cZa}T8$_?VsZL}rCik@NSRz_y_E8}
+zgb^_)%SM$Stm$*fJIQYyg3en++o3}f&M12t)*vI#V??q_2#5#bhYnK$m9xLgs^{EK
+z>Hp%6FH~R$VkWe30^v>?3L>43hl(q+c1EDeMylCA-}~k29il5Sgsui6Qu)|1^KMkv
+zPJg8?(J`$%j^?vBA|KMmJ^im1;GIH@-^7>d?DD1%=j0d3bM+?`wN6Eut1tejm_D`<
+zA!Y#gkJ5>=rU;S79Tu8R@b77l?02YS6cykt=l@)<-xVSx;w|%1<ZYX~1`0TW%z|kC
+zvvwHvh`bLa9q+ye`7v)=R<+<Y*Q<=6(j{L_n<E<gqCl03nmpu^{iu0GjRS6e65A*O
+z3;bdSvz`rGN?zD~k()aLflpP+Zmm@>)JT~>&&)OBw5@GtiCe_ZlX@)Jj9Bb1RbBEi
+zCV}#l5=mmq!eLpL+B}l>C~VW=$@sRud(v#W2tYd>Qeusmr9YAAf?4@HHQEQQuhwuE
+zsCzlM>DMLK6-%v)rBm9IDgEuYnwuI#9lcK+<*kPVhvU%iVsw6@(>dn9Ns=!%iTDN(
+z%wxdhr4`x0qy7OXDmgn)w$3LnM7+R<DiEk>4b!BE86qU*`J_3i`{`?%saniM2IxC^
+zAQj9O&C$9?Jl;ge7t)t~v8N`!b}eBlxJ`cfm`R#Ur~Yww$$mH6GoL;#*cDGGiQ0?{
+zYnglB<|<-Kw^vgQGH+RC0YZ86^Y!+a2B~!Xnb5tVHY@>m1j_NL+HOAZR`4~q0}iXO
+zM`ya^f%sNt8hOyz+y_CupA+b{-X7z_1R2R8vJ;oBKZ6g2P{K&d6yo(xu4$#io={#D
+zZ%t0ru@4$K(2~A~I^<aFC&CpEa)Qarp~zp%>?y;f_CCMn{v_LjC&|5f>ZF0f{mQch
+z6+D+p`!1fc8jQ1A3f^!6!;vVuz~n35deH6Yp?8j>3yd&Y+<2!Og@RrI2nM2!cpjse
+zir6sI5=4crqd6D7C++{1nJ^2e2xZJb+6W0}R)<Rp1Y6O+Zse>=S{jea=U}S=gj=hj
+zdFZ)LH0Gqxf2ae{af@N)+JdO8(P~Gj#Q0mO`Hl&PST1HmmM%V{-mhORL>w_|kz-Ms
+zB-Fp9pV!`gSI%gkza2C+Q~VA8-EuK_a={&uB~j(lY!5Zo9^H~xKaPKrVz;-xopU(-
+zxTiQ5T(!`bWtxv<EGfUI|AzgNSYIo&32SLKvS)B_#KLuR)Uuf|N50%4>r^5bZ)#=*
+z&mpU+A0imi6pCx4?`PYBVC1^e0(bZ?0!Uu9RWPRk0nam}gL_*6>hZWH_>LEXez>?c
+zuhOBymMZc#k<`TeZ6F;Ql>t%Mkh6st_*LJ#q4Hh#@q)gj_;sWai)0-yi-w`2O9Y2x
+z^Zo4%Gw~3AH&u|11VOvzLPZwM=BB(5Ha60Y8Wu_y{{F+`>J`z_jzgTm+1gNq*G~xE
+zoy~Fl%IX?B+>h%U+=4s@k~Hv1jOBbTz0ZNVP@x*m^3>5GG<A%w)n?AROCp{(HGcew
+zfQJo#aX|k0K!C+Qm8`tvB__iNQUfuicl=Z;1iH>Xp7$90nL|#Ds2_@Kfh{GXv602n
+zk~{_q-IzUT5u(@J8~uf$$7qG+vG`2-KFmNl+C75xAsVHiPe3$=wF95J-_`jls6H;8
+zT#U(=zky%~7z6D4dsVCqziZpTeR_vM>U^@fZk6e$ld1s`b`fE-tj>_u@(zaL*HJpr
+zK;@HpS;rDU)C>BTc`O5A9{pX^QuJEP6z+O@CdMFH#@BzsJ}23IB$(G&s*;Zj50!Eu
+zs83{Inpi#M2kHrbDD!_<byd|7R1_o@EM+K5xbfa1YTMN5;_cH+S~8AdL9`SYIw}xG
+z>7Qa$N;54}3yaA+h*W`B@TRtLlxY9^*It<5#oa0tG-3ozQK0{*Xfi6f6Gh}I^r|lj
+z8;BPaw5T&kOYy}NqdD0!8mVdt|Bc2gEiq!aD=L9k?`rv-8&h%eX~931Vcz+TxZC*&
+z1_W{b52tHy*KorlCL&Gm)bbC5GBwEa55FJ}x(po+R@^(lMwk5+s)Iz@O^~waMR`Ie
+z-fN-ieGdOex1EvqrY@WNjZkx9_i^nDkA!q9tQ<m_u>OPHmmdBR5JMU}nh|I_l%*#@
+z_d}sdM1ni`>3hEIU^5i2;b&xW3H4W_C}?~&NotP&-5ZlJ_8e*M#>1$H>73mgb0)LN
+zUL;3FUR21=sM3P%QI$|AL#4us!fWPuuPQD!N;d6{@n9h{H4r=^gM1vA1D(;?KClsh
+zPFk2B4b4>-eUKDm3VmklQ)6INZazXMS?uSE3(IRItGCa1<s{d9y-N2Bk$agDCS|%o
+z<IR2jv17>AWn>TD*@Mw8l-e$Dppn46p)ao&ebYDDx|lLd`@U+J`%`$FYAjV$3B7q}
+zHnwPXS`Y~eM4ok>9kW6Sao5EnCedjvA}r#aDqy>BRkk`CJdMYGINMLvlj=h6ZosOn
+zkED*GY>=?j>yAMqkmFMd?7id7z7vnYvET&{nAI!h$D0e-&+Zbs?YIc7La0mXERmuS
+z^e)>hcUXXotwt#8ep@N{ga?(dZ~q#4>ZOvSD4HGuj4-JGEMVjVa*32tE#)T??2^bT
+zzX^P<O|qYa=@QOM{AV{L&?lKUVoWUS-|5c%N%_$Q_M5gM&__MRCSZlV^L_M1ny~j;
+zU8ld<nB2{cZMC3VYG>J}5|Pqoh%eyVZQgQ-*p%SKPdcp~ebp7@WUJc5&gY%kKl|q^
+zZmwO<MhzHNfMG8M2CZBW1%1RVN&_aSg!~eRV7Q!doso7}&-YpDxXlUPeY9x~itCQ6
+z*Cs3%I_mqI`Nbs;E?eT{F7|Ida2>akAdL>jX_<uW@z0c5rhWYKU?dT~axxC4dYgTv
+zHlem6G?Hu~NWOcZ$<oYV9{nSTH#M<n#tz8}eLqv4QTHJ;BAA=6GTXbu%61_AwR99o
+z$PZNY$x8y9FTtO~xEO|LuDMlWQB*ubDj38-$wHW3whl)bLA|7HPnz)}_BQDmZ#mI*
+zY{t3qalj9sU5`{ksaDi~(Flj(v{x7no9<K&VZ~1zS09lgm3V*LjVB{(TLMlYYYVZ_
+z?1-be#r&Epa_ILdYpJc_h?(*p_8rHjK-S{2l;5ncSNo0OMtteAkmZp0HTyDdD4%xg
+zPs@<kq-6XET{@JEDQ(>QIuO;I@enw?E~R?Hi!Ev~4iE<7ot8!*j%KwJs@3c1kmE43
+zlgtl`4YAdB4bv;7uaLcq>kv*tpJcSoV53uzK?<hUq&3?~kDQUgRWPkL0bhag?+Qv9
+zsVD_Zp4eys!wlTr8VWjOV&<9s)(~=}53pg8<h>i04|c3G2sBQ$8B@f|DM#A+U9Wm<
+z#(+05CtoR=YLw|WCST?4Rzw*G>&kBuPuj(Bu8tIbcdVR#Sw{w)-<UmFD%3O@!ijdZ
+z%xs)NW!ED!2>c&ZC{SXu;3<0-NRPdyyE-n7pDOs|o?K+ES4849&u>sl*X;w(De%O<
+zc1ENB$uG6uC+5^F!M?YD7hD@Y3nQawz(_#F2Ol+!7gRV?h~GO<=i1?#Ii99AUDj>?
+zcA7~-ep7r3{EhH0zyOt$Gvd(2>_=WNq%$0NE?xYD4sy&SUJ;+fT>EY$BEMPfIW`fs
+zo-?Cv1?%0ZIXXi;1=~R_;@=zV@SQe0sx29*@I*E>zKhpkNf96~$a1Apd4b1y#lfw(
+z;}VA+#~uAuD3XXuD6IKv{QBQ7-oeau|B1l?3toIjkO%cAr{6Ad9uH7eryZ@u9}mF9
+zU1vlhHs+RKVJf4l$A!zo7KSFxl}>JYry0zTZ1)JQ$_Q=y7M6~lJS+~+fguhUcmo+*
+z%sIn&MCe3NL>{woZfvvD81jiY`UN-eHa<Q+`&Sj8bj$Fno`_WLwn(yfDv2l!tAlF6
+zRVXMv=WUrz8QLncR+3G4#-fwGVD_@2CJ|c>W!H7?l45#Z>$DTtZO<n1SwTNw(jpdG
+z=g!N67hI9Ibi}V=jV#(?Oqw)$ca+)G+7!~%c?8az!{FrX;+olj2^6yzYwfx5QwRpr
+zmYfE~lnu8f)C0w0Jk$MM?7T&j`^Q@UK+n(OzK7%8xQ}xAHY!Q<zr(>amyXJ32nE)K
+zi~VN`gvR>s1MZK6-EZ}(Bl^`vslv+xA!vNNOh^W<wrIM{d6u|hRIavK36r}x6n!co
+z9C&1GW-M>X+)D=m=2VvC9izXL|I_{XAm3<YjNhjW(6LBsmm<Iu$3|)r$Gr<W!Ye>{
+z=@*0TI#u_g{4YFHk2XDM_<x@TkgEVKdW)Fiq_x(mT-<Zxs}aG}fF>@2>8`z^eLZZN
+z7cgL&zvi+jTrm^VC@J-C|6V3;Ub8*|lJR}fu0*jlLn4=alVx1KzOzpiDDqm}E%yWG
+z;!i@J?2h&^@W!aT2*ev$&;|O({G<5tRX5CB>5k(OZ&0us5JiR9!22q7KS*jgogO6s
+z?A)Cmj~;s#6uD&rO=l4ONzV}uKw63NW*!(#YqH?hD68FlW#hhdmbiU4s%X=&pUhCy
+zBKU5YleThFu#$OH@U9SpMeO*dj~lT+^NdpF=`*DM93#G2<koR`Ih-zpj(F|%7-YyU
+z7-sD<PcYX%C0q!l_Njd@o-7{9J7x+ST5#Y4<O@;Te4AB$M#Ny>A6w4*hzXct7B<;i
+zQ(nhXd0cVUBZsP=ec7Fe^LIk}>%2jE&5IF1JE+uJB^uaRe_by=c2>R|5B$>t8mw2V
+zXs_M!e5^s|xWE?k=Dsho7HrK~i-V8w=E0$e6yNRG9*j(_Lo1&nUuWWVWAn9^wAb(L
+z%yb_ZeBai|3k`ZGW4kND$ZlD68PrxK_@4`9tiL*r+FjRAh^91i?IZx53YSrCNK^yd
+zrPg3{6ljv95O5Oo*114;%R0I@&Sd=V<hy&Y$M&BP0b1S(<ars+H*h4Pzy&`2tpX~%
+zQiRZtX{uTSg$m=(qm_nP$3{v?*R#!_plIjki0N7Qd*zXUW1SaJ<(q^$Azzmgc%x=H
+zCCuyPWD5R-0d06$%mset2)<VnhN9An&xN}IB}P8|`KkyFUFhoxl@+YQM2P^phbU$G
+zo#uGei*RU;l5G5wa&$J{RR6Gf-xv`1lfk7dS5MrDl9xEFRq44_hN?kz_JDY+V8X|_
+ziM;~TN7~`*v{aoc%I54Fs&`;SHY6j0`U7`S*n%2ACUyZZlxo`SGwFOJcUHT!UlToF
+zM<y*jFgR=eTNVI@k&-Z=vHV%C{csKJcU)&xH;0@2k<P^8K$?hZh>{e_9IneW5~`e#
+zlfy?nLD@svhM$YMCiGW+Hy>F}=(#Vsi|cqX9=GRuC4(h~kWy8C@FyI^4a^(m^^9fV
+zEDPibAuzYj3zCStt12R;m_SV~*lT6suG_$xTG`i3kJu>C`gue6V>j2vAO@|`WsEeC
+zYL{?mMAQ9`20k}%A-5Me<(Mf{_qtmDEi6>1ltogVORqyHNH{`&cS8TW{U0)jDy5AQ
+z<vV#y7NIBhmm#)|iv`|4>zo~F*XJ(*4-Z;n#DA!dt!xG(2?QM233(T)Y92fPR|{xl
+z%6F}XcEN>C$9HD=1R{3U{@ly3^!K$NF;}b;a_MG=b3oQ|xN&5&q}~Ce&v6JMB1LX0
+z0xdM$aV8V7=m0z1XgI;(Gqes)9?a?>Pl<@nW*Q8hv6n9F4NZw@HUE*u#lIPsXRcT&
+zYIvCXLs0&^raeg|)j9r8OhFNHMq85V$u^Y8!auy$Iyujdgp73`)h?SithjqtiGaP>
+z=?Gncg2sLH!c{0sDDgXA3gd+RZkhB^V4NW@by*&_w3HT(CPu-ii*Aso&)xJPrka6k
+zhS|HHQuqfW6Rr_7?;5NI-)i<-U=s4eXa}PyC$b}rlBwe<PZN^q<h65ue+7uYQ}?N2
+zXHw<!MrgSI=~R+Ts$JJ-B!G>ruO@yko!O@oWk2cxRRUj`I<__EAE!yD?#4mVvpc{?
+zJOYLI3zg*jVyk`qdM3#PdL}e*NQvT2kaxt|JKGhQqiRHx>gqO`096BO+nRaB)Ki9o
+zhzA5?D~{fKqXT8dM`+$s=V|H7d}!N7+x8*|(gWf18V|!3ISR{RzuVd;xf8ocUT+<$
+z|0Zm04r{Ar`^D*UO@b$wd-q*)xBJFpCb|3WDVEJvg>2YmUaRZLo;{GtwJZ*BX^A(C
+zG)3VByJdbi%x&(5V^-DL>w^9<R1-s-Pi|zIIE0H-?E2u<EzW=f1*$w9j_+z-tCj$<
+zjh{Dje|ivUA@Z)!D|sAA1mCl5hC}+PdJQYT`sbqV+xPzt^pFCF7xfB74qE49k{)iW
+za0>;)I}|S-$wlx(_|ORwt(M5?%vu!pTt8|2)jIcceXjs}`n$=}dXgO9iJA|4*Lvr2
+z%5`S<IO&Z17(8%?-C8DZzt?l!O8J~x@2F=pZZpZi6Av}4IsR6dbI%c(B5Qa+ESU5V
+zvoEt?_p!daXQWuOx&wyk7EJ;L#E=bNf;h#LvxtjlWDcDqNexy<lv$)GOfVPt*#!li
+z9HaFiXHF@W3G7L+rtfbg^cu?P`8;J=_i>GgJnhTH7&-R-egNNJ5k(KsxaJ<zo~#l3
+z{l#`bPI*`&rGX~nsMDKJbt3mjQO{YC>(^5Y7F&Zj_#9j<I+>MlYRhBQ!+)vA5Rjv!
+zu96z($5I<WVhaEVz1bLIO%$7CrrliIdRkbd>di4km_K11^qwOVKIzdNe-z_DXwu^|
+zY7fa*He~muWFf=+bW|OTXdKNN0P$ns-(4q%4e{qR)8`jtLz041TnC1FZJ4~U6P@1s
+zE*-aR@0xdr{kwswVOD(>K9jao<MJcqRJRjcFdLNEyPfIdH2;xo`d>xkrc@l-oTf!f
+z2xxjG+=Z_4t>l&(om*qmbN#(<@L(whyr!<0u-J9D_78tI(VV)!y|(u$Cl2B{o3$<g
+zHxtoNrQ^AiySGC=L@jQa1^&r*NwBvo4ge3*0s-fZd`=dwM_(*uIn>opcE}7has~g;
+zczZpGZ&Ql$@_GsiG26)Danhg<cOw`@q_isaGLzV1qW)~O@O;+8TRN3k$cFjP@d6Vd
+z+R|51BIG9XG6@lLxaQ)f)Tt+j9D&$hG_}1kF2Un!4VQ;)Em`8;`w5|iY+bu_C~9<g
+zrR01M9SvYRec)K}D6E2e76s2EW;j-^#F)#^UhN07|5>z&wPD$n@^!!~HP{Q`2qno^
+z8*pN0i(F)0&wiBc)dLI9B;#;ph!AJ)K$wq|51u-xjW8S4AwvX-FaE8~Zl}bEW^#oM
+zinVpD$m+<V(-pD7Znpf;19Ij@Qm?^%<&bx4<7BG`7-J?!15glqp3sm`H-vHYb4LOZ
+zMfSE^wKWo1o2VgyW_p^frm80g<+Lu5v)UdcQBuzsExXutq@$g!kZhc)?{Ri5Z3TB-
+zN7r;C`yHO;WLL9i{0I4jvc9IHQSB2Z|9Emw7{V|bnCGjE&5Qel!EA{(o4w&m-!S*X
+z@VfoJ{`qEM^C~0IZfICr={>SH4$*KVnpun*b(SH1F=|`g$InD#*%pN%^HqK&4Aqac
+zxcIFrxccsH78i=ZQ1{WhS%+o~M5$5Nu``ll*UfX9o0k`cvj5{uJe1RLYw)~^Akk2l
+zL7mmQgJSw$R{<BVKn^*_9L(=ExVW0S7|XC_z8wh0O?JFvw<~Q-s6%Xwvo>K8O{dQO
+zU$+YJ-C2f`g)T^l<oAE)Dkrq)cqi;hlS@Bz-8CeF@P-==oYcy(yiyE8twDK5Zw!|%
+z2R>(|lU)?K#&`9@W#MmAqodm?ggKH!@>asQNt!<GVm~mfoja@V{=F|r6(@-F{$;g;
+z4R}iY+cmyy27>2!!ymnqNXK>4`PK0}_V-}uWU+XKs&DC@M*y}M^YOyh&5&O9LKJ!D
+z4U6uJvKpJ*(a}M$-_=}lfUm##XT0#<nqi-41Gwu=urRu9$l-Wit(-<gqGuO{$|Mda
+z2mcRIi+4Ac6H?+?0X6j}BfD~5Zy+NDZ%pOK6R+_*|9%6qIP8p>JiV4T`m-A^W-W_$
+z62dZsqwBky@sbDxX4m;F#$D)&v|?j)w4mP(%^O{aK%$~Aap#Fi6{+4$#zF$mxB4;!
+zH+a|Lg*;(mLMc9Kj<0zhPao%}a}aE`W~CWsiT%~LH*j+6>oSwvr|;|eVEu%!|0{_2
+z?n@u6u-{5Lp(>ns&aIZPckPy(?qCvzj;8+pm8^qwjE97L4e$>LHZ_ztnd}Ap=ovUU
+zTX=jV>GsL7A@qTn>w;1f81@}w@e2vJMen@t%yQb$)0QNqA?bl~(6&+4G+N>V5-GOn
+z3*GT}_2Riss^O*qwZt!kubdkC*^sA{2PiMSTN>^t!S+fn=5C#bqh<?l^XMi(d-jN-
+z_Q~=Q%%c$V>3pZI*8^e4Pwx}kgDw66OrCvy0(UA+OelJe7k^wo+&*-pLLJVs2GpOG
+zlUbhk4tS0Sse=?b7!7T%7o=y;haZKDW6B(Ki@n2K0jaf$NaoQIzWN`<Z$-}Ir^mNz
+z{{wuqujp(XSh8j^e_zNF2v!wPyqQ(wyjFoSTv~oXc0tb=;{60bq&oB<XCIV5rf{dM
+z%X(%B5Nn^FxJ<%pSW<@sHwvS(UX6zsd40f?^|i(c>q>OKcJrDj>zp@CXNT^|bS9|J
+zUw`I+$Rk0?8DFMJy5$B{jt_A?nG5}*Fm$pQ*C#Qrl^OJVp+28XZ7oY@g@t+<)35Z|
+z;1U+{@)^IUGz8inESz53h&}B&-$W@Mh~pR6SlAd3Z%9mJ!t34>bKzWf4EoTsHQSST
+zeXz12pQ)?tTkOwv!Q&C<c8+z4aoM<JSYfB+<(>Lk4LI`o{j&7WB;NU|{glJxer4rO
+z{Bf&aFwenm0W;ur?ZOb#qhrGYHULzYnR`K^cK1`ft_#KUO;4~pDDFE~UP}V%{5k4m
+zAWNH|#R%Ra>hQ;*>@?&O2c%BV>Jo*Tp;}i@`$^#y@^M95bW=xR*<Zw7F{aMHPSDP<
+z2trgGFhxd|UnBqjECQ!2O`C{o5jAstc6X{yyDVJyWEM<LiLc%t<_P}qt;{fi7!U;`
+zS*kniq-pHxpj#HPCwOr0%RpKee}6i?jf05(MIrOvLoe&Q_{i`DU3$!<aQ^?mQ_0&1
+zJ+^$kR!Z<&_klvuqN1=aJ@9=YY4?pBHq324##y`l62dXmr|);UqrVoit<%XU{}#j#
+z;>U@XJS3A4Z^X1v7?`G`+92L8L2S9p%tfG=(Xe3!WqJFBWN|c!-<CKZTs1oTgFDva
+z#qJ0zd%k_#=<tQj<!Q#Z)@pMcqlV@L;XmKOSl)`6pht^{yYNgpq#Nl4zG+ZpW3>%m
+z^vJQ6#_s~xqIPjM@ge`oSn%8-{vTC_UHGlV1ygt}))SAQ=a@3>V;;;>oLbPcPSl6H
+zO$0xPQlQmHm39Quu#G2xks=>Ldo5*5>Z-RPz*=ba&*e6U($pZEB&S&9Zw<}GA5k|F
+zn>NE1!@#xczxB#{>i8m?{|2o(R!}WyD!%M_pKo@4H9@s@nsT1BveC|^2Nvx@B^!`4
+z`m0d)4o7Fk;)UYqVZt6D!myi*qBuGQn+`Q|zV8at>f3ihG-R)064<jZ)o-S*C$k-t
+z4ttzn){ibWVJ7k1w=%m>YnYRn==2EBpk5^gqqV=fMa$<cPrOzr$jLF*43wE&;BZD4
+zGn{Nh4h;PY7@JxXe|%oN`sQVl$VP!=@+y7(1;ynIiM7K;-n+M*+3)(FL8411jxMiy
+ze43tCjpFwD-r0%;6`9G!!lYe~=;oKlu-j}6atDrtoI>m^nYu5g9a;g%9phDYzG`n)
+zD>`3&6f|=Doh=la5l!|3Ve;c$OM!<7Mr_7hSqL0oBP9It;@Q6UqkOC=3k_6uZU3Xc
+zuvjfR)-@Wuma;Fw=aKv`#P04P-4tTeIOE+lfA2PqN9A?1Clz;!f)5`RL*ZNlkZkYB
+zz6yYiZK{-8v><4RA3<Vt#|>@MT)zWeURK*6A$G&%93fDQR#!S<nySBqjGEl;VK0oO
+z$2ijFv5y7bk`cdlC`}P(0%W9nMHZ@EJFd@Nk$6b(l~()hmms;gPdr_AC?~vN%jJY5
+z<^Kue{pW?2xT;2waJsY(RvZrIJso+?Dqnw9-8$aXrRc#BzYF}GfLxJ%Y}SQR%R${w
+zp~IH}!f4S|J?XX1nGgc*N;wegwDc;fHW7#YIay6Y=@2;b4L+%E+>^*`K=>DjinD!n
+zfh&nK(O4o<h{PVc&xYo9MJve#F?p7n>&>+GpXn$?!|O9<B~+yw`<*?XIvZm-&+p1>
+zr`ZvU6wUYwF<vK9q=c4NCx~K%)i&p=97Rt#<MQpA*zYW`&0c`W-~E;x-@dVs&6&TC
+z3{FTfmkqADJEk@qKs*%{8LnYq@b1uv23Ah53~XzO+^1Cgtte1HbpGq-F<QsF-&r|A
+zUvM!=P2+5j{C~3a3pyTALW0L_eM<W`gjw)IzAOIN4Hx|CBPhy5-TU61^^Z#VrG))L
+z&HFid_pG$MR}m&Z1d1AYIpO80g3*Ff%yOdF5dtsq{`;%Ba$V2W&Kk8R7@J<GOL{D3
+zRE7&w^Z?PMKWbZtefnm2+A~!J*sa*V9l%EE&NMwE=azz?+YkM+f}27wm&)cyO}qe%
+z0+v_HHXV<BA4I&6A~_vd-jVX`PVLp0_P9=U%vKzSWm@f4hsF5cEhDXAp=C+0FsGLr
+zNpV&(&gDny&UqFe;;sDo-kg(Sw7ea2^L#{xG6yc$TIeTiY><z;L{sDi%cmW9$#@;F
+zQ(lOyKc-9f0(8z2^*Jv9>V|j0FLj(>fSW#lMdg@_uQT}Rlg)@J&-52=wtNC#ol+97
+zxIF%RS8Fa25feUW3R1!63by<RkO-jhS2}g#P7Vtf)J`FCD2vGZB%V)k3}5&M8mk2*
+z<4lb$@PF>Z$mHtk{a-C$#K3pZ=6|+ujj#;owg<7-26idd+;;=MivN3w4+v`qA)>!s
+z*VRjps{u4$?le7NH_4kGZiiv#Pye<Ox8q~}s3mT`f@Ab5|2a9R9~wE0dE3jfFS!|3
+zzHWMu+Q9TmN<<JPeBt80yH_BIvzpxpfSX(N8F>RC0O7`QkeT?fH_Zki(CwJu*(BcE
+z-29ehFy>+$B$)>6ftT6QKE>_Bhj(3-cTK17Wfox}?AbYnET`YU0PT&gKa*njI-Wn>
+zDwkiHc^c^MDYG8RfjW43dVnBTw@#ja<vkaNmw$7%+UR)GUiMUnyb#Uj{rlzRG?`Y`
+z<ClH5gtrOp+TGXD#Ta4F`VPbozC|Oa9Zt4pg-}11*PVUU5)nn^!rMs)gkNpu!5O)R
+zgCNgykOWO3d27)l(<9ql8hW{JnY)2<zYF@u*MozBsb#UFiZr*whM1J*cJo?IEf2{1
+zWFn!vTV$O_TbZ@ipq#bLmz%{did5yU$8SIOo;W)Z6<EE_0pc*u@hP~}<G-gG)WreO
+z<DEp42NKVPNhb9w1_w@+8~$9~5cLD~agVyVI}|Vf#qwvVXSahihqJ!S4T#yelX0ya
+zr?&~dx_k2<KMt3J?7tiZTh~{m<M^aSI)H`vvg9lP#VXPqyU5?LnXjJtm?&1HMl!4W
+zSg+lhIA;05EVgL^tpC&`R`2q$`RsloN%qWo(lL3N_D6%7sYZ!Rda(EG+GW6lzK@m2
+zklvryZ?}?Ij4xR3@?KWdnJA?XZlIMwF#;V)cN8YOn(D=TTcqerV@9YD9-(w>bp_rV
+z?T%9Me1@XIGnT<R)ui`dE|Dkf1)lS#;9-GbM^@<Hf?+FaM?Kr_E)RLS@|oM8Bo0jG
+zzeQT=lPV;qa#RATK6dn&;jZT=DPcP}1{`LIQ>E&4J*}UU;`#q;_8<AY3E5r`2x>*A
+z*2CVxdKt)?Rez2SFdx{tthwr=>I;kVoV3Z)6Bfl#n&vV@b}nN^R#xsaazIA&RlCVI
+z+xUiGZK{X(<;tr}vjQdRD?=DmlG+HE^B;j>o#D}gG~H_j@-9Io(I%@sM?n_A0xs$a
+za<3#r%F2Lte0Ku-;M2k2B(|t&+7<m)-|-~guo*6%VC?ST_tgrao<Qv6ig=sxefGOA
+zXNjjzgzEu!m&gHA91fr@(DRb7$pp<~UmA!DVgscTjAd|pmWe4dJpz?^_#Z^*vHZry
+zPLsF#Q0hJ?l$QHCZaYRU?%@Mv`9nL@K`a``iLtFgi9zuyz}I;4$q*tk_Gy)y8ZNjj
+zv?S?bnck^*oQ>+FmT*g|O-YtismAkz&7*Ss{pYLK8pD|VbDM6!OZm-zO3!=$HphL>
+zJJXygH($D63^u2po<w!NVEDbjla~dat6s(3_pEsLh+kE{*jDA-yUVvH_@cn|eaYFY
+z3}8EaUT)aihXqV~2Wnr`-0~=&_R>+ly>-Mbp(B@XPHs?BjN{`cR{;wSH=)~wS7Pm6
+z%0KV<m>Jhv9WKO8r>Yhf7+`|?=)cj9DN8yuHzbYzKgjYVGA9TB8z>c^6FeQ7VC*j&
+zoW8b(d`C&hE8-5Na&l3;Z-AQ@iCV!^IiMGP^+BMkcUvfTEM3nSq-x0jho`TOYBFH^
+zmJ$(Z>6DsEqewFl6-7b>0cA7_(lF^5NJ)cAmx2OHgLI5;7)VTV^yo2a!Pve%&-;Gw
+zIs5-UXZLkq`3sKZFORYtd7Crk=zySQ_n%K3oU?7Fb|}0bIhDkaPl8`IFS-?#?LuM{
+z%hF0;q(%UPUKghh7zE;#X??n!q<p`m=nGFVIy-MObEg<ig5k4StZhzC-isCWU%vl{
+z_*&lip8pnER7Rd5?vqx(3ITX=P{1I#hWk|zN<1Ykdk`N;2sIzo9KP`v4QvA)556&X
+z5eEBhqppBCJM}o7Z^O!^?2?-^h*!b8<vUNGcsLJzu+Xg(Q<^w(lDGAz&rW7Aq9w<n
+z<$R${Q*jCzK|jIbP#;|#G2uYX0)WT!xm`jj>XsiOE9LX~og7}OI^0*Eh@9Vvx%aEy
+z`QZV_kF<67mO9#GM-16W_1F5t1mN1phV-;?$cE=!vy<w^!=?FHzvYctP^}$7><Hkw
+zN){_fZ5F_WHdZ68#+B9N2Y|#xl(@fFP;kD==XOW;p>Z6Qv-Px*oh$pVSN4XQXQSU^
+zY-G>6<d6xFE!o{-Xds;kdtTPWV7RU)QlxI*6j?rcC$TYIt_PMoe^WNt3$J{Y@`*#>
+zFq6jmCT;n{B8O3U#I1V+p5T?~;!p101OHZMuZSAFv=9C0VmPiM`UQ3(QflG22E-&5
+zjI>%4y3fuLK>WqV0C9;#zqixPdkJC-5-{h*jFxdGmnRO4h`2a9TB=7CT=ljcvn&lN
+zG^i$chg%ET0UFr~%$3KfFDXG)jmo&bz}c0)wyM4{u&hkVmh$I!@~-{+MR~Yiuld!L
+z@p3L*o+^80>1AQc$XQe1ZHvAu`i7ZWP7Hq{ax0kshu}jdQT!Jf<k4Dt^47Pr*lk-j
+zq<BV6Gj>O_y4NP<2FzJC8@BiP_ye2YA^jaFs<{a4I1mNh2;ZmTJWQ3i7>v5KLmeAJ
+zP8`|#5#ur*2PcIJ8Y$v%X3F5tsmHYn8q=rx#ZLw2SAB#Yo=HJ=q1F(AVXydma_KA&
+zMTCsjwYJGR4Y$R%OJSnnIqunw77IVusGKRR{Nn#J2kTW%#Zb?33UOVY%G4zuK(PnF
+zuT_ifIR!-S2fj2%IZ$*?v*(hfpkXzjiWGL%$>T5Tx9c+26dK$rsybz*)EL4z?9dpU
+zpGYZrta;=XQK9?nyUjNCGm5n+#?CD^?0*LBp*#2A?>y{Lh>Gl>QlSD>bv#nG;8Z@m
+zV!ATLU+uD8S45u+(&u6vrBLwWRA{yWDIlqw0bKpkTVl=Sd0*S?Wdc8Q;WtZHg@u#~
+zICY?{E`^pyCPu9h^h#=gVB5-p%Tz<s#*k$mJp{%DLHm?IOZvxFQd=OqIl!J8-<#tp
+znKoEP$3ahdd(&SPJX{JrG1-<#)xHmRe`MO%C;+ann>-!8(p{DTxjMdC-LtN?uS}S;
+z0MqD%S!@U6@BGmgiodTO7nMsn+Ds$HHl~~-U^{cqbF;WHyJp(vN9k*a-p2=KOLMTc
+z1VPlI__(}UU1mFFcks>BFA#CV-KuKx)@}rav;dyD6>h{JNVXdIqXE#R`iV~Wjni!4
+zx5c{9Lv&^A#iUGm2B3O2!NqCy;Y^h3$B@~7Z1o=jJds`}d=qC$bDO#0Xu9*<UkWni
+zbUt4b_4(1*Mr)?K<(yw-lV!R;MaJi_T@z&#`6<r088}#>-ask;Hiqll4&A-~9$Yfs
+z|D=8F^ql$i_-x^OEQhyv((mJ)d@O(IdtMd2f=7-5n)dSsm7FF0C-JR+G;Z#TF5Z@=
+zCf=Li?6{#3O@CcFboZpJk`obsXc^{51w1*tz|mWiq(yGq1yh^AzOqEiXpU`TZw#)@
+zcv8z$>|E=MfAOcyo6S{4U8wzGlk!qUG6Ty<1<{-DwPYNA!q!DIQL}D-$IOAGmcYmH
+zJL2EX>&LaJ@?X@xteQ5Q2at(J<Xl#{xcX6s4C(>LFXR$rAnQyUNCZhY6pzGO0?ID?
+zt1h2_cq?N7%l*l1^zB>7dWZ>?VI@Pff8%!cT+S!}njdi(_Q6UC7EpABo_v$hWi)W|
+zq><-~aJ`bQXH;A-Mj7}YMvut7fR;b}Qcd$LJAEwgf_<VMl&#9)TB!bg@8q}Z952GW
+z0t5ciE39|1%8v(X*(A+5xWsr{fg3Yj|0&7HYP$PsOOHnJ2Xx4EVOBYJ&v`-bmgDWq
+zDL8kf7yH$}OM(7%$pr6Go$8PnJA3kJvFbrsD*MCBiz^91R07^ZRQ9A31VMQmaF1kg
+zqwAcvJQrqY-ZRy@b?YA)vG*%;fe$R%;JkS=C4jr^lJOgt{j`yGnEC+NUFVPna^bH=
+z@kGuypC$jPTfcYZ`plCLr@vG6$Gsevc7RnxW#lJLWUrc@U!I@RQvFu6cGflf(G3=*
+zd7pjA<^q{zbP3I>3bDV80U|CEQJd?@z}4$0!X)Bt2c<^fSQl^qGT0FtZGC~tLJ1tO
+zkOtob<RY$=D!yB4>dzkpb`?w{$du@`dOJ&(SH%n1c&S^Lwg+OPBL6AVdTCuO!rwm1
+zM;R%?=H{FElBj!6%N{ab<NI1i98ESTNg6Rdr*T{93d??>`X4zp=dX^zKKcv)vUfRt
+zkm2#tZunwse#n;wa<)jxZKL}dnnke^Apee53+aOn=xbnW-Lr1kpo9!Z(WEq;0J~Am
+zp6*wf4hcs<!g9t5CzLqFXlY{*E$07y3JGW^-ZHfn53`R4aOcB3^Z`b}ReFDa$~Hwm
+zVu5NCK#rT-QUwdXPxb0euBHFePhvDEa5!sz|HG8JYh_w<n=N?R`M}|+kL->?!HP@9
+z#K>K414Xrl)OeGk&F`dX#n1<kV;96IjGz??yLE!aW?Em&SQngi4qSzY!f-pJ&a?9t
+z;L*E~AKiu!lFOvd18UOvVAM(Qb^4gaaTd^Xy)6FA-5Bsn4Y@E>Q}!FEvDWZh(=3T`
+z6PhCPP+GAH&x)xjGaBf`{{ww?F$mpy_@zv1>Ot3*HT7`*4bOQ4Ay2MnH$H0hk22N-
+zC+0CPEzz<+fp95bwe}O45v%x3@9_k%`bG^d3u}IUu%E7qjtW2g`l6)hoHCP2>#~;(
+z&Bku1R|=ISrt)8+!xe$eK^>H2t2_09Gd3Gs9+3Or2@HLi+LI8V2m2D?8Mvq9tpMhb
+z%X8PH(WyVR5$~E#0)p|}Yaik#RId;4#m~WN82bW3QE~$|i^_-@RSJp{Z9@jR{s7NE
+zk5_(3UMcN8pB6YtZJ*Db^2zm~zLyk8s6P@ihN-Q?)U?GD{jN4!y@=EQNLSxC7F(BI
+zNQg&V;s}d^gyvilyukXB7Med0131L_c3glDkb&U50qfezi?@fw!(Yc!5aK%_D6eH{
+zmQRneRVD#s>}=Q@n$5J5t-$FVVl`64oU@()cX_(6Y)HQ6*y|+$R+Sd(4Ge~qR0rtl
+zf2m(hdJ=Ax360ABMxCYg&vTsSmc__}ux8#&X0iWnh)rI;w@q{4xk;vG39t&NexzQ0
+z;0A6e)*itSe#p&m1PasL-&%N#ju+)#Myrk^i<$I8mGAo<`*3>3LWX+ivB8|xNaA}~
+zFl)7Ka0Y^sz!G~WGoOy*dyL>fM3jT8E<S4L$BAZ^1KXugYSFfx@hn86{C-`qF%=#$
+z7Zayv;iC;ZOsO0Y>u04I+R?sJ5;GU$8@T;``bA2D2TwMLcDbQp`igpHa0wHgD-Hkb
+zq+NutZAy)_J0rmidZBZYOxTBQsSXrekhUWPHyfdt1#~MRDviiosSd|@Y2Yx6J*f7R
+z^+Z%&rwDj-egz{8pJ1yi*c(9q7&uo(M*EFFocpTz%OfYu7eja_{{MFY0Ri70-ub}5
+zq!#sSPvt)pg9mOgNYATc%uW9Xt)@R6j1&h%in;B4#xZpAKkn^UbwtweRzKgS3rOdx
+z0qN(0WOD5_zYW;lyA>hVUuIoX8w|yWb*x}`LH`)E`PvAS&@t5Zg;O0HSW9LU(@T@T
+zlx@Ewh&zQ|JEeutYr=t^tB4~@m};2f;yE3ZN~4oB5}bTW64(eBf8L#$*PLkR>3L%&
+z*N_F4Rj6;MAdq<dexMSyMerDSns42VE`aea;JG?Q9e0khI&1Wr`CKAI`LNVhs6SZ7
+zo?35=F1-Mpqa3SDIQ;={V{7Nq4*L$iGQtOweP=^G@7abYlh<z*-RUpa&Qxg=PZ*dQ
+zs^E;oZI#JvKu^FBc_1c+G?AU89D0@kc{|%*PJ!4iPY!wzuDH=QyO!^Rj`kx`xvZud
+zUg|gtG#dv$gcKge`nM4#-br=&%}#{@_HiH|@8i6h=ZLycw$7Y&K5<y=p3LaMGm9X4
+z1>Ne9aFrA4lQ(;Psr>qt;+6H(MfbkvzxPj-`=r2&-@oeib7=LUM0h9plp_2G9px1G
+zB5vXLVE;nB6HiCfZN?3Ki^4T3-I!H*r}-q!0x|)EHxCfC!q{#$`LBe}>UblT2Su6h
+zuZ10pK}8G|S<?*ScObB>>S|<C9uC@nu#vsl>@mXf3EkXPD3+RfV(Jns^wJ!3M0cY#
+z@P0z|J9#x+tj5?MM0;fxkBTJQ{boFK$~WsbALWg#{usAZL>V$Hf8bU|>%)Bu$)Ze7
+z_=%NMdxcvrHsm|{O^S#FAFt2y9|?YtbHQ;zl0D=!aE~MbJ(a+neu0DLLY9M*gMR~$
+zwocec;fhUgT)1MX9}QE;^`I+$(YA>%V9n}p?bFJAz?RRq+u(KUVES>9RlSMr?=)={
+zo`df%C`H+}3|j;?v|VB;?u&XqFnJj0?WSFwG86Y-ba&~GEK^){@12(+Q@-O42Lk)o
+zYH*TgHn6}I@A#jU4{;l%g30CL>5)Pdhf1^Cv`!=C%j@n<#@{$+C1I<|(7uXmoEfm7
+z;(jGkpA2YY#0WV)rm$s5d9GH-9Y0`S0$KS&6i`#MS}P&f*^bpOYxzL_CdX7lR8^=V
+zgjj}Hbye&3N*}e~2%ux+yCwLdctCDEwCi3+l6LJAxBfRnZ9QhGH(zL})t3MVh*tKy
+znNL;6!Qx6v&yq%r1{WlXUau*yD(H%5pD0l)NAMj9H@>Uc=AQkX3>5!jNE34p0H+72
+zwYStLDYVO$km9W`b_j~Z(}K+mlE>{$S_Da}1H%hV16;-REK|W}TnH;yVf7(B@b>0e
+z&_$32oj4Q5nj(-7TK7(x{2T95R)q)0fg^Daj<z_ytJC{7v;3j=lZL7TV#z4AE;^T<
+z-5I7qwET<b)JSIAY%kx^$kUB&vvCUX@a%8bM8dUXuRR%BWBq=0HsEmXAMHDUlZ%Qn
+z$cdap79Z+IKImZ9XVR@Pf9Vs!QMqa{Sn7N1EkDwzzc68o7j4m|uMpAvGkFW!KHzdc
+zKjR(YuXMuPuPp1J<~73`0V~or8g%AD9!;{CHV~DD0&x#<X^&ewkNcf5o1Qgsl)9s(
+z-7{6TyWDM(A|dqH&8rI_yT3b=;1S}aShKU(>u@4$MdLK|ib>d>3>%7GFG|ly{QL8v
+z^YsGWQU!&RW~b*I+g&$(@F|_96Sg6<-)eTWhGf3X=n)*3h$WC+7}Ak60n;bo&-Mt%
+zhznX!AOC$rD~siF3}~de7-Ug}rfNii$A*CN$Eo_Ou{_X|_`DrIXPJ%r%QD<cVSYF0
+z74k=HT8e4z;6IvtZ5?WO&w2YPWimq*qZ?;T^oQ|i-KQP`#SD^8-~NkQ`}*`ASAG#Y
+z(|oZMl;Y?Sj7*_bO|`-b-&hRkbZX;qymT{gw`$8{8f(MHtAShY86@>aEqTM<9#Tth
+zHTiQYR8qrlTz=;Fmh)RH4s8@rOARVKoU>jtAoYTnHU!$~JArCy$MzFqp{#A+mn|NV
+z^so#-nh_{|cZr}#>J&^yO8N7cjgM3-A>9s7QeSD;1QfEXMh{ItRd>mqayK9;e`B`q
+zwNQSvUx&{w;P%*q;h2(p%2y*Dj7PFMj)1oAE?oWFKEciNDC(q|1S3cO?tsb(1<n{X
+zTox}X^O-2=FN_2@Nxs|xju~ZK{*@tm3t)=`fHi{cIYsCBE{FBOJ%V%{tBf|5dnL_V
+zm<>y+Me14&0i-c0Hc;`C58Pj?bt6{6M@z8Uz&ETn@J18gzX6nJZ&Wj~a+Oap6gkQ{
+z%2afSZ(BLh^FRDj$8+#NMyJ123H-?3v0TTze!5HHyDxo5x#&I(6<L9j>waQ|fB2NV
+zrOy<Lujc>FSC#q<&2IBaghfRSJ41K>*ek4}ba<h-lbiC16Vv-E%$J)-ZN;wadwn**
+z)gVMZZ9lMZ96(LqZy2K(5Z4&HSJo*8SuF$RLGTv9ob(~(r>$zI&UZf+=4#Axuhi(}
+zuG~CPZKx~UnPx{we7Q*j>+Or$KK-7?rDMH>N+^o_Wy(+ed_QUNXkz-qikpj>m&I^_
+zoKK!c7hIYwH7K7eJ(c1fKo{AJP7@<7`jI?|10*aktF^V2CHMq#nhIIUKpnTyT}EPb
+z+V?7e^B{|58cbVw`&Ke|1o4{QB_wix!3m@ztkLL6iB&Gm3)bu`Y2T?9T_~<ts{_25
+z)gHk%Wcexu)Cv4w1MsX^i>0QR=5?ojU~q)XeE;mU@flr};uC-NMSi<45}jtg)L%Dm
+z{ab4c7|!#QRcTGl1_57yZ!fQFWsTf2UFx*_lAus$|8g(|7x`i#;6z%9BL(DBnh=tW
+zWo`E~gE(j$5(9F8V~51f0_vu9s1~L%3?8hD<wq;5Uv4xZF=3=xLlXKwC<gCb6@c7+
+zvoW`4TUiXaF#jfFT4pHr*hTGFSg}2zCl9RBo{gr5t#G3CFO>}-^wE0Q{k)keP(E94
+z<_zVP9PBA$`d$=#)ve06d(rC+-y@46^=w(cKwPZx6g`p~b_7Hd;U`d{BN5kz>65vO
+zghS5YCl<t1LHK^`0#1hz0r#pNaKS|@UbHm09;sE)J_x7f=oWF=j+N?E)rJrH8?5bg
+zMm0-Muge$gZ?mnd7n}r0Lsq53kb{8HC<@Mj*M5ObfPE!!&lm+RRipHk+Uqg3<+k56
+zf#2V$<@3}lb5bk2|6TVuj@z0m>(*GYdhzT(RJ7uh2|vw@hU*c<W{8LZQ<WEg8mLn@
+z=f9GHNbSSVs*?W={)$9dx@jMW@qwbspXkRk`hIINuG2Q~bZgq+RzuTQL#fnQak1!5
+z%dq7tDi5swio!xKZV3&=+=IxY-2C2W72q^r<9Z9zlx@<1wqe%F5qft?EDsogI;!n}
+z>TyRr7vf=kJs=I%a6ZVd5m{kL=KHGhNp6z0JQ;>Re3po7(VNXZi1({HhT>s_wBSvw
+zbuiBH5_&EH?P6a%`EbW$^SJ=_4~C5>;G=QYobE9p;BOq5D2Qw&MU~~K)m-IzfMSAo
+zHyfM^O!@o?^6yeHu`qm2!L_K#v;1n){hKl3&)a`=PT38gso{U4e3iJoX+ONru_^SW
+zYcKz-7a?r-AAf+HQ|#6M5IgRa4BuM{z*G71_%U^F&qPlR=@doFK0G*WB=@RkTN~ep
+z#^~zV4nJ*4gMQF+8n_=mT#Z_KlQ%tYd+Wl<#7l#7m)5%)TqCm*tFj8{?iTQ%-(;HJ
+zLE#*Zq*us?uPx(`*3s4|rhqX*s9jq=Dk&K^-iq3UVCx{>?a~Qni~cHX1^F2-Rk9be
+z%N%dex#ry?_o};t_A&h<&pr7^%8gIb$rht2uo3G4ZE?sMY~U@WYag>K`V|v!tKUm(
+zHh`hvM5GED{y0fpo&CmNht4;jXPL7y?S(DLc@#2jm`_D2gP;q>3NCtpOctaxgv{ld
+zOpUlSn(ZQdF9ha;QR!Iq%Z1xjBE<@<nu>$xAljQ$em<CGoDqu0v&Vl!$*|WDgaIfM
+zS-4<<4;Nx(atCQbzn^!v7%!}<4zL&XWI)Zwa0l3^czgaB1V!u_A>@gbVB{~+5&$T`
+zyJu&bzYNgU;qG034`9Yt#19@OYr{VX)8(A61>FDe9{qha`{6?bMV?kM8I2t&E)pho
+z?=kv4IdPaMI&pgBG$>~CEjme|_shR(tsnlr>Jj(!bLc4Z{)V4AZu1K+$JUASdO<CV
+z_3@xgCnkAJWIiHyVNem|$~nR-y~V4+v&>A&stQ&m9RQC2e|<G^j&1V`+jo=<lHhXw
+zi~b7q9&O*7VJ8QrxMw&E_4GH8vy@o$_pX@L*kTYVz^O$3zq*%f`hq;Uq2=N>fwumE
+z8(d5eUA~1-eAII}29k70Lj-!r7R&%!BuKms#nMAFefYoVRL+SMoMPIz+fBh^6SE3!
+zqsi?|!N<TO_oFwhwrVUuuPex=kL!be`SC*h>2w3G=g}!i8XGy{ihHt>UB1uB5Pj6A
+ziG-p!aSt+gy56Ex;bSgeww9?en{x?t)7kFTl;8LN6&7%d5k!tx$5cGAZ#1`i!F+9$
+zj{5P<gs<~b;vR9i!QKPG-Y@M13=0LBo3tx=0{fMsvdvY?Rbr5d%J#QC3zlAAw^G7Q
+zt8n-OJZ+8Cj8KmieH%Fqw}Y8C$ZJ*|tUBbbY&`8@$>1J9L%E3;`<0M`)4*jy35f+m
+zK$0=U!FMwcposMJH-LP&lv3)WGm}D&2PFFLt=@PL5cN5GJ>8M#QNlz~fn41!yL;!&
+zp*uH|D<P^nG{@O4-Uf6A7TnP%d^6=ns_nIe-I76fTjyu_0&!j@H`aQoPWtf{rOH##
+zQ%7PA!H{SSd6q4R-XcXo&-{>IW?b-tK7lqDp*{3R(fXY(XLsQH#+6Gh-bGndOiYF#
+zRNn5u=A;149+D2i4a&TrE*a=<@f7}1I#0nu5d!+60ZHdngRPT09|#3fFb$oQ1K4np
+z6NS}p#s2BCAnQ#`#*>LmMu(A9$zszUCpq1*v+du#BAm$a`dijyR_{|hgLR|@bM}AP
+zJT(e44D)>p#RrMvD6(8~xBJ3_uC*+|Hj%|seR*YHw_RyZKM!jpy|VQc83A}&d^3{n
+zAk}PAHB9Fw@XjHw*N-ief#MKF;UZ^wY>ht`9J0oZ3+e_)MtCJm%>N~g`&NAO#U>V{
+z_Hr{PmN*l*1qB*+m&Xg_G&*Zy0J@(H1<BWb<m;)_AUyZ;57<;yF>Zl*ZYHVYd)Hpn
+z2z37P@j0#i%~&!*S~0wACXA4Jf%mdWO#?CnHy}<1J#~@lx2z7|&yNp)wBg!K_gW6n
+zjGZnx%`p*c40b755eUzn<LZ8e7}^Iil$ibhU4TCV5CjtBWDH!zy$u`Ru^F12>2ov)
+zSKwCS*c>NwFY#P8bc9D1!ry3XX57C^@bb-~Q*tY)|A)|VSE{`E!5ycZ1`$Pm4@Htx
+z*rO)x{kEIybK&2(H6l4FNzDPyuoiUxwDX!NZ<7BwSiRCdOm#y{4STcW%ARz|I4}C+
+zR!P&p#Mf6ik6Vc<?ge?+oze9IE=(z>r#<vu%LPz29Twq#;SZDQQb+J3j_8h~QOO0h
+zrB)}7BL%~+HAAa{wTaf)aTv1Tau$XwEQb$*{dqME>wByV%BaiXAMX@zNmZQ-UQMz`
+znURzSl*efr^GE8_ji4jSFNPy|7WV$hMN_+u`Q4+f?JF9oQlLHwG^e+2Ktf3+BoHwJ
+zf`hL78iOpJ#6ys%3YYjb07)IbLu^vL__}v|2Yzncu?JIFpATR_crG0#qb@N=I>am3
+z@O8D97qWY{$u8?GZnHP={<D2Fp;}PShxiaX;eLk3C#6M}r)#B(=gPZ%;~*K$rA(EL
+zQ7xo`ynq2xtv|5ag*Z)STxN2b>GL1e-hxGae&?dP(cm&7F!?_sg4fBC*&oc=uZq19
+z-*c+bs#0mA?w<ZORdVn!ohkIz)cjhG@2!Q%XJ1xX!PvNnoE+6KaZasq%lwRRLzer|
+z7w^4?-fHj*G>Q4I2#?DQkw@}GjmA{z+g2Tl18$p8>=KZJbg5h%U-8zP0l~q&h;>Qa
+zATgbCk#WgI`<RV+1&fRQy)3r9@Bcgg8;wi`QsXTWKye0|Gc78CuV2MXF~CX5L^jAR
+z(y;X#k5E!6DucKz0~R}PewW;~bBLoM5$|Lf1}Rchj=5B^c=%S$k&;{d$euo}Fnqov
+zF3gzs3stN>W6Hl8?Of`I)j4193o|g^b~E{wA`E)L!+!fQ``y#RpEMbtUT9e;2!EDf
+z`F&I2aopedCqhjt!fS<`kG;!o-w&UaV##C;8t@OguozHA_?==116-(JBw-eF;IUBi
+zB}pM4tw!qMT31h!L%z94$s^?p#I&6*PDNo`E|v|=DsrcW6Byk2o>X^d4ukC(dwX9c
+z6yEKUc;sIsv1qnS<H(6Ev~;!5Wr%0x*AdmwQSGNosv5oRl9@MhzmiSXr0-9slB@k~
+zU5g#*yb#LFt~Uxz=C1~R8>uinV_+1zTgAez_1HxJ5A~dhsMg)k`)==r+t=bt1F}5C
+zTDtGatlHpBt;Q9+4*5(ZY(s><S@)L`w>KVrk>+qr(~sFFYE@vVd%D6kXw$<2aVO8h
+z3@~c$e*3p^qMjr1kREFq_jP;QK|na-LJT#5BCb^pufn}#A9*FM-(gOW8Oq>8l-+_0
+zDOdFm1#o!lvn^!q89m^$PI6&lY#w)9*EOJ0N;%bHNus>)Ix0TYinfb!5lGlpzWVM5
+zaXJX9FNoEL)_(|{Du6UXZ1+XzXb*d|eM1jNLacoEc@Nk1H7G_6ojrYtR76@046yTZ
+zS+^Okv!9TW7dkmyz)YJdGLYu@6Y|^j5qMDI#%`92u4Dj(i&3(ict)g%sK!D<OeK2a
+z=}*HvuA!lXq^kQJ8+yHsI=C__hUN?N`^#3bVu~FJ{Ei=*QtY)rbM|*SGiQ9Q$wuV&
+z3pLYO3Vp((ca^U9?<x#$8ejLu15|};I^T=(8qHXaywrNN|L^l&5C>kD^#`^}_qK$8
+zuD<D_ZjCM=eI_K0eVm4_%DL^YzDvyq2gjj^^UjE~FjQxy7tGGH#QrkiD1B)wNx<*4
+z$$kI_@4!l&#dMr5=@nXKCf{)od1<@wTTtm)gLbWI23pxk5-ypqw$->^v)14zd0o7M
+z)p+>Nq`<f*^U3G+oPPtZ_dZ_pF};3#F?U8P!d$-FEI1&=052iCKQlt}C6@f3{iLEt
+zg<pW7=Xp?$^+oza?GX8Ofha+&%Xm2YFaQUZ;S`K*O72nr8MG5h`sq1>mIcy^rsYR(
+z%bogf&97{rm4<8izQ0bWcI~;_&^jw*q;^Af_%2(vYp+1&Z@V`(d_gM*Gt8cA35o3N
+zyIdW3>J)b2Z5D&{neSf1Xqv${^=lIPY<cEfUkps}j|a>;83#B;A>JSCw1Tr#JGMPd
+zM_&=9e`lAQs``s~^)-g=<0Zh7l3kWn!^3TVt5~c*RovjRs+IsWZ%1*q_=a~4$kvF2
+zB=rjVgN`qc!eN<yy|p=u{2au5!Z(73Pyx03zqf~2|A2w<6So4=PduA7n&FIzUQUcN
+zV%U6=A@o)XC?G=lmHIpK)%g4_PT@(C?S`9gFsIPZt;HtsRnYKcGu|E+fJwM0hj^FB
+z1QzhN+O<zwEFV3&JVIeZ@KzldBx3i17D5u-PBY7QTIEV^+hCeItHaiwAhQv6h(Zsn
+ziEmGP(~!sI>LS_k`yTN(c(7d*WsdQEi?P1&$ASw^_#}Jf2jXN}^1nE3Sq7wk<lE!P
+zS&ZY1cl>-CT#?(OTX2<D;xcZE_6H<o<k@uv!`j_9Vlp*hR}Aik6iP%tmE?Jr637kk
+z<Sq#5&Qe6{PXSf-GF@lsQhunr5^8@JrhVkTt|t`sM+YYgGMY6N4tJZ=<ahMC!3#-I
+zl5Em`^{G4k-<iH7y@z4l8e4~z)UAdGj`6889TEJu9w^tG<aw?>l&)C~W*wCFUbz*N
+za++dDxv%M`mhk%K;Xj|_nH6a!G5j9lI0}Cc<zKaolW9wHy=y-ew`%g%qv+uNXLWNx
+z!{lezvQQf%*D2leSgFu_N4C15TUB=h?Tv1{Ea>aaWsE2StR*qBnb!OqO7hezD!*Cu
+z!1wDZ@ACOid=3<enDihG`|TAF_JOlN{1I%obENG^cysgZ!2v1K+VbLY^Ony+^P!K7
+zdG$%`LH<R0P+CW`pN=na{~SjT%P%rZ62Y{4-8l2^^i_Ct!`ro(Vp@rn1D2XdWvcwV
+zl#_tHLG5}|)9y`O6W?e4x76$}ue&P8&C+Do#!Hp*{N$1V$x2mAEpUCtP2O&JK9_!w
+zt81-a%d=hBYsUGmoP+(49-hMf_KGus3N3z%?-A#_;DikGty1&s-c{_!w47#f&dSB!
+z33P^~1nTb7v<$L3&*|gi?eesxh2l5ObfWo$w4~SQla#3BQ>C?$@y@C%&W%cB3v62a
+zVqMNDt=lidD>%T2`+zmAJN9Nu6;0#l<zo-RTRf~|H^+oj#4=vuMg5CUh4a_^c&wbe
+zopS#3B-EXh4_iSBIcV5%&Cbi#@qT5|B(a+aF*tgC5q$ax|0qUK+s@|(brJXP>Hg76
+zTEvMy-h#A+**!4xm^LI$!?ufn7&+gaS7)%Zx)qJ;x-E>9UmKw@SZbvH5FWf~#b*LR
+zIo34k3zS0gBf#noNE!FVk>X$;^G`^kG}i2ce|WRc$D4?3E}iC&2mj36EeL!bFqbu>
+zXVE;2i%#B7yn|f4Q%sy)4x6K?n_;nHGUDD><$~PpD3YW&_z|PYhg$O=s1j|$Vm|P(
+z*qkK#OIi9_Gkhv|#S7KsGMSh$UGLR=wa(+o_x1_5g0pD#)F;W2h6ec`iKV-7Q=jcp
+zt{WG9@DZzv#_862U3I!eHFaOp<fEH51*gE98hG^&Pl*S~S-qF<483;tg<mr>ss+zk
+z9+C@OOo!NBy7j}QW6|lPUO@PTlQixEGShmd)3N3PBLz{8_T5~2@xM`hd1H3SgLg#K
+zc#><HJ_wJIy#D@AVZ?9H{N{e5&fk1YVB{;;_x48BiS|rwn{?2qzGK>s_106)jx*Ig
+z#5#$5p00LxcgHJOAIG{(QkjP4KnDEqE&X%o=JDpO#^AG-O@R%oMK+-4Qr!tsK#Gtr
+zBy-e#o*y*i`RMV30(_<#CTR2Nwdd>jqubAFU-G!V@M^N#Fk*MJ2sr#KVUahL-QRS>
+z_#m%efZgMc>M(1)(DnJ8TVJP2ud~w56z+L8ldZOFa++ewz&FSq;_R@!?(4JTDZN5v
+zG^tYQ5?t0wrCh=tR|4|mMTl830Rn<$FZw3gOP&cjjT}gPaCa=r`)=yOD65JcmXdnM
+z&gclRes)bJK^X!_X%kZxs@W+2X(rY7N9%y7W^=YAIBvj_m$x2nNEy(K5={C{`<eD6
+z$r2ge(HKnIzIA~d^PXV9bCCF%kQbr2h0{wEVe0@Y`Srxv$F9)ry+N-1Qn+RwsjjJC
+znDiR$h$~PA@^57h-BAz8Xv<Lyh=e66bkxZ`&D3z%B#u|%>+!KDq6pqhgJiaYB5jbq
+zCx@JhNhRbY@5cN*;}kqpC8p+uuFhZ8v8=0um&hC%S-NP1FBP5KImnk|T#R3AjQRWg
+zfS}{OOWewj*ru`Suahr`N~5~*#_r5j!59CE9-|B!?ao}?sKPeIzgaJ`rl0bV`g07f
+zopwNXK9mZeX#UxA1%9sPkQ>*RrE#GY7+(~m`?(*By{o|`b0;C%l4p6qg`!&OXZM4L
+z$UbVSrwwAxTJ2mSVWk}U6bk>E$hq(3^W>VfI)2XY<2~DtMw1Y=mK`DX=^Iz?hXRDg
+zhn>XOD_D!`zc%!18rOAWmNf77!{^%8SRop-4-3?8>iDMZ%VThPS2*QcUkbDl#PJW9
+zB$(zHnAY4nrG03jI3JG*!Hc-6DZ$HH%r^b<k@yok%AHrQ@2D&MUay~Thrf1tm$WV?
+zUGVsc0<Q#(*|m~$&l>};7}DtrA8EC>Of4)EINriZRm&KQ(_aObj`#uK1q(km@Rc>R
+zDVnx&feJ1KKV!^u@ux=|J(DPP8H@KDdG1S#aCv2QN*lTWS;^<aEjGx$s%AXQz8I3*
+z(CCLr6fFiZnw}{Qo@sObj{5#JFsV{<VHhm-x*^R@`98DT9Dl9D)OMTsdW`wa;_HRx
+zPnkX>vec~JOdNS{LX!oW`X^91F1KIlHsT9nHL21urS^K<9WJdaV!lFYmJ0$|nD(u8
+z3i5N?{06tZwe6n%kZ=F$Yt4wxlcwqsi`c5g{atN?vs-uWY#Jua1dH{9zq98p+6Dhy
+zjXOCi-!K!Pa@ZH~HN{1R(udoGQeH!nL{ez?JE?rXk*J_)fi?rMk<fu8Yt@$mCLc6t
+zKsphs98qe6s0()MLMV0y@shOi0(f3xVGtv-5yl*A_d>Ao*<7XDX%UWk7}AASr`LP>
+zcKr9uw3?FOCQnQdxIZoTbg}@qJ`DVK(ny@a?D4`CcStz0ErNRUmLdU!5$O_<fmm$?
+z`CHWm&VkjNlNy6-TVk&^#zeT|BGcM}IHFrPn*lx^y-A49H%i{F^fheR9Kp><#}%&G
+z@P4_}k3WfgXgw2Y2^~9$b+30r!X*^P!|*?U<v!hmfeb>Du{>RN-l=y*W3?orspb}>
+z0~rJRg94R>FG>>RhX$McjsCR1>nQbP9;3F`ABpR9wy|iCXz(aUYmYX_s!qpyQ8UjJ
+z?l7xZQ2(E&;7`4E`DhhC?xGd{dzCkTRy0ZQQsnkT@xH$9DM4fX^z|=v&ReM$1oDH+
+z&-E>6Z>q4{q};05sQRZxZvFjm$2IqvbbLQ=<DRXA|Dck=Mwo7{wvT8JY5TVeVEd+x
+z6xEs(_un;oa>Nl1u$Yd6JiN^Er4-&&1D_p>8Pw_xWic=~D#Ts1ZO4}MSMQcOmA>uu
+z`gptP{bR}*M`kgBQo?<_Itm|n34>lD{`x`BMowYGN#LqsP{EpUTGPwf)Qr7wM9Jd%
+zuPW2v;o<sWg*`Z`lvlngU=p<gS`P}P{bFdx1PYq9?Z{OS*0Fi=UbAzNo!uMZZD__=
+z>}3<ck#b#fc=k~yhVl_BE9|9>#hG53*JDO4s@F576Sb-iL&cK;H5G)3L0=}uINP&=
+zUvl+2$#3o$bQ*mo7qm*T@Au;mJ~zB={qqeEq?(EAOrt{?y+(suq-@>>%wVONe%b6r
+z)Feh2FpRHdQ8^xe3%!OlUo*Efo6z*{n=v0V+c*6sp{kf}D)5^o(k%Ea=*oWodP?)%
+z7y*g0b4pV?da&fSi1{{nvHB>bQpNTBH|?>Y|KcucEcmo-b9GebFR#Gh{!71&S-_Q!
+zGOLq}kALlHTi>Q)3*pdbq{9s2n~;?}s1afm5Yb<=(G)6|Nk)HY#DhVOatYXRa&D&h
+z^oA)h6ae{qfr6e{!v!z9{kDB%LUaxDkM4p)k{#5lr+}VPhs{qgo|PjE!99$S9`b+O
+z8tu{40LOakd#qYm9sJ!`KFOI2;`p~n|HB*gQF2)4@bS{UEep*<M>!R8B@B(>OcHD9
+zgPpKg^VV!L#Dc9YyeD#R!S&xvo~cFAGXN(|`n%@ySGN=RW!*OW%(BH*YGmIf-|M#m
+zaC}V`$4#W?nBy{ircTVcBx=H{|0Z9izWpXSbU1%r{MN1SFxqYIkf<dm8RKO6ZBhUo
+z$I5s&+R{~P=4Os5XJ5lwgVe%jN%(M?k$H2`lX8x|?Od^^x62?RoeE@8G35u@aoTfI
+ztW2DqwR0!i3j9Mu+Fzh@GX9L9#~t0f-$P}pw++hN18$>^kB-^D3pn%pM92_%H5fL6
+z+>SP(`%-vJ2SFWA^b4sAbs@G!*d6_zu?g|boMMS6yKek7pU?5s2H-SlYP@e*7XNt!
+zd(pA0jz=wH^6>W7*cp6b&MQAA+REwSS1C!7`Lw<STD5=x)I_s%V;iV(o7W1<TRFo(
+z-{ZC;0yzPmy9|#PSd#Kxmi&mXbb`-*C0uw)eoD36##DOgm<+ZzN--Ab-I3JQ{)3%V
+z<LNe0H{B;n_iPjm|2nZFe5jS8DHM8N_U2G;bh3Z33!Nr0%<~Q@U)FW-@tqgvgTmi$
+zTUGrk5@pyMSX#{;LMT67+ZtwOJnv{XkX-p)nj+-XbB*?G!*!G8)2N7EK*qbMyTx}P
+zK4Vv|?dF2TWS))>|ISHB@;52-UQdVb=79uSoPIoYJY^Rx^6Ag=^1r&XfHj%?@PouM
+zklHc#>iE}+<}wQ+JbaB_a4>j9dz-4JLxevKRXq2r)_!RP#^{@8NGW+89<{l@*R`;G
+z6o79;5Zx~uQMd<};f>Je*68BKPgF(TrmxCyr*26Z<I@_9h5e8Oi`+C*1`YxI)Ll5V
+zDX46-!6XE30ewLtszQxO>xu-^%kMCfZV1}D&j-|`QkK;AFJ>vJpbwQECEFBE-z>eq
+zdx_^WDY#;O&6~kvZp>p6(~J7I3$6f<fe*k;NqmUZy<ooFptL28Paa)Rt8ZSX=qO%{
+z3bMgl{8G8ACj@B<cnNz{Mo9CuYVp@hY(3|@uYDTHnz}I|v95D#ees1x?&_7fAa7hz
+zi45PVklWh#(O3gX@QO+q`oN2$*T!0{;<_)qp>d}7!Ta_%(zX`=Z9n|ER=?@7@p|%c
+zRM6iy88E7D^$n=FS=2*gCb2+sXH>qzXmPIorN!31Lp)8(gkErl^xL<bVtTSQ8zNr6
+zQ9^ge0byz8a(?2i1|1g13}G>gD}x1<rZXiJ`ME*vdPLon7<Gh&M?INkagAg1!d2iX
+z@aTl{$P-BcQK!W(bZn2DU80DbXO0M*MyM^;<x~QJE#`|;GPz6p<kfXowO?{Q8Rw?}
+z(@#D3gKQ4%lWhMR?h?ALPd$RBa?V;IGiG}-Xw^j0Rvw}dfu3#L8>@m)wW5a4n5}cN
+zcZ)ROdjcL%4hd){m9pdbCC_;Mc5r!~27EV(=KFE8J4S7VmLr^28cT7pZJ!AB1kuxa
+zI}na2kz$oW8&BRHmYHCdL_a<$n6~S65T$#WpY@J4z&95e9yY1lh3Ka7cAzWJ7cSQS
+z^6#5;1^yOC{|l{~^v{ed%6=NLPf-roPPTk|y%?2P>O6NiZt2oW@I_jdI$XA10SVU=
+zjwbqBt>p^o+{#F0{ml;*IP(4~YMv9hA^nrFVwhi8=?CC<%elZZ%<yjrV-0In)J9d?
+zC-$nDwmZJQG3+_|v9zMiSfeaQG00G6Ecgb!((%e$ILaJ*t#wy(Je3v`P7rAkFz{wl
+zOZN-r8HB3)4>(S%c2I8gb=W5Gc0gyfJ2Y;$F0zFhVIyPIT2eA7rVGPJ@S{5`80bOS
+z85Q(gafb@!?{Uc+gCew9Tfw~`?cR&9+7i;|DMzZVzc9P;vI9Gu%rUW}v0WR2wj_NH
+z-FAWMBTmk%W?K;iT<+QM+{s_Ct>C`{lyXMUxN7joc!;t2*9>(PBq1_)FIavJb-tS8
+zsc{ajaNqhE9y0Jda6mW6kkDxsK^OoYUlKdjui@KY*Lwojm;{?+n*Hc80AD3cV}497
+zTj-$%?9o(QUT&I(guR|*O~3=YlYgemDi>V};vwtntTXNJ#UAm}e1f0x>j`N&amM>_
+z5A^Hv2Uxzcb{JD=?jN|O9q{<Bzy&M&k2}C2vj#b`;zi(@kllkP&P}b2v%V<Dp<<S|
+z%(?==|MoQh*T>kjwLf`nm?l@^LUV}zE4mduqnp&gMrD@nc4xFu|EYK79o0UYpQ15W
+zr0Mc3HzWIt?g-G|QPtO=qn-;-s;#Bx4`8n~uDQCMk1E4e1{rQ>Fx``R+99y`t?D&(
+zB^ut{IpWzv6+(qLW?nAzC>kOS!-C2}F&S;zB%B%45VE<~VF}rlfEq#fo_FY4lhS3T
+zE&h3Br4LV<R%|V%kGp2fSQr(4J3dslC$%(&rXFX+1IJ_}Asf7*@x+lT9LHt2Oi0G^
+zWx91&YECjH@o~+J0R&caeggV1puD(=1q(!_RjGFs2BKpvPvouP-Ja7@GSgD<UB-+2
+zvLM3()%_Te`0MAXF4-=N5X|4Nh(6|*hgt-B)zA-he+t1+rCYHVj_cD`rYGF+$9yX%
+z>>rWBa=f(4zUGd7YA&;BuAE=j?(?TV=VBB}z5DuZDX0B^dPe1l_3GbBEjJTYU8&jQ
+zx0#ooN-RWiHE26lR}iKFS7y0pKl<u&)tbh>i5<LFAg}vMO?@c&aNN1<yIEm~!o!~&
+ztonipQnY#5FVLTKV7a}8Jz86$iD>~evG@J;GZ>Qs;$3F4+4-&Im~OKc47x4I9iDKq
+z&W0syuY77hs^+-Y?<J%PqacMV?-p=R7|l@#9xc@cE!Fb;=Tk9jvxS$T8cy4vSl6vv
+z*KwU1Qq%efjsiYOUb_@~joohBW>5=89C26;H$sg`L#iFmfT#H$aHi0)#vMb*jN(oZ
+zZlv2UWT<M=15aq&Q}@78hTvp^>NH3U9@9CMR)BmrFCN_!75C6!YfVY0$J0ZoUI8Sc
+z1F|s!O|KG!8Uaszpkx7M5?}oIMZhZJLZZXG0E351AT}dn+V<Dqwy)<N`hQ1N*Ewxw
+zdQ8BvmC7->urImD<8Ow2m7I`VK{%4^@<X(!oZ~;2QVp$qZK*01+@iD_z9+yJi&TO8
+z=oB=e>AvkewW?-aXJ(i7JeJso-H20rQ?VG47SzBoF!hJkWur1-vdQkXUf`qN+3>3X
+z-EN_q?RI|-0=mP+|1M>++!dE7ysr<Zi|F+(KNXD>5&lFSOS2RuBFrUU^9_`1s5IEr
+zhb^q~=WrGqbWYLini=*bFVqhg>l<DH(_MLtu72OZX-o1L(-=vLCYrd;oBYhYs>B#S
+zOGA!jD{jT^e)_MHrcPsPx8Chvr)_yTA+_}i7Rzx7zU1L^%ZWGqe0zdN2uYR7@5r<a
+z<{x~$?PJraof(4<?*lNQ)K%xznJ(1r7uQ-hjWye4)ixBjSF&l*bb+CFuOW`SsT=p>
+zwA!7vRlOq`JBW$+c|}Ng$GTZ)Rwxkqh``jb#(V0BK=YniL&h4(EFMh))BYk5zt>?5
+zJl`X~@hK1N0e;d0>xNIYCRv<nTaym(;Z>KWA&A!H64H?wDe$sO=7J{#$$9DgHXKJu
+zG|B2Khwjs>5(+PZ{~*m#Sr?(BdFwE_rP{D4k55Yp>xq?10tg?eYZ3*N9G(*lGH@x6
+zZGNI^WuH2HmsoulzTMe_3qzSB&de&mWxevGx@!r~+cU>R@<Y?y6F$mc#U%0E^3fV~
+z{`u@%+*-{EU_gznNwjI`<)-sZ*RKpYG5wzt`%APe`>S1rB<h89v+j!}E)*KEJA5du
+zyOsO`Y5OV6mGhC-WYX?<gQ3?4jIMv0osKf;u~5xJuhpjQ!s*|W%+uTIp0C`MN;3ly
+zP7cW>K%tNE={4`OKE?INKCKWPeMBKQPksGDu855uzIbX^JNPEn3}2~cGM5+O1bX9S
+zn$l4}3@9-r6#t`VI#zMBQ}>&Rv(luRl&}|-=@98q`%!-}0kog?GxF`mGGddqsr+sB
+zsge(<5Y`v*Qy)f<^Qu<I7RT;`&0~jy-JT&z+jKI26;xEW*zh+qLZ(ZwKbTvs#7`A2
+z-B)tjJZ+DU$!oorOSKov{fwFGNtPIa4&={P<mTO^{7jAG&q2=*E&HzkG>(o16p(H2
+z@_AF%+r?3I11FK|{vTxsclKSzO9;J1Rmn`j-LF6N$RXt6QYVXBZ;p67R4e!R<H@gO
+zud^9mzs|#dq#mZd^QyVO>tSf{0LZ@ob(4<P;gqf`#olRGB6z>1c(LwpLi5#Lv;OyL
+zW)i+leHn6pWk616uFPv_7YE?+4K_VQSR_$W$HW=+#oT0(!m^=_I|n_a&J@2f9DYK%
+z@~h(~dd%D(->nrqBqN^jQ?K?lL)h(x_d5K4eK&huR6krTBWc!38PV_daZx;~cT#zD
+z=S%SqI&OvCueK|X?rE$#m6|c>-f%PB7P8{idGunwmjC(d9l5x%-!ki0r3$@k?KkGT
+zBiA^H(c_PE5el5X--7R!q6!y(1_Q_ZW{CXt=;zuU1AkH5QHIxa`2D{LV4G5w4)bX-
+zNxWVI9kW1o$(B{ImQ~xbjQEV5Y)(-UQ8tI||KkECT&=zV+Me?35VNbpA}Y~h$n=a2
+zp2ZuBe^Ec+`0J^19^Cf^M|__n7HnfY%$eN-DBSNov1{v8oD{N0u(rNi%>I(0L~b0$
+z`3!?|rxfh1rjXH#yyKYkzLl#Nj3I&>xiw%0Zz+Kz{y8*frBUUA);sQr=y`Orq6FOU
+z*WOZ-T{o+G^DU6|o4e1p7e(Zr^q5=+b*Q18lJlUc#+dxvhO?e;4}`2!DO|bvGeB+%
+z0#B4ay|-BXc>C?&ulL>KqvyF(TX2g~Z!!$;JmoVP@l}%tiv3kebZ8ZdbDKYLw!nQ)
+zb+e3>H;d@sOz59+v7|UlOX5v8pNJ@Fz$bRF8$yNd9KFtMn^tE{=4T9S+~pdg(0t1}
+z=9QAro%Mo7*RdV|k~kfv|C&4gJH|mwDMZ4){52X~p*CGFB0J4vZHJzcKz`Ba8qVZT
+z&<Uo{@vf!fpQK0I^{b{^rSb1FC!)f0DU;7aI^(@z4?PD^w1@vFkOSKm0tY#5Pus%g
+z)K7#h>%bbeija>`-`TFSUtt*sbe~9c@j5A%${jApm4b|MA!GiELVTxKqe(}b{9SDX
+zV1v^?yo$SZ>l4#uWE<WfSsJK3)Lx8GKn92SzwmZHLgu;$ta`j=KIR7^LC7RjxQo}y
+zlqT_>H4}&gs#4#5<9+F!oCNBL%3X8XdOdLYrrPXK=a8k5bp~H&;Weo%v0gqzPbGi!
+zlO`c8v`g1luA_e9W>WGCb&vP+vRh!*dn%yqXM+y;VG+YlCe-Xk^~h8A%}?bgLb1BJ
+z>&a~Fcc*hpJ;U}xggZy|%RfZF%YAdjbv9BnZwNIL!MgB0$gpBchD-S=`=gqa`!8$W
+z8^eU+qDIJNMfQb>-~UyZEMRx}bVIZGqe(P7sNzw=lXq|rbk`(Lw#%35$fD-tsgP$^
+zOjbGhAR$a|8-ghZBkB;}kKYRssnGUXYKK=>A2XHihcfk=Q|+oA@yk5ZU|&35SweFm
+ze>Sh$wy%mow=mZfPXk!TM!s+=#&>^d`+6$DUulW^b`0o$j-$37=r&9IX+;2}wb}?$
+z;O+rJoP&dB{3c6S?Uw;s_e1WH6nv9*q79i8C9lGdq&h5ocU3v+a!2^>m%#hM7dz02
+z^)|+RtWH(1@EY6aN8$zPO~p8B=8YC9P=;rvmj=xT_tSKqW+_Z~hb^zpeMNE1V^8ND
+zfzNd(y!OjrqiPFQTS*0;45>LY`4q9lCdv0VnR=3H?S$it6yoGQX7(jf+S;tOKgrU(
+zt0$GFH7P#i3o`0^zrPxB@Wnt<cCN2i*P?a|b*0vznss_uHtRVvZ()Oj+I6GPI{iff
+zN<mQ8McF3r0kuqaCR&Rd_EmCI0V5U4_pXNjwbi85`SIqLi{c8+o2$-eTjSEF7Fzu<
+z_Y|Ups_ww=G)_0FfXPI;zmDgYHJr!kr@YEK!CD8PUdG-ePtULtQaI-=rJGfOLMV+^
+zK|}zG((1RW2KzLM&fnr#c(Vu`-o|T{vDfCX-!W(V{NC)BGcDYoBWj5M;b31|dEe>9
+zO{gRGW`X!ez!94-65zRyzi))rZr@kO$o4bTy-2YD%OMpCKz}iG>sR4?5aJ)d9_7WO
+zovrk!B8|C}49G_mBf>IhLLHd`9&ZM2%-_g8?Zyx&D)(%A!BWYitt&YgAq=1;m5tPW
+znTe4gM(wq7%;J}!DUFO@x0;_>=@=tlJ>PmNz&BQ{W|inFQ25(YkuoSnGhb88_VBp+
+z_g?^?Ylz%A&%KCgrJRCL1)f~mkli|^nt$wq_?or^Lo0iJ2US~zr?g}gLcPjYLq_)h
+ztijK-WTH1yTqS__Yb`Yx;%pPH6u!C7U-<Qz@!!Y<9-m=Z*-5J+wa*3)eg&_)A|CA@
+zuAkp-eG=TwZqdx+H7)J+6T9xx`#e7AV<pHufqiM^*GX#_*0g?pGF?`6b$D#M;70A#
+z8GjYgPE%5KF}x;11QE`(_&KJmza-)n1~;av>gWsGFZ62z`Rzl_Qh6%#I1vm?dr|?4
+zZ66fdQgGLZqFx+{`^N!y3Yg<N-ueB%s=hKR%CK8oK|lckr3M&6>1G6Bh7@TeM7m)H
+zBqWD!1*I8EQV^x3JEUt!K|o~aPN|`r@6q?X=dAA^i?x`=n)`Y7zV;RSZVr2$*ZexK
+z1w9*64iAB$XhV{i5csu+-|E)``XhY%!LURh<YrP@<1*~GkAK$Cx%OJjO~Jm5yH82a
+zyEkqzH2Szv8mXvy60;viiw4W7zfjSGPiLM53<or<PKOxn;zz&@@5f}evbFj}4V7^W
+z7Za3wSNBF7CJ?{ha5@`t)#EdVzO^vSq>`2P0WB~AmnMas;&?AqSZm?Y*wZ!`OqBd=
+zE;sgXIFO{WU!uMnbSe;GjS_$TU0ddr{sRgLU1FnT=1>i6n@?1s?YSI_PHM?8@v9{^
+zDi)pjoV$+B`&s=8aOkr|HpM7(K9(z(AIu^Q6XmC0u-7*A($i)5wGUB56*Ck$gWtFl
+zik390^crG4c+s~G!%ELbi)bR!@D)mP=%T$wW9v~E1-JrQLcZfjiK+RmSH&L**`Q8_
+z9xtYochr0DG#D`2yI$Y+7v~Oo=dXXBa<^wr>i5?37JWCjYJ7B)I{gMUA54A7*5G5Z
+zdamVE6n!bOPDd5WzUSudf-EU7?U$^W;!iyny^h2!q47Zl^c&TJckO@p{h}AU<n3Wk
+zvd>!s?RZu1>c0&XWj_Z)*O;$5LIl>lJ59$!G3JxzTj9>Ul|-dZ9W8GYByYzxWKMGG
+zYQcN;>rqANQ)-faQEBpXgHacR$RV11DI)IX1njRAknso=t^B)70k(Q^;$I_8UsVt9
+zfVJZCLyLz7dgh12<f!B6OzB)caM!$9oI+4@=|k|jU#IO9CFaglu$?E=KgQ@(+1PP+
+ztvi{CvHb76__L=*mKT^SDMCL$-0+X$^vDV^8cf7#Y5=|USH<!sJE$5#xOLlmXFq0L
+z6w>1EGD@IgEW>J0YP~d4lbx8bFN=@AQ+NJ=%AMKj!_bYvPtT_~oMO}MB}p?ot@&rO
+zKCL7K6Py>Q`px9szOBrYd7upS1jZO2qmoW;Pgnezt-NJXe%B$(3$t5w81UkOUr=+-
+z4gGp!8E%o;@crh7@QnRk5VP0?J^!0`>NF?wB+ECghAnMY(>~{tPIgC4fE0<j0<-+)
+z6`$A`PFs_HHP~?DpUt_}GCy>rw~*lJY%CS2RZ?7+*ho%x+j$1Ty!3{d!S-~&m)F3i
+zE`zq2>H*^w-qby_)|~d{IQSPg4W7bhJktk?$dLX=lN{V#df$e-sI*keZR9wGA3r5l
+z8E_ZZ=(<4HY(4Ax&LIqWCy-xOn1kg$W4|pm_%yF(w4hU2gIm7Q`bm~II17HtpYn2S
+zKd)Pkq-6SOX#EJABu&(oi%{_Ggbyvr^I+<U?nhL{{;n&kCC^4^xxElZZEv>k5|P@u
+zM<+~EreA-G_9qfk?`Ua%ft-(bh#a*|J2d8=_51VNid9YRe8I5w9W`eIfO}Pnb_1hY
+zD0s~F`*!gX?@zEY_T1l@7-LA@_1`JjD)aEoYhKc9=jC6QaG5T@JB>xpV3i*A>^^ij
+z+g{}5?lLwXzHbBt56?8SvSSV5wd;mZv5Ohp2weUPdo*JDqW+KI+Es8C15#xP>QV%&
+z-RqPnXAY%T6HlYRj(LOAM~#nNlPpSeeAir$$_e8?rHdF4J#3U33z@FySS~iIt@c!n
+z{vKetWVqh4^D~%qF~vswzIdn?*!d&n?7KU78@ei$D_;xa7)j!ETQQ&+ZV3g4uAiQp
+zQ0SdkWqS$1wP_<@{4~9n<%g}h-cInkZ%==BR|@;{s8uRw%TpW1SQ>IB0^|qp#rsO8
+zV0#05SU62Sb&^b#28u&f(|~hDxP*L>ug>5B541g2UY}F`15t_2>kp1@c8OWeQ@Qk%
+zGZsf+-|}~=YSI<tN$<I>oybMLCgT?`zfUlFJLphbfMxm|lkV7-r1wt!Hg=4pFN&MZ
+z|5o?&8~S$KB?dyw+51+L^VVH52G?J>4OrQ0BGHq>2CLs<d$%$fJ@+C)=>4Psf+^T{
+z^6nEg_haBsKsPU4lt|Nt%$d4DVCc~oMysXJTZom*MMD~?h8y?KMpeyA5n1bIieYc4
+z$#i5y(AtFHjPyTYw>5Lbd)Xf0i=G8z6|tjLon|>7<xiFImDNDw&EIkU8FF|nq$#RG
+z9+1G*P@h8`Nxe@tr4e?cZSEdB1`QW>{qAyGgO-u#ntd7OsTnbj;I5$rN%X`YX4NYK
+zWtA?YmHqu&R7sT~Rt={5nf>Z5@YD?=0-DTZy$zvtd*5^UBs$f66l=4@VzjZ>3}%1v
+z1<(3d7#XJ`m)Nc7M{5ZQE$+8Oi!l=NLnG<EECK728ow*3-6=<^w)sFCK)S+^#&HGD
+z5X;YWjn|N@aCMjDl=Spm4Re~`STLoUH$(Pg(4R@fYeJgzu(#jGY+Q;3$YtC-@;}6_
+zKe;V>88bs;VGgwzUzOvV!^>EVV8CoJK4DlAcPb&>^Lr~P;P7>^kfD9WaI=m)V)w07
+zk2B*29e5rW0S=?@FbWyLaEp!?;zmpxl_r4V@;ASuYv=Dej%S?3*DgkrzQVdY8g6HY
+ztw|O~)<1k>{_<==TuAIExBi$2ZI&w(;|m%lPu6;!`M5?>P!d+2%I6h|en)Zly>t2)
+z@D1Hl<5O)}j3ob2XDBWz`S3|gsuWW0pt1;0pHw!BD;E#dk?AH)-R15D9DvRJ@C9>>
+zhK>pyl_eQrEubMp<jPQ}Oct<_b#k~<+{Go|ecE^D{e(WJX7IbpMHlfz);h}a%2s90
+z+^=jkbCzi{csIT5&VFN02G{9|m)~}N1jQudh9W1gXd7}iAI-TdKHb_e{dtt0G9x5r
+zKXE8EzuVxnMD)&;iDB+Rz<zj&c&a*9RKU>+StzA)Np@d~Olp6RB}4s^=fV9L%_TWO
+z(lt#NEtA5fLC82Zw)Sn>IC@!u-AXkQp&}kIYNh--cks`1hZ4gjsDTaqm$hOYW%^;+
+zV|+W&munJAjbVW;m5S=mp+1bMT&6Z?H;p3f(qQr=vx!Fg?YJ_zEUq5wlVIUK<~y1p
+z!<+|qdf)fgzuB5?tFb%j`2tFmsQ|Ryd|>3rjui!Bd~>&b>zvQ^SqayFF&!_jr{rlY
+zMiB3oAB8b}g|EXIQhVzt2Aun&vy#P^YmkY#-}InN?0&HcNf?uEzIkF9EpMmVje;#4
+zYzWcTW1@y<?x+v%tIOh&Bvr9V{9e?02;I5QEnhC?a(!AXQPus1J^B-P9SVoBz=lBM
+z^t5$c-&RxcOHC;j9c$5_yXO6d32B{->w;(g>*S@%Jaa!pUPn&kt?_PRbC9G1<7@i1
+zD23=K$ag8&6^3NMcn!$25P1<D6DAscTC6rjxV8*N&E*uCbsLp-zMgYKb%6Rqk09gT
+zY&w_a<9%<qPz+yQoYAVwYwu?r7}<g6ZUuE46#lO-;Mj_)Vc(`k+;!~1r*k`=wBC^X
+z{8&TSdK7tAuxC*6!=^6x?*w7do&9OZHLvKqdHmn^6OYZQ-X2*Ec>jF!@y&p3aMc5C
+z-YH7aH^Kex(T3@6CU!V=b|-a+w^~&z90t_ZfTbqn-{Afz>sNh02#-!dyT9fYPY9t=
+z^k9djJ5H<>9kPq8t9M(Bu;JwHkL307x9K2hTljs$b^LG|&hO?F<Wh)B?)s=kUxh)w
+ziTW|V2INwOAitBV`>%EHcXj0omq&S}POWO6PN!3%EnlR6;>u`rF-%?hd_s3N5Rd4q
+zqhB7!3Mc$%%V4ZMqaa^?gqN0q_VPd>PH7Y%9%YaM9p(i4YJrUQWD>?Jxkqx!2m>U`
+zgc>deJ1oJN!4dTGiB#9J?9^Dnv<`pQ*!)h~+wxag5mB@PD2dR+P3Zv{!m)~(^wdaL
+zw*3V9Yg9FNVt)ni)Whm8CVySI;S-a8{8u+uJ|+2wkG;*|poVBADQX9^eE!1Kha02k
+z3iw}M>~u;}(cdhO9CGtn<+i>X#NZ7Gkh9mBpSSz4@Vi6v%LVbf!RdO*oOj8eWwS=|
+zx~C@KHIJcU(s77pxN71)HkY>xCWiP~irARlUPzdBvmdK<wTr2Ti^z9c@X1RTZHVm0
+zf)xsziAvSb;_YqkrYjb3!wAkT6eNfngi05x$fdMq3uKTOebP@&o2Nz%+lx`xG)p*B
+zmoottDCX`|7&47WbnW->W?Idk=W{=Xj#^m^B|@BE+wE-9IHvof8stX54O6GM9~#r-
+zB@7-({^_poPHIlqzVaki8!+S50WrmY{J7W&e-B8?-Hc*A;4Yysbu*pG<z-5z_d|i8
+zQECz=?DX<_R$vKvAq=`|9bCAiD*qB93m@*B>KD1$RX1KhXku>?Dcgi@H=E4dtHl|`
+z=!6e1NZ4^ZOjQ(f1!eMv0PN2T;V9s^_Akqohh@{4`XUpAIOV^&BtZy;Q3Z+iIeH}a
+z`TdGTf=PJ1NIRF}mjby3vfartt@km@?SW!(Q9)ckyV(dl_7NcvZIu?Mpm_dN`IbfN
+zu#g5so5`5x45D_QKWx;T=DIn42wEShT~0KZhdNzD&0RcQiI?VeiX7LsIw%HA+yg{N
+z$zGWPXObv{-N0C;h%n>{TqZl;_z5IRQdr)6ntY)1PVFs-enLnkTC6+@e^t}qc{@)o
+zRzO(I#P=T!f6qM?DW?yaq0@%&?(KcRZS>@!)s_yn@5je+^7X;+jn>#XewTg9o?)r2
+z%J9S>3)C?zB>$rEU?jGXtM9yJl}{+O{<$pTRlS6kY_T|HMj^2TLPq;VJl$*-K^NH_
+z$Z>fS+aslyuL)Avfz$Z|YL`Bz8kHSoE<k2NK%~`w481U2Ebn32`NQg44BXacmLjN~
+zv>EHKyX|TfR0b<Wr%%)t6?wN_a%0KkyB)NzLMh2jm3F?{NS9K+>Dwjw%_~)|&0YS~
+zFPE|D&S|uh`wVjn5%evl?Va8w-6<b~A2@AywVXZUvT!8e;(ZKOAp_62T%dnYv%4#;
+zADRT-ZO7`UB}=~PGDvqcu3Rt-*VUGU5iJ!Rat63AcBwwahi$YhW`Jj6(-IoB!z?3v
+zJ@>xtc+8wcl5;oW^6k@h3K~+TdwQwSR_?b;uX38%MebCeaHp3ax2E`Vgp75|cGVJ;
+z@CrZ8O62$2kg6B@L8YK;X%gn~`Sv-^&&!rynK5XfuYTmn*Oh6lu|rrRw!>9<0Lw(!
+z{qVH1hEaFMZdn|TF=Xg(JlX;|7ZQy=`{(Rt1GiM%LjEeuXwDQy<3yVN!FM&igmFY6
+z6p8gERCiu<LBcFOD#9Gy?}cTDQ+k-%seHiAA+v=d)XmtQn=tA|mKvM5FL?j#?fbD?
+z^U*nzI<Di-{0pCRAAk8Tj!{zeL!VB?b9+;}U!4j4>ZDlpY$xZfhlGBsi!MCH1z_C>
+z*X&xNJPJ<ERQlE4wQK%sm*0y>fwj*%7Gz1n@-MMDqEYW<wEME#1O{*EhqJxv(%~<2
+z-WtZO!q)<bi;5_PCsL_h#u#Hv;`YK;m81P%=3+)B2(EWU@RzypT4No<ajIsxaWMW`
+zL~K+(z5f>K0Dd6N(nF}JDCGBW>Jj9*dZ}_lT2G(M`=AK|Y7dcwUI8Qz-YOycF7a}w
+znqBk;5qnPZquP2W*&)f^4N;e%RP`yf3V7)j^bI5>Qajc8_g3&JHjaPL*Z>}1`IG(N
+zz3yRnz-{(ik?ZB6JyAF}!N<lO>ZKZ@?76*iLmesT8S$_SP4*=;(SB>#5quzenS{l>
+zKZgRBKKv+Ye4;~lAWIO2M^uh^Pt(L`cv5N<kAA8zO^4X=;x$E%*N=wO;}h#6J|uC-
+zu6{FeT{VRMbUK0P?A((iq3dGGs;L-p?^MZ<P|y`k_xb%zl}E>ORaPCiLcX&`Ty~X<
+z?Cw%HA*C?m8l}W=(3nm<>~W1JDnSwpG1Ew0#>1+jN<2QlH@GF~e}N6)swVw0))xBK
+z^P3Z(xXEj|jnDYm&g5(})QbLT#N2V3*l{kb<glJBNEC6ef}FH&?La@c0*@at#Te65
+z;<UGNe*!r)UXE>v8|gkpm4cmY^uEyW7dg?o?lWh=ky}EQ>W473rLH0RN7{!Q*PypA
+z(L0jFwukptJ$>ec&ud~`Xy2^5N*)NxO`RWkW=ZWx@`)bP+)cdCjcxl{L8HzD6TbHg
+z6Szd)j4$f4b&5yZ14{qf6)!s7s~Xf3;Sqt^5`~H7s#EV`?86MmSZTxUQ_XM$AEcKf
+zbb_Y-!{Oo<0D*>EXg3}EBzwaekr}z_F})oXR8%fWl5k=S-_MuyAuIv;EeD$!w`9%T
+zPNx=o`yM~hrSz?~rPhu4gv(BH1fqu%5NkGf=Av#MhOx3=ukRs}VJR&_s)v?*JE<bq
+zO_Ke^&!nz<=D%Hf@!jD^5H&v)BZMtHcjxfso|@@(DA+B<I@X_-CH1{AsP!)#aSXdp
+zwfMrbpH*`Eln;W~=r)>25S%qQ{^mGws<W>S>MlR~ZY;*xY`N^wu+iBYaX+pDQaq4;
+ziZgzCni#2}!qBM0M|(raMWSm89T#iv1j!Gtyf7`hv&?&k8g0<`x=|qCd0yw_+lmX$
+z(4CV{m%;o9djMTM+7C5L%Jt&%IF~1ReUx&k=ig=hFo;Xa8+Xu}qx4x<*3uMn8)ktQ
+z1<X)JX?C_!)CNXXV3&OXTa<NUKm$4ph#HiccpQCiX?qx3U<)q5AN?o3-oHIn5%m{c
+z9CN<*D3)#znwYU^c=Mmf=Jy#X+duK%$>_gR=*sgc8@K`B-6f@JFbBVNi%X19E$U*#
+z$C)U$JHOM*Rg+fzJ5zvU`epBZa;>U3y8N}fO=og>m>@TF+(Tx(@~G;gD8^0)K}U>X
+zOFFOX&v1Se>%09Iv16U6+ahS{WFFsM8!?B@ep5+KZxezayW4|}iS|l~Gmj8oZ7dNS
+zmQPMt*veG6Cv^O+^U;qUslDXq%d^f>YyHZVd;iPnG~Faew_$4Tp~WXXZ2&fIPc2kD
+z_*NFhWJR{A^`FXv3sjypDFEOPj~kykT7R^^eR|3*b#n6SaI}cziVLZbOG2<A2ur=}
+zE7oS^zK>cD-v&m?T@B6wO_g|1Rk0SauBcJIS?++wmcVLBTBJx!<Y~Llp}AtFJUe^-
+z8TJDaR79TL<AaiU$O07I$SX!F+VGMNoIbtx{8)KVnMX_)x#<bw7zjpt6-eG^v0@d0
+z^%`%CmOo_osiZqD$l2=5Y!lY?-R7}c4W?f0sayB}q1wVT@n|IR;hh6TW2v{?I;o)R
+z$2QG1E3T%6jn#vKqH9L;-a4k}ZGU8LG-MUi|FbvDAtB!AEBpg4AD0N%XPkpzCAb6p
+z*LqlZ)a9%gL)jk@mk!yuVA&`z1#{<*`CsOp8ZN8J@#H0#5@10KgOd5_%STttuSp1A
+zBD$%KRpJ|Q(mN>oA*zZ}#=D~R-==WLf=HxNDdC2Y$2<nqvSESVM_-C$t=YN1H>ejk
+zQ~|uk{`W~+9uGA&q1<$Q5!u4Jr{VpIQyQ<~x%a-Drs30*#QXyu4v{sZp?hIbtbG>Q
+zAH_AoiycUV``BLBcV|j(zdfbh!Os)cD0|Tn1_PqvM>8+SM7+wyBI*{Y;oV$@A5Ue1
+z@}%mYiHYrxI5_X@=SslL9}HoG*=d{C(N*N(RBO00;l`>+hyh4QsfGwSPV24-J9mjH
+z1=d>>sezfnozuy_&%@O@sp8~m8%GtFRA&(9?e93^V+)Klrp>`M5SE5Y_pTkuDZ^>^
+zArM6eQn7{z@T!MCxyu^O7-~E08XB150j?ga#4~HM4M>0gJyYLC4=zj(ATJl9x^t}&
+zYt72dtr-2dj9=dnrtpZU&hV^=lcgwFoO-eWYVoRk0Yguo*9uz60xWR1ue;A#L-rhq
+zEBKJ{<QAlTBsJUnu0|8ZI{OEH?sELY3s`#LYdo=XCQ-d!!=7*H5Ybla<(d(0F>lTD
+z-R;>BkRM$=k>8WqI7!SKJNQ$7yGv|w&W5i0T8^(O(b<bj4AE6Q-QX#AxkITzyrz4h
+zr251m>k0*;F&ObqB=Xv2I#L62t|oCIRN{Cj3iUo0eto&$k)1x*joeddO&}-fQ4Lu3
+zlDyuS+Q+hr<m)*;u|6tpT)xu@UrXU#jhzvC+$`ZV1~UJiI4FLRw(eIX^h1)g@?-_1
+zJeqAfi>37uvLb5bE^RzC@0H>UuXF{)(&95TI|;}*C)EJK7NDSbpgxy13>_aFEN{Z;
+zEQfo7<!D$iHhq+qANN|D(CcJ5zCx_VUX@+i!m8PW7)W88{e({V3Yq;H=zd{x8kKbZ
+zLgfR?jvO(c&Q+37r9^EN6B%I*GlPUEJ``^Hw6IHg)`!Z3#E;1W;a)niP?`vJ@^E@I
+zY%!44w~lE)PVikk7ZPcdBExygx82v~*gO?+`Q;n<@a~J_Gy<wtw4t{49;Kkv^xNJb
+z3x#)W6&881cQ`G(fo$f_4xQ;8)r}sr|2#a(s8=eub^x9hm_68Zm^6OB6~8mA`9_TS
+z9?s4?>A-Y+M<~bW%F8MrnTU#j#+IeYz6l(%Qr)XD1Eo&OTr@RJCx9E<7Gskra~F$5
+zb0DJeb%mqUvstgudc#kJGm)S|E<^}XXS*ST{NWw8gxlXjw>Ol;-91tCGa<|=wCQP4
+z!1**U%V$7tzuH%=p$PEb<rcslnBKD8h&Q&kBrt*{nb9;lG$*7#weH%OLySBp+3>St
+zvl~FmD>39LFo~W?pU*%3jenjjK{Z!D1M<n~xW|2vf4(T6r(P?lz5)q=Tf`-S2)n;W
+zRWF+UsdL%-qhB<ZOw^43up`LvNB&_%&PW>9w3-Lf`M<t^r%4p)pf8NPeg&$}Z5}GK
+zi-->Q4wH}8uC0gleRBCI*s*GDyA1jO4rpJ%k@vK)7xG&m`7Y@H5MM6W!z%3xq~>*p
+zo2mo^e-bC#4wEGd@a-BgWku>_04T`$V7NsI9iqqISpjr_|Ik+dh1W^uA+Z;tMm4?U
+zcMY}i<qS!B|B;A5TuNE!<K_Y}0fb$_alJR0>i*cjPB;_xB~Zn9n$Dmff0K-rP_!`0
+zGa_U<SdG#^cd$viU8mgmv3#4F-8oBn{Oj%?(0Dn$kC>Qt=}TTzrw0b!;bEiOLX#D+
+zNS-{|jbNcdna(ou2bpzS(J8Auzh#?#v-hS`_E9aPh~&VC6W7F}iY%TxM`_L<Tl78>
+zj(!x{As5(tb^ld|Sn_*`I3zyewpf(6dld^^#$d#ZUrlY@_GclE|6li$5U5swZ?4E>
+zoN6^q&CqUZ5<NRJyl5)|RX-2w&qz(U`|;io22E*(O(|D^BG{$AX~yetyI-n53UhHd
+z)Wkku?gR}OXC7RiTD1_4zaQ}bon&`e6{*SlZEw%q^=3UDtJWNwG<`3yw^uUJ*nY*O
+z?fcp9$%(!p4^!{)9gt6(2?j=8GhXdkj0p^|+!{PBix+7T>}K@Iyj;#6N_7r2cdRdk
+zkAntMu7@|Mja{<&L;2miJX~BGII)NNu#9D1Cu3@)F4_cySeay@QnOnSWvywCYLqwO
+zHr}oyT|d43bzfEO`d60_mNNIV_&GxIsr(AL6<d3i3}X4VkH2KSxOqan^RehLgCP&@
+z&>B(GP#Aiwn>$u!KKW-@deDP4D7d>PQ|3bYvHF+-_1mOU)AKhL*A_a_w|->8hw}-a
+zOg4Ru+P~ZO3ncs)7{Q?1gFTw`d{Y(b`FC`Ee(NoDbICD(|3=shr|qx$Pdr=;FHD9U
+zh_KS$`)e@x;vh!2MPr{goVdi{+hx5Iap%p)V22#z;+}+`zm6$hJf39<y~Fjq`eHG<
+zM&;#5*(W%z^Czt8R0mb_{K)Un+6Sd+*81ARhAI?WKcc^3%F^k<KY_jX!dM>p4lXq3
+z*Pi%rIf(MRQJtVMng>=PK&FMVWmK{1HxGJqjF20zejIR0e`ivr_*E$OK+9|im=A$+
+z_>*R9rxIYzD#hNsOk)V9x9qAi2h4X)9vwM6>%^XY!tb6@ypV#;+7uo1#XIjLCw{sa
+zF_K{8_Tax~4!l?kUqZOZ^tpAqDj(v3^ot*+oekHCv08;dt^9#xDOKEywdFgCt6+UM
+zkWg~M3jtV;bBJ@Ssr+Z<fs$H1FSwh4mY4P8LiKy!yOOX&Am--HCMg}!F%kt|WH5Bw
+zcPvYi^CPVvd32MR0s)N_*tMm=bSr`0wRqa?RFuENR7?Q-!UtIAB?cTh57Pi!$vVst
+zm3LuyvX&M{#2*>&iB#u#Y*~I%`#fFDgzv>nbns`tn3X9Y^oq<n0ZTa3L^LVv!$a26
+zhTV81$Wns%)YR%>-RsN2<dG!1u^5K1E)uIWc<O{mIa4_tKKzx*%SVfc+KH+B6rd?W
+zJ?c+mS5t^u*-NC($60UQb9^oggS_f!J@tt~K2A;t*k5iM2X@*h5n9p0ntmV_@`<nf
+z4NsCK9bWq_nXe2*HMCEJQNoFqN0TrE&g8EcwV($8$^maCBZr1@*&1{y2;{k^#>V&2
+zOS9%4rp&*~gpi*q#2#i5rcZjEb2Bvv2Kw-QYesaOeq!w=`Q*P~g^50*KFiGD5WZT#
+zxY>n;1$#RzDKeDfi-2Bb*~nbP(KPr{#oAhUP-TCl_kjXmK&+E1)EFQT|2h2uDU{2d
+z0%QlQ7@*VmI@ps33{vb`frS#l{|xlooL^;s2Sc_pg4|<8m5)wLvkTXJe}?x5@V;2_
+z2k?1tb1OY6H1R0os^owt-LtBmT$9y}WP^lCdRp<N!MLby=aNX_zd8re5N9EOc13#h
+zzE?W~Znn^XEin19WyK}{%9t1|HLKJU^6mv=Nq7jr&?!ja1+LIFRxti{phZ)s?{=m*
+zq7yrzzpEGD@VK8iAqY&$4Qt~&NM_|tR`oH>5tV}E0f|j0Pd^;c)%fy~Y5Ce<b7B-b
+z<h98H<sdko+BXk@jz~u+52CTgZ*6Mcq)cO^&yA42bWcd`ZICk}>8wh*{bL(ebQd?g
+zI0fsY-*(41Nf^aW8BLv1`+2`&6#Ksaq}|daI5JwV6ecR*J4TwWN7j%WTvVLk86r3=
+zxHpYAzrrqc<1qn~#OOXO|0%1_Ii?dtiO-fb&OuJbrlPG30!R%{VZNoza&_3Tl4-X2
+zXE+t$6rp-0%+trzrl!d^O4tujIZK`tY?Flv@JNYVej}&q$Ew=!-T6B_leXdZ9=VjP
+zR71}>X&Xr>X%mG*M-Vd^Ap_!f<E<iv&b3HNs9Yx3G4>d9qeyA^o$JSS385`R=DsU|
+zRy=m>IQZnb2138uItBXjD5k&e%c;<9FQi2hMa!f&Py`orlE7OT-Z}l8A#qcIVdS-{
+z?Q~Hqi<PhI>}0v@m=!C;m}@s7|1A*-{Hpbl71sIb4+>tf{SXkxNt8_XsGA<L{@idY
+zdx&nf>bkp#k1=evlxJ9+#(C`?w~8rLu?(vIT*RA!n;J2a&hb6u^{XP(vh0VTZyjsv
+ze(@cl)r1Oy(i={X(iK(Jl0cytJQQo%^n{c*Jfcf_9Mj8<B9#@i;H0%>MQg925KD(q
+zO%Qokv?rBSl4a*sWiOwJ29aV*FShHmxZBnjyFn3Aj!%$W6upWM5*<Ce<SL#<i^!d;
+zL}hT+_{60((Hm29;mWtta9_iH7bI#hd?L+Z_9&?Qp#BYn?H4!ffniIU`m>w;2Py&U
+zMGoc5J2BZb+&`dJ;>e}heKZ6}iXEt$IgFROI$HbSdwda6V)UZlby)RgFmbzmdX{l>
+zrfz(;ss5U*vSRBUO>H>+e+Os@4sQC%-f%Si{dDaq%c;a|)g;gCawC%|jtF^oD{1AF
+z$YZBqqUGSF&nl^KYFUWl2l_m@KkZtXok8)oKp#RbtrJ1RsO+Cw*)2unc`hqrIlA)2
+zMdF`sm2regd(zYHY1Zt8J~{X>b9APb@i|kx3vBA^UY#j6wx&Xy_gwiAc!YUt;cxW6
+zeR#p1I13-(bqxQi|0$8;+8#E{1qQ-oZ+#9oe!Ii$`)fYZ{`PXlsblM|Dt40oE8?N+
+z|5gAVcPJU_0Q-qliU;*U{gF2H+r#TMb^o1i&%2U(Z&Y-O3=n0(Xp6RuW0R!~|FmH;
+zN;xUn=&zOglup5d?D~}aO+ynl5A(q^N*hU%J^OM=j!9DXxf4j`(E-eF$8$D8l8W;W
+zL5C^eD=pLWk5Vddn`G&Hum@Lpozu%Dv-^zA%j{IZz7F3+k*)Jzt;yAIGO&HSL<Tn$
+z8rRjRcgK;nkZ#XUsu{YYuHVYpGS*y5D4}b8ZKi3k+|K|vQbG&tGpBEOdk{HFYFb)+
+zo`{yJ-!G4F-k}kU*4qs!zzobd?{iT>4t}oqutdM)!}%2*cAV{TwxRxIHM*pcrt~dR
+zO6s(io&O3n+HC9h6^|*)cfYs$8ajPbD6Nkas2I7UC{7hsz?3xu5Db4U)ULGLU*c*0
+zuNP!~Z685TQubTcCnri)h1&ptvrAVvDx`dE1gOzkc=cG5?lAibpD0mjC?f2M{^_fP
+zMWJ~wl_Is<CH`g1JQFr%_nWKoZsg7~1HR)4FGV~|ZB^kp1o=QSx~(7)3}ZmHKSVe*
+zaL8G&N-~H8`>g3Zxe}`#_*?uv3^bJXe!8y5=uUf$UDD`|5!#w3sUoVv`d?@0wO*RW
+z)%0PZ5(9_6vXd=kq}{cxHOcW?!25#MpJIGH2IBxo4g<fR@v*;}BOc`&4?%TKhHGuX
+zchN<UIzCvG7d!yy$cGVkrGjaQ2vSZu^&*uTia!&Z0JhEE9)Gjm?Gg@w^Y~}1dA3j8
+zE}=uo43;5(Je4@Eh|#LsORS_pliOedc@5`jvrVVfQzNI<ySB~X;cIBF#Oc0xA6w1Z
+z`u&XIr-LiA@{43HW;5L%o7{ENKBRTfj6@(5k@AGQvD26ZplmiOtVBZIh_6PI>i#eV
+zmYOn`SlmXv6GjRCtwT3(v{@)F=^-O(R}Py>^)|`T<b1Bw^+>|S$%?c6?q8tK9W_cz
+z=~}EWE(^lg{Bp_483DX7UZ-{ugzf085pQ{*fD4PdmHiyEe-a$xGL*ync+4&`^Z=Y0
+zBVX8=E}t3YO`F+Cq)l>v3~<sf6S*LRT<->auiKK^rnZO<3J{JU=I+WjDV6|2^}b1e
+z8*qXl?BlDw_k#=O!SA|A>1`|<0uv(`-)u1e@C+Dse}6%u(83M^AesMW^!|C%_J>))
+zOg`0$*pp@Yu{RvLrH^V~9gtFb+TU;%-cPX1v;ECfW>|gBr7KO9qsil6RM`xw?qj8*
+z=QG=a5xn$E$rDnMh>F%Y3$jv!D%v3rS(8i9gaj#n;+6{i?+hlxob9j3r>1<;^=_{T
+zo_Rr5`<!E*(~pD3{*?84{rY@Oy&~DO(U{w`Wc3->MO*|8%1%S`1u2+!Z>Ue|tNGI1
+zO=M7kQv_ur6WkFGn5O;4LO?nv4<buHle*g4AT!B*hz-^5t*S_VM{ejvIzA~$<p=+|
+z3=LOjW7PM;?j9vZ3(~@0aqU{ns^<Eu9zEs1MRP?i!heNVf3;$rn4T$wzMG4V)GC)5
+zGy7j;J3sp~v%*$6$4!5l{vS}U1Auy7!3?72qV6~Pu6COT+VT+1%n9x^w0rRFH9|IR
+zjqHPv0qf4}PXkVQRaA3lq~D|+1UKrCro8ZEiT6=~U>jPwjk5jQTH8HQ&M~ty;>=Fm
+zqfIrIgfi!BH8wM`VmsZztRHtLLbWjRF?JrmnT!mp8%BlABjo>f^<O&0*UZRF3*hd$
+z|K?ZjPXwIBd$GrsR{I+eJ!A7a>wOXM{D%~ea2iHhCtKoS1U*SE$u8uAjs1JFbL|+Z
+zf=yt2Y@V`1Wcb&Pw$(q6w`q=HZsJ9abXh4iItxyZnrNgbSUix2_~-I@L+H~!2C!ck
+zugLAyi7D7`3|+kDvCHW`CijQGMw4}Zp2llmZ@%q~06rIgO2&aZzeH1_9>Crc&!y}g
+zu3Tn{phIV)^+o+-q~W9!-G2tFrmhMhXh=e?OkLcuDhkgB-R?uSiAYo&)#!d(G!1b-
+z1My2f&qH+NW9CPeFzb^C>(uF>M;4skEGjXRQO6zpQfKQK99K3%8OJy=^(M{N>nH6}
+zI0dOsxgLW%(*QBK&KI<BE9_t1r0QQR@@t#^@KNEdTg2B&veH_XMncD&-I5#1bnY7w
+zXrz~2)-#aVUq@f)!}~ejP{yTweG9DviY3K8;MG$r?3|%9kg|U<!%uk;tMjpmv9dy|
+zIAQT?N9k+!ZWdrOZe9NinQ8#FBm@#K{KD5*oNK#hP&G#3Gamksj?1xb-u8p0cCbCr
+z18aP&E4~{K4yz;qPmZM_uzxKuSE5i2hXGL1H)cQTgpayHAr{b37|i>z<nF;w<ub8=
+z<&{54`y`vAycxqdF-oS**BC|%r6P44{VctLe2up`5s3o4sjXS5>#NcJuNe>)fG-v9
+ziekPJ_Dk_F7o@4?|GE+1{8WA)oxBo#byxA*^+nqLQLr#`;9=AesN3WAt2fiV>QU;~
+zk;eOy9-}Pwsm)-GsGC%nUl46HJ%{%#-KaC3!ONj=)c~aMJdXtIK;`~PUsGXU3K{<#
+zs!-~fCZ57))=Fh_JzB7Q?cK7dy0_EqSFpEhhg177)JW3=I=_C8atI6+-uX;T$LxY;
+zL|Y(N9kwnr7H5_~lJVy>{I^mrSBjnwou)rqeBDLJ1Za-<-3xV*6|W)*sf~*JKGg8i
+z-EGbMV$EOBVDACMiRENI<U}1Q0_dg#?>ra+e2?_tVhZ1{-Se>&{>1mXZ$RUoB|2d(
+zWU@*b_Xajk49+TUsybYX*3Bk^((mz3+KRrQi-7Zl{{HH+!?&Q7Ks1HcsHPp^nUZjG
+zqDfL!hxG$*n&g_FZoj4XllmIUQGf*0Y8G0dRqMg(SB=T$17RjmNxnvw8qKO$K$8pe
+zVaiYb9-J85p4~gErUY=SoB~QBX0V+kRoQx2k;8Cr7#|98NFSF_3SKK*GGaB)%znMc
+zAz*>-6g^`0*!@(##{ffN7M`D51`9m<olF-m-W^3+$><W+<Nxd_)jf3xBGFNRQ|nx-
+zc-104sQd@xRm3~6<7)9iiA)jxco_MMSu`cDx^YT=s6vYQ!>kv15eFp@Y>uPN!w#j-
+z;3o4(5yXN-9JSBTF!=>WnEgP|zJ*!|>;hoT*DIMmUGbvl>1P739YBK2s|%bCmo+zn
+zXM?6eTdAgHcua`ZQryJ3Xvwm-8c|yRW9DoOibwq4(EqnIqBkQ(D#N!4fz4H_3YZy`
+zKh@S}1Q1mDY9Lf$Zi8?m5Bbc+(AEuY4$GEnxjW8MqSHIaq<opdx859;0LhiW{C!`<
+z`}iCk<-!8{E<oM2Z8G<39(;=zB%BP2r>CcqG^X+hnfU<hX{q6cDsJW;ckQT6z2~K!
+zNXO%}d@>1bf)v<3eVol@sT0(Xr~N0UK#xGA<!1ECJ|GIKctG_1mc`|{;qqj2O2WR(
+z7oCzKi{UOF8%^emf?nIYaY`$<qRZZdm<7e$L?yfZ-vo18NlRf;U=@0QhSlT?NgrcB
+zCDEk;pWCl$4qoh3x%lSz$n@XSW{rdNRgR9H7(nZ#(S%Ys&)s}sH6$gwmJCV~$24Gd
+zH0W)<TSYW-_3_K@r?6(L!0hn*B^U42R_xB9(0FpwQ!l0jNgHVr!SNu}m=)3&x2{Kh
+zv4>ybN96aq*N1IqTGyJ06P8Js!$pi|-sTKE)wJiFsQK3N{JuJ~-~M^diSVBw9t&sA
+zEun|@ADNYb#Y-h4LG*tubAP!<kH`6~Xh8Wcrf6_EWCa@jf))n#GvbK4{^9ogVS>fq
+z)1f7xWDK^m)4<=*H{uiwl|EAZyUB#<{5@k3$C|%H0&kxrK_$|Jh}|P7#2bI=&MS5+
+z;VObWkHgPd8G#MmJMF=mL_+U@PH3ewm7?!%rC%|s80e}Yp7zh;uIy0_NU0J6+FfH@
+zyJT}GbDum4eEiL)hWc;>NU`zilE>ZpxGkSpcbN;iifCD8tBOK36m6p)RrpdJmyZyO
+z)9AzK^2C;M0*dq3mjPKzw6U9t`J{;PSU*y2RE+@ujjQOx7fkiobZ0nqH`L{g3cUP<
+zf|*t1547$v5fT|>l)aZnl)FTx)|7Xp^0`~}x%V)QT$lQ%4$jnTqpWoa1xF@5Zzs|5
+zy3pR9Vm1-<=PdPkG9<rZIH_o%%Rp3bl$t}U`5x5e$*=VZ7;Jc<eLX2{f?pK2u&e@@
+zL`&DIqUSGm8f7d45>tmZabghH%kfG6TSpn=v+)T$?mE!Xtp@>i)3IFc`Lrtk<S94y
+zz`tm@%zpZo8X2W%NC*t`7cT4ml(cfIgeOHQI4v2^{cSzWbcv!0_?hAn_l$M=t@ubU
+zTz*g!IKM{8j8tOWySCa`Ce^s7l*<VUU3`ZEfp`x2RN_pme~rutlTzxQlY`yDw|^)>
+zl}}eBQV>}C^aCc#DWa+r5C162{EcxyEZ##QV`X38^cM2+jFj9rP91mTe48gjDweXm
+z6<Lc_V^%_3At-15^mQp%L@4Nzs4o8GOq`au%f{~4o}558=$uIU!2dza<OMUA6s~3S
+z-kx-V;Mz3Qt2B^UbE#tLeVzoY`O8!w$S*QXTD5zp`%AO?r-jYa4FDEOUFDs1V<^oA
+z>Dkvl#Okm2tN5AlnVm1@F0uyy;YmD=fFE13ki_+Q4v$F*c1p?&J<@Vvt95l0p0m6m
+zjCNK_Ef=VnPM3c*o<X+T!|tiOKe((XHFcWCbL)U*e~x|WV!#6$z***BahW&}%>jUb
+z?!Teajkf>cDP2t@1_T5qnljP04n8ar&zUVe%z?|_Hx8>BihG@#33+sb*`u4?#dW50
+z+f*7RKov9FQQBQQ{?aoV#gfKi9oln{&ryna*s0K8y(<H*&h9l))UBDA+=Q*R&7!r0
+zSoq(MtJy*kn~P~RKa3Vi?0-XthmZI_Y{A~mWB;fy3}e=q`Tl;M_Zr=k8&cHCLEhnR
+zk62vV5T#@uQLFg3OW}hRcE$_&#G&2Wj0M^WW}c*pvbJ;jWT`!bw8r)NmXJ)EOs%?S
+z<59zgEr<8w?pw{T9hLeMSFNqTh-u#tc<>k!`nAFMJhMK{<@g@^vC*KjpzF$)jx@E5
+zfKw@5_tn|f?3|3Y`a5A6kot1Q4$b-{qon|18s=*W1@-0c^1CjJ5%kM1*%a7C($d!V
+z7!2(^egL~a*W`yF53N3vI(Ia)?>?Um>y#WnmD9hqs<dx2U;6H3@|w?As@at0g&|MO
+zzgdwDypa4~&3?2?JV%7>r6{p1)@)g`dQI7C%OT?|o0s4#HLwqEEPmUe18t?t-B8I>
+zV2KOE-!}98xAxBTBhA;%0e)u9DCctfyaf9kjCqC~%wclSve682B6%EU-@nr%P$RSQ
+zCv#GPu79OgtlQPmq5)1@1u-FIZd8~q@38u!zSVggYPcVL(KmOrf7CsDfxKyP+Mq7H
+z%;dXukbNM<Ye9Kw+&^~C=gVl8b7{k*qe!K!rQ@fi?Fv=&MGB?lNm82O&N?Iez=%#s
+z+_nk=7oMjkSVXf`R8R}Lex8<K4l%Iz%Z_;|S*Z{7lD=c29=KU*viIH-+tbl5%NrZ1
+zpf&7oeF3Y9WrqPyc~aeU!>vk}9Mdi8HcdZ40hi_T0X^3!xgt*y$r69!4e|iDf-H5J
+zI&WRIZ++4qZr`IMBA7Y_<#f<{<w}*ARC_dCE@!oH5BcVvccJ;i@XSo!>za6Nbnx7n
+zBWQML`hLF3eKtgX@zY3pn5W<`Veo>~o%lZ~_a7)UhbV%mG8In8+sjZi=&e@ngSrx$
+zQonfeapr1juR~?4x*ZWiy$U%YT8qZ2cdx|zYCLTqu4yP!w=;BC2(G5*GNm3<o+<Xj
+zIytD!SvMH4+WC}uxAEN84B6^)y$hf>z^p7t&n~%?)_U|vCsr!M3N|Ek+AO|w8qoWz
+z(DaD{(wV8Wao;6iH{&mgU&w4av4#1=BGxbJlNl|vSA57L_)xzj^pcd6<jO@y<MeoK
+zc(4Nxh;Ze$OI$ewj?u%tGlCN9qGDa53dkj|$fbtPO5~DNrdpap7_~LBQOU=g0ny@g
+zEuOFP%5&Mks17-(<j25%%p?BWLo9N}XbLvq61da=7V%s9lQ!H2CQxG(f1lL~A|R-K
+zxJlE-!G?I!QA1j6%gAzkEney6ZtA~3lF?h41_|I?OxnUJYtdtDxjF^bT_{PmWhek^
+z(ni@o`yNIaOo^;KcL8n#3%u@_PHmB4ysns!*7N@G;nb|YO^brp*&swT7Yq>L?CfIh
+zkU$f8nW54h^9CZHZpEnzW2NJzqMbwuS<9Q7FZEEP2C*%x%572gDYw95SmCEhJ$35n
+zFWZEZXvA>OY&l1ARUE4^1*sLZ)h>H^&fW`8>?R28k0@>Fh>?oCx-HVuQv62*ct{YA
+zcXqE>0QPiDyz=mZ)$~T{)~#DNH-5<3*T4_>e<vZ_TgJY7hrWU5>A-JpDaonHmOM8L
+F{D0g#_+S74
+
+literal 0
+HcmV?d00001
+
 diff --git a/app/src/main/res/drawable-xhdpi/atv_banner.png b/app/src/main/res/drawable-xhdpi/atv_banner.png
 index ff418962d2bd13866cf384c823cd41f7e72062c5..5682b47b5c6a9ec6db5b5f27cd26e6564c511141 100755
 GIT binary patch
@@ -27359,6 +29354,98 @@ index 00000000..a011b067
 +        </shape>
 +    </item>
 +</ripple>
+diff --git a/app/src/main/res/drawable/moonshine_sky.xml b/app/src/main/res/drawable/moonshine_sky.xml
+new file mode 100644
+index 00000000..10799342
+--- /dev/null
++++ b/app/src/main/res/drawable/moonshine_sky.xml
+@@ -0,0 +1,6 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- The dim sky behind every Moonshine screen (same idea as the PC app and the installer). -->
++<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
++    <item android:drawable="@color/moonshine_bg"/>
++    <item android:drawable="@drawable/moonshine_stars"/>
++</layer-list>
+diff --git a/app/src/main/res/drawable/moonshine_stars.xml b/app/src/main/res/drawable/moonshine_stars.xml
+new file mode 100644
+index 00000000..e0ceb255
+--- /dev/null
++++ b/app/src/main/res/drawable/moonshine_stars.xml
+@@ -0,0 +1,74 @@
++<?xml version="1.0" encoding="utf-8"?>
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="360dp" android:height="760dp" android:viewportWidth="360" android:viewportHeight="760">
++        <path android:fillColor="#63F4EEEF" android:pathData="M174.7,593.5 m-0.57,0 a0.57,0.57 0 1,0 1.13,0 a0.57,0.57 0 1,0 -1.13,0"/>
++        <path android:fillColor="#3BF4EEEF" android:pathData="M165.6,302.1 m-0.62,0 a0.62,0.62 0 1,0 1.24,0 a0.62,0.62 0 1,0 -1.24,0"/>
++        <path android:fillColor="#49F4EEEF" android:pathData="M278.9,64.2 m-0.67,0 a0.67,0.67 0 1,0 1.34,0 a0.67,0.67 0 1,0 -1.34,0"/>
++        <path android:fillColor="#1DF4EEEF" android:pathData="M20.7,495.3 m-1.10,0 a1.10,1.10 0 1,0 2.21,0 a1.10,1.10 0 1,0 -2.21,0"/>
++        <path android:fillColor="#5BFFD3DC" android:pathData="M245.2,72.7 m-0.57,0 a0.57,0.57 0 1,0 1.15,0 a0.57,0.57 0 1,0 -1.15,0"/>
++        <path android:fillColor="#46F4EEEF" android:pathData="M287.7,269.1 m-0.66,0 a0.66,0.66 0 1,0 1.32,0 a0.66,0.66 0 1,0 -1.32,0"/>
++        <path android:fillColor="#5CF4EEEF" android:pathData="M295.9,642.3 m-1.03,0 a1.03,1.03 0 1,0 2.05,0 a1.03,1.03 0 1,0 -2.05,0"/>
++        <path android:fillColor="#42F4EEEF" android:pathData="M90.2,20.3 m-0.62,0 a0.62,0.62 0 1,0 1.24,0 a0.62,0.62 0 1,0 -1.24,0"/>
++        <path android:fillColor="#1AFFD3DC" android:pathData="M31.9,168.8 m-0.70,0 a0.70,0.70 0 1,0 1.39,0 a0.70,0.70 0 1,0 -1.39,0"/>
++        <path android:fillColor="#50F4EEEF" android:pathData="M101.6,207.4 m-0.85,0 a0.85,0.85 0 1,0 1.69,0 a0.85,0.85 0 1,0 -1.69,0"/>
++        <path android:fillColor="#4AF4EEEF" android:pathData="M37.7,84.7 m-1.05,0 a1.05,1.05 0 1,0 2.10,0 a1.05,1.05 0 1,0 -2.10,0"/>
++        <path android:fillColor="#36F4EEEF" android:pathData="M295.3,265.9 m-0.62,0 a0.62,0.62 0 1,0 1.23,0 a0.62,0.62 0 1,0 -1.23,0"/>
++        <path android:fillColor="#38FFD3DC" android:pathData="M95.7,263.7 m-0.84,0 a0.84,0.84 0 1,0 1.67,0 a0.84,0.84 0 1,0 -1.67,0"/>
++        <path android:fillColor="#33FFD3DC" android:pathData="M136.5,260.0 m-0.58,0 a0.58,0.58 0 1,0 1.15,0 a0.58,0.58 0 1,0 -1.15,0"/>
++        <path android:fillColor="#34F4EEEF" android:pathData="M9.3,622.1 m-0.52,0 a0.52,0.52 0 1,0 1.03,0 a0.52,0.52 0 1,0 -1.03,0"/>
++        <path android:fillColor="#5FFFD3DC" android:pathData="M42.9,646.8 m-1.28,0 a1.28,1.28 0 1,0 2.56,0 a1.28,1.28 0 1,0 -2.56,0"/>
++        <path android:fillColor="#5FF4EEEF" android:pathData="M290.8,683.2 m-0.86,0 a0.86,0.86 0 1,0 1.72,0 a0.86,0.86 0 1,0 -1.72,0"/>
++        <path android:fillColor="#5FF4EEEF" android:pathData="M214.9,684.9 m-0.94,0 a0.94,0.94 0 1,0 1.88,0 a0.94,0.94 0 1,0 -1.88,0"/>
++        <path android:fillColor="#3BFFD3DC" android:pathData="M343.7,428.9 m-1.07,0 a1.07,1.07 0 1,0 2.14,0 a1.07,1.07 0 1,0 -2.14,0"/>
++        <path android:fillColor="#5EFFD3DC" android:pathData="M70.5,512.3 m-1.29,0 a1.29,1.29 0 1,0 2.58,0 a1.29,1.29 0 1,0 -2.58,0"/>
++        <path android:fillColor="#33F4EEEF" android:pathData="M145.4,368.9 m-1.19,0 a1.19,1.19 0 1,0 2.38,0 a1.19,1.19 0 1,0 -2.38,0"/>
++        <path android:fillColor="#45FFD3DC" android:pathData="M56.6,165.1 m-0.62,0 a0.62,0.62 0 1,0 1.23,0 a0.62,0.62 0 1,0 -1.23,0"/>
++        <path android:fillColor="#64F4EEEF" android:pathData="M113.3,506.8 m-1.19,0 a1.19,1.19 0 1,0 2.38,0 a1.19,1.19 0 1,0 -2.38,0"/>
++        <path android:fillColor="#5CF4EEEF" android:pathData="M26.0,550.5 m-1.09,0 a1.09,1.09 0 1,0 2.19,0 a1.09,1.09 0 1,0 -2.19,0"/>
++        <path android:fillColor="#4BF4EEEF" android:pathData="M63.4,438.3 m-1.20,0 a1.20,1.20 0 1,0 2.40,0 a1.20,1.20 0 1,0 -2.40,0"/>
++        <path android:fillColor="#5BF4EEEF" android:pathData="M223.0,214.6 m-1.29,0 a1.29,1.29 0 1,0 2.58,0 a1.29,1.29 0 1,0 -2.58,0"/>
++        <path android:fillColor="#26F4EEEF" android:pathData="M225.8,212.4 m-0.89,0 a0.89,0.89 0 1,0 1.79,0 a0.89,0.89 0 1,0 -1.79,0"/>
++        <path android:fillColor="#4EF4EEEF" android:pathData="M331.1,165.1 m-0.52,0 a0.52,0.52 0 1,0 1.03,0 a0.52,0.52 0 1,0 -1.03,0"/>
++        <path android:fillColor="#47F4EEEF" android:pathData="M185.4,248.4 m-0.77,0 a0.77,0.77 0 1,0 1.54,0 a0.77,0.77 0 1,0 -1.54,0"/>
++        <path android:fillColor="#59F4EEEF" android:pathData="M43.0,559.2 m-0.64,0 a0.64,0.64 0 1,0 1.28,0 a0.64,0.64 0 1,0 -1.28,0"/>
++        <path android:fillColor="#5FF4EEEF" android:pathData="M98.7,99.7 m-0.85,0 a0.85,0.85 0 1,0 1.70,0 a0.85,0.85 0 1,0 -1.70,0"/>
++        <path android:fillColor="#55F4EEEF" android:pathData="M257.2,614.0 m-1.23,0 a1.23,1.23 0 1,0 2.47,0 a1.23,1.23 0 1,0 -2.47,0"/>
++        <path android:fillColor="#30F4EEEF" android:pathData="M169.4,593.0 m-0.86,0 a0.86,0.86 0 1,0 1.71,0 a0.86,0.86 0 1,0 -1.71,0"/>
++        <path android:fillColor="#45F4EEEF" android:pathData="M158.5,635.6 m-0.73,0 a0.73,0.73 0 1,0 1.46,0 a0.73,0.73 0 1,0 -1.46,0"/>
++        <path android:fillColor="#3FFFD3DC" android:pathData="M218.1,104.5 m-0.62,0 a0.62,0.62 0 1,0 1.24,0 a0.62,0.62 0 1,0 -1.24,0"/>
++        <path android:fillColor="#64F4EEEF" android:pathData="M75.0,572.7 m-0.90,0 a0.90,0.90 0 1,0 1.80,0 a0.90,0.90 0 1,0 -1.80,0"/>
++        <path android:fillColor="#5AF4EEEF" android:pathData="M73.5,273.0 m-0.86,0 a0.86,0.86 0 1,0 1.71,0 a0.86,0.86 0 1,0 -1.71,0"/>
++        <path android:fillColor="#5EF4EEEF" android:pathData="M170.6,736.3 m-0.75,0 a0.75,0.75 0 1,0 1.50,0 a0.75,0.75 0 1,0 -1.50,0"/>
++        <path android:fillColor="#57F4EEEF" android:pathData="M246.7,85.5 m-1.15,0 a1.15,1.15 0 1,0 2.30,0 a1.15,1.15 0 1,0 -2.30,0"/>
++        <path android:fillColor="#25F4EEEF" android:pathData="M88.4,302.2 m-1.05,0 a1.05,1.05 0 1,0 2.10,0 a1.05,1.05 0 1,0 -2.10,0"/>
++        <path android:fillColor="#4EFFD3DC" android:pathData="M145.6,294.0 m-1.02,0 a1.02,1.02 0 1,0 2.04,0 a1.02,1.02 0 1,0 -2.04,0"/>
++        <path android:fillColor="#50F4EEEF" android:pathData="M256.4,274.0 m-0.66,0 a0.66,0.66 0 1,0 1.33,0 a0.66,0.66 0 1,0 -1.33,0"/>
++        <path android:fillColor="#1FF4EEEF" android:pathData="M34.5,149.1 m-0.60,0 a0.60,0.60 0 1,0 1.20,0 a0.60,0.60 0 1,0 -1.20,0"/>
++        <path android:fillColor="#1CF4EEEF" android:pathData="M12.7,709.3 m-0.79,0 a0.79,0.79 0 1,0 1.58,0 a0.79,0.79 0 1,0 -1.58,0"/>
++        <path android:fillColor="#32F4EEEF" android:pathData="M229.9,50.7 m-0.86,0 a0.86,0.86 0 1,0 1.71,0 a0.86,0.86 0 1,0 -1.71,0"/>
++        <path android:fillColor="#2FF4EEEF" android:pathData="M229.1,602.0 m-1.10,0 a1.10,1.10 0 1,0 2.20,0 a1.10,1.10 0 1,0 -2.20,0"/>
++        <path android:fillColor="#46F4EEEF" android:pathData="M62.7,627.6 m-1.03,0 a1.03,1.03 0 1,0 2.06,0 a1.03,1.03 0 1,0 -2.06,0"/>
++        <path android:fillColor="#51F4EEEF" android:pathData="M132.0,319.4 m-1.20,0 a1.20,1.20 0 1,0 2.40,0 a1.20,1.20 0 1,0 -2.40,0"/>
++        <path android:fillColor="#5CF4EEEF" android:pathData="M291.8,126.8 m-0.64,0 a0.64,0.64 0 1,0 1.29,0 a0.64,0.64 0 1,0 -1.29,0"/>
++        <path android:fillColor="#43FFD3DC" android:pathData="M160.3,465.7 m-0.91,0 a0.91,0.91 0 1,0 1.83,0 a0.91,0.91 0 1,0 -1.83,0"/>
++        <path android:fillColor="#23F4EEEF" android:pathData="M48.6,266.5 m-1.12,0 a1.12,1.12 0 1,0 2.24,0 a1.12,1.12 0 1,0 -2.24,0"/>
++        <path android:fillColor="#1BF4EEEF" android:pathData="M128.5,137.0 m-0.84,0 a0.84,0.84 0 1,0 1.67,0 a0.84,0.84 0 1,0 -1.67,0"/>
++        <path android:fillColor="#29F4EEEF" android:pathData="M130.6,208.8 m-0.54,0 a0.54,0.54 0 1,0 1.08,0 a0.54,0.54 0 1,0 -1.08,0"/>
++        <path android:fillColor="#1AF4EEEF" android:pathData="M84.0,170.1 m-0.51,0 a0.51,0.51 0 1,0 1.02,0 a0.51,0.51 0 1,0 -1.02,0"/>
++        <path android:fillColor="#2CF4EEEF" android:pathData="M163.0,388.2 m-0.72,0 a0.72,0.72 0 1,0 1.44,0 a0.72,0.72 0 1,0 -1.44,0"/>
++        <path android:fillColor="#3AF4EEEF" android:pathData="M9.4,237.7 m-1.26,0 a1.26,1.26 0 1,0 2.53,0 a1.26,1.26 0 1,0 -2.53,0"/>
++        <path android:fillColor="#64F4EEEF" android:pathData="M308.4,348.1 m-0.82,0 a0.82,0.82 0 1,0 1.63,0 a0.82,0.82 0 1,0 -1.63,0"/>
++        <path android:fillColor="#1EF4EEEF" android:pathData="M262.4,657.8 m-0.75,0 a0.75,0.75 0 1,0 1.50,0 a0.75,0.75 0 1,0 -1.50,0"/>
++        <path android:fillColor="#1EF4EEEF" android:pathData="M243.9,424.5 m-0.83,0 a0.83,0.83 0 1,0 1.66,0 a0.83,0.83 0 1,0 -1.66,0"/>
++        <path android:fillColor="#40F4EEEF" android:pathData="M256.5,699.8 m-1.03,0 a1.03,1.03 0 1,0 2.05,0 a1.03,1.03 0 1,0 -2.05,0"/>
++        <path android:fillColor="#43F4EEEF" android:pathData="M79.4,462.0 m-0.54,0 a0.54,0.54 0 1,0 1.07,0 a0.54,0.54 0 1,0 -1.07,0"/>
++        <path android:fillColor="#4DF4EEEF" android:pathData="M59.7,422.0 m-1.15,0 a1.15,1.15 0 1,0 2.30,0 a1.15,1.15 0 1,0 -2.30,0"/>
++        <path android:fillColor="#58FFD3DC" android:pathData="M224.5,484.0 m-1.29,0 a1.29,1.29 0 1,0 2.58,0 a1.29,1.29 0 1,0 -2.58,0"/>
++        <path android:fillColor="#1DF4EEEF" android:pathData="M169.4,119.2 m-0.57,0 a0.57,0.57 0 1,0 1.15,0 a0.57,0.57 0 1,0 -1.15,0"/>
++        <path android:fillColor="#4FF4EEEF" android:pathData="M154.0,669.9 m-0.97,0 a0.97,0.97 0 1,0 1.94,0 a0.97,0.97 0 1,0 -1.94,0"/>
++        <path android:fillColor="#44F4EEEF" android:pathData="M249.4,137.9 m-1.20,0 a1.20,1.20 0 1,0 2.40,0 a1.20,1.20 0 1,0 -2.40,0"/>
++        <path android:fillColor="#22F4EEEF" android:pathData="M154.1,481.6 m-0.92,0 a0.92,0.92 0 1,0 1.84,0 a0.92,0.92 0 1,0 -1.84,0"/>
++        <path android:fillColor="#5FF4EEEF" android:pathData="M149.5,179.3 m-0.94,0 a0.94,0.94 0 1,0 1.88,0 a0.94,0.94 0 1,0 -1.88,0"/>
++        <path android:fillColor="#55F4EEEF" android:pathData="M273.4,736.3 m-1.07,0 a1.07,1.07 0 1,0 2.14,0 a1.07,1.07 0 1,0 -2.14,0"/>
++        <path android:fillColor="#5CFFD3DC" android:pathData="M288.3,264.6 m-0.88,0 a0.88,0.88 0 1,0 1.76,0 a0.88,0.88 0 1,0 -1.76,0"/>
++        </vector>
 diff --git a/app/src/main/res/layout-land/activity_pc_view.xml b/app/src/main/res/layout-land/activity_pc_view.xml
 deleted file mode 100755
 index f2dfd455..00000000
@@ -39343,25 +41430,113 @@ index 00667ab0..649ab798 100755
 +    <string name="moonshine_channel_friends_desc">Messages from friends and invites to join their games</string>
  </resources>
 diff --git a/app/src/main/res/values/styles.xml b/app/src/main/res/values/styles.xml
-index 5fd56e32..a63ae5f4 100755
+index 5fd56e32..67bd83f3 100755
 --- a/app/src/main/res/values/styles.xml
 +++ b/app/src/main/res/values/styles.xml
-@@ -18,11 +18,24 @@
-     <style name="AppTheme" parent="AppBaseTheme">
-         <!-- All customizations that are NOT specific to a particular API-level can go here. -->
-         <item name="android:windowActionBar">false</item>
-+        <item name="preferenceTheme">@style/MoonshinePreferenceTheme</item>
-+        <item name="alertDialogTheme">@style/MoonshineAlertDialog</item>
-+        <item name="materialAlertDialogTheme">@style/MoonshineAlertDialog</item>
-         <item name="android:windowNoTitle">true</item>
+@@ -1,75 +1,139 @@
+-<?xml version="1.0" encoding="utf-8"?>
+-<resources>
+-
+-    <!--
+-        Base application theme, dependent on API level. This theme is replaced
+-        by AppBaseTheme from res/values-vXX/styles.xml on newer devices.
+-
+-    -->
+-    <style name="AppBaseTheme" parent="Theme.MaterialComponents.NoActionBar">
+-        <!--
+-            Theme customizations available in newer API levels can go in
+-            res/values-vXX/styles.xml, while customizations related to
+-            backward-compatibility can go here.
+-        -->
+-    </style>
+-
+-    <!-- Application theme. -->
+-    <style name="AppTheme" parent="AppBaseTheme">
+-        <!-- All customizations that are NOT specific to a particular API-level can go here. -->
+-        <item name="android:windowActionBar">false</item>
+-        <item name="android:windowNoTitle">true</item>
 -        <item name="android:statusBarColor">#1A1A1A</item>
 -        <item name="android:navigationBarColor">#1A1A1A</item>
 -        <item name="android:colorBackground">#1A1A1A</item>
 -        <item name="android:windowBackground">#1A1A1A</item>
+-    </style>
+-
+-    <style name="StreamBaseTheme" parent="AppBaseTheme">
+-        <!-- Transparent streaming background to avoid extra overdraw -->
+-        <item name="android:windowBackground">@android:color/transparent</item>
+-    </style>
+-
+-    <!-- Stream activity theme -->
+-    <style name="StreamTheme" parent="StreamBaseTheme">
+-        <!-- All customizations that are NOT specific to a particular API-level can go here. -->
+-        <item name="android:windowActionBar">false</item>
+-        <item name="android:windowNoTitle">true</item>
+-        <!-- Added for API 34+ where ImageButton requires these color attrs to inflate -->
+-        <item name="android:colorControlNormal">@android:color/white</item>
+-        <item name="android:colorControlHighlight">@android:color/white</item>
+-        <item name="android:colorAccent">@android:color/white</item>
+-        <item name="android:colorControlActivated">@android:color/white</item>
+-        <item name="android:colorButtonNormal">@android:color/white</item>
+-        <!-- Duplicate non-prefixed color attributes for AppCompat widgets -->
+-        <item name="colorControlNormal">@android:color/white</item>
+-        <item name="colorControlHighlight">@android:color/white</item>
+-        <item name="colorAccent">@android:color/white</item>
+-        <item name="colorControlActivated">@android:color/white</item>
+-        <item name="colorButtonNormal">@android:color/white</item>
+-    </style>
+-
+-    <style name="SettingsTheme" parent="Theme.AppCompat.NoActionBar">
+-        <item name="android:statusBarColor">@android:color/transparent</item>
+-        <item name="android:navigationBarColor">@android:color/transparent</item>
+-        <item name="android:colorBackground">@android:color/transparent</item>
+-        <item name="android:windowBackground">@android:color/transparent</item>
+-    </style>
+-
+-    <style name="ExternalDisplayControllerTheme" parent="AppTheme">
+-        <item name="android:statusBarColor">@android:color/black</item>
+-        <item name="android:navigationBarColor">@android:color/black</item>
+-        <item name="android:colorBackground">@android:color/black</item>
+-        <item name="android:windowBackground">@android:color/black</item>
+-    </style>
+-
+-    <declare-styleable name="ApertureViewGroup">
+-        <attr name="aperture_color1" format="color" />
+-        <attr name="aperture_color2" format="color" />
+-        <attr name="aperture_border_width" format="dimension" />
+-        <attr name="aperture_border_angle" format="dimension" />
+-        <attr name="aperture_duration" format="integer" />
+-        <attr name="aperture_middle_color" format="color" />
+-    </declare-styleable>
+-
+-</resources>
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++
++    <!--
++        Base application theme, dependent on API level. This theme is replaced
++        by AppBaseTheme from res/values-vXX/styles.xml on newer devices.
++
++    -->
++    <style name="AppBaseTheme" parent="Theme.MaterialComponents.NoActionBar">
++        <!--
++            Theme customizations available in newer API levels can go in
++            res/values-vXX/styles.xml, while customizations related to
++            backward-compatibility can go here.
++        -->
++    </style>
++
++    <!-- Application theme. -->
++    <style name="AppTheme" parent="AppBaseTheme">
++        <!-- All customizations that are NOT specific to a particular API-level can go here. -->
++        <item name="android:windowActionBar">false</item>
++        <item name="preferenceTheme">@style/MoonshinePreferenceTheme</item>
++        <item name="alertDialogTheme">@style/MoonshineAlertDialog</item>
++        <item name="materialAlertDialogTheme">@style/MoonshineAlertDialog</item>
++        <item name="android:windowNoTitle">true</item>
 +        <item name="android:statusBarColor">@color/moonshine_bg</item>
 +        <item name="android:navigationBarColor">@color/moonshine_bg</item>
 +        <item name="android:colorBackground">@color/moonshine_bg</item>
-+        <item name="android:windowBackground">@color/moonshine_bg</item>
++        <item name="android:windowBackground">@drawable/moonshine_sky</item>
 +        <!-- Moonshine's accent colours for buttons, switches and highlights -->
 +        <item name="colorPrimary">@color/moonshine_accent</item>
 +        <item name="colorOnPrimary">#FFFFFF</item>
@@ -39372,13 +41547,32 @@ index 5fd56e32..a63ae5f4 100755
 +        <item name="colorOnSecondaryContainer">@color/moonshine_text</item>
 +        <item name="colorAccent">@color/moonshine_accent</item>
 +        <item name="android:colorAccent">@color/moonshine_accent</item>
-     </style>
- 
-     <style name="StreamBaseTheme" parent="AppBaseTheme">
-@@ -49,11 +62,62 @@
-         <item name="colorButtonNormal">@android:color/white</item>
-     </style>
- 
++    </style>
++
++    <style name="StreamBaseTheme" parent="AppBaseTheme">
++        <!-- Transparent streaming background to avoid extra overdraw -->
++        <item name="android:windowBackground">@android:color/transparent</item>
++    </style>
++
++    <!-- Stream activity theme -->
++    <style name="StreamTheme" parent="StreamBaseTheme">
++        <!-- All customizations that are NOT specific to a particular API-level can go here. -->
++        <item name="android:windowActionBar">false</item>
++        <item name="android:windowNoTitle">true</item>
++        <!-- Added for API 34+ where ImageButton requires these color attrs to inflate -->
++        <item name="android:colorControlNormal">@android:color/white</item>
++        <item name="android:colorControlHighlight">@android:color/white</item>
++        <item name="android:colorAccent">@android:color/white</item>
++        <item name="android:colorControlActivated">@android:color/white</item>
++        <item name="android:colorButtonNormal">@android:color/white</item>
++        <!-- Duplicate non-prefixed color attributes for AppCompat widgets -->
++        <item name="colorControlNormal">@android:color/white</item>
++        <item name="colorControlHighlight">@android:color/white</item>
++        <item name="colorAccent">@android:color/white</item>
++        <item name="colorControlActivated">@android:color/white</item>
++        <item name="colorButtonNormal">@android:color/white</item>
++    </style>
++
 +    <!-- Dialogs of the home screen: the same dark plum and crimson as the rest -->
 +    <!-- Dialogs opened from Settings (custom bitrate, pickers…): the same dark plum as the rest -->
 +    <style name="MoonshineAlertDialog" parent="Theme.AppCompat.Dialog.Alert">
@@ -39401,13 +41595,11 @@ index 5fd56e32..a63ae5f4 100755
 +        <item name="android:textColorAlertDialogListItem">@color/moonshine_text</item>
 +    </style>
 +
-     <style name="SettingsTheme" parent="Theme.AppCompat.NoActionBar">
-         <item name="android:statusBarColor">@android:color/transparent</item>
-         <item name="android:navigationBarColor">@android:color/transparent</item>
--        <item name="android:colorBackground">@android:color/transparent</item>
--        <item name="android:windowBackground">@android:color/transparent</item>
++    <style name="SettingsTheme" parent="Theme.AppCompat.NoActionBar">
++        <item name="android:statusBarColor">@android:color/transparent</item>
++        <item name="android:navigationBarColor">@android:color/transparent</item>
 +        <item name="android:colorBackground">@color/moonshine_bg</item>
-+        <item name="android:windowBackground">@color/moonshine_bg</item>
++        <item name="android:windowBackground">@drawable/moonshine_sky</item>
 +        <item name="colorAccent">@color/moonshine_accent</item>
 +        <item name="colorControlActivated">@color/moonshine_accent</item>
 +        <item name="colorControlNormal">@color/moonshine_muted</item>
@@ -39437,9 +41629,25 @@ index 5fd56e32..a63ae5f4 100755
 +    </style>
 +    <style name="MoonshineEditTextPreference" parent="Preference.DialogPreference.EditTextPreference">
 +        <item name="android:layout">@layout/moonshine_preference</item>
-     </style>
- 
-     <style name="ExternalDisplayControllerTheme" parent="AppTheme">
++    </style>
++
++    <style name="ExternalDisplayControllerTheme" parent="AppTheme">
++        <item name="android:statusBarColor">@android:color/black</item>
++        <item name="android:navigationBarColor">@android:color/black</item>
++        <item name="android:colorBackground">@android:color/black</item>
++        <item name="android:windowBackground">@android:color/black</item>
++    </style>
++
++    <declare-styleable name="ApertureViewGroup">
++        <attr name="aperture_color1" format="color" />
++        <attr name="aperture_color2" format="color" />
++        <attr name="aperture_border_width" format="dimension" />
++        <attr name="aperture_border_angle" format="dimension" />
++        <attr name="aperture_duration" format="integer" />
++        <attr name="aperture_middle_color" format="color" />
++    </declare-styleable>
++
++</resources>
 diff --git a/app/src/main/res/xml/preferences.xml b/app/src/main/res/xml/preferences.xml
 index 9dae9034..394fcbda 100755
 --- a/app/src/main/res/xml/preferences.xml
@@ -39915,6 +42123,166 @@ index a789e9ae..00000000
 -    }
 -}
 \ No newline at end of file
+diff --git a/app/src/test/java/com/moonshine/FileReceiverTest.java b/app/src/test/java/com/moonshine/FileReceiverTest.java
+new file mode 100644
+index 00000000..5431d4ab
+--- /dev/null
++++ b/app/src/test/java/com/moonshine/FileReceiverTest.java
+@@ -0,0 +1,154 @@
++package com.moonshine;
++
++import static org.junit.Assert.assertArrayEquals;
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertNotNull;
++import static org.junit.Assert.assertNull;
++import static org.junit.Assert.assertTrue;
++import static org.junit.Assert.fail;
++
++import android.content.Intent;
++
++import org.json.JSONObject;
++import org.junit.After;
++import org.junit.Before;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.robolectric.RobolectricTestRunner;
++
++import java.io.ByteArrayOutputStream;
++import java.io.IOException;
++import java.util.Random;
++import java.util.concurrent.atomic.AtomicBoolean;
++
++import okhttp3.OkHttpClient;
++import okhttp3.mockwebserver.Dispatcher;
++import okhttp3.mockwebserver.MockResponse;
++import okhttp3.mockwebserver.MockWebServer;
++import okhttp3.mockwebserver.RecordedRequest;
++import okio.Buffer;
++
++/** Receiving a file on the phone: the offer is checked, the pieces are pulled and assembled, bad cases are refused. */
++@RunWith(RobolectricTestRunner.class)
++public class FileReceiverTest {
++    private static final int PIECE = 8 << 20;
++    private MockWebServer server;
++    private byte[] data;
++    private String base;
++
++    private JSONObject message() throws Exception {
++        return new JSONObject().put("type", "file-offer").put("id", "abcdef0123456789abcdef01").put("hostUuid", "1234abcd-5678").put("port", 47989)
++                .put("key", "K".repeat(32)).put("name", "photo.png").put("size", 20_000_000L)
++                .put("from", new JSONObject().put("username", "pat").put("device", 7));
++    }
++
++    private FileReceiver.Offer offer(long size) throws Exception {
++        return FileReceiver.parse(message().put("size", size));
++    }
++
++    @Before
++    public void start() throws Exception {
++        data = new byte[20_000_000];
++        new Random(3).nextBytes(data);
++        server = new MockWebServer();
++        server.setDispatcher(new Dispatcher() {
++            @Override
++            public MockResponse dispatch(RecordedRequest r) {
++                String path = r.getPath();
++                if (!path.startsWith("/moonshine/take?id=abcdef0123456789abcdef01&key=" + "K".repeat(32) + "&offset=")) return new MockResponse().setResponseCode(404);
++                long offset = Long.parseLong(path.substring(path.lastIndexOf('=') + 1));
++                if (offset >= data.length) return new MockResponse().setResponseCode(416);
++                int n = (int) Math.min(PIECE, data.length - offset);
++                return new MockResponse().setBody(new Buffer().write(data, (int) offset, n));
++            }
++        });
++        server.start();
++        base = "http://" + server.getHostName() + ":" + server.getPort();
++    }
++
++    @After
++    public void stop() throws Exception {
++        server.shutdown();
++    }
++
++    @Test
++    public void aWellFormedOfferIsAccepted() throws Exception {
++        FileReceiver.Offer o = FileReceiver.parse(message());
++        assertNotNull(o);
++        assertEquals("pat", o.from);
++        assertEquals(7, o.device);
++        assertEquals("photo.png", o.name);
++    }
++
++    @Test
++    public void malformedOffersAreIgnored() throws Exception {
++        assertNull(FileReceiver.parse(message().put("size", 0)));
++        assertNull(FileReceiver.parse(message().put("key", "short")));
++        assertNull(FileReceiver.parse(message().put("id", "../etc")));
++        assertNull(FileReceiver.parse(message().put("port", 0)));
++        assertNull(FileReceiver.parse(message().put("from", new JSONObject().put("username", "").put("device", 7))));
++        assertNull(FileReceiver.parse(message().put("name", "   ")));
++    }
++
++    @Test
++    public void fileNamesAreMadeSafe() {
++        assertEquals("passwd", FileReceiver.safeName("../../etc/passwd"));
++        assertEquals("evil.exe", FileReceiver.safeName("C:\\Users\\x\\evil.exe"));
++        assertEquals("a_b_c.txt", FileReceiver.safeName("a:b?c.txt"));
++        assertEquals("file", FileReceiver.safeName("..."));
++        assertEquals("photoexe.png", FileReceiver.safeName("photo\u202Eexe.png").replace("_", ""));
++        assertTrue(FileReceiver.safeName("x".repeat(400) + ".png").length() <= 150);
++    }
++
++    @Test
++    public void theOfferSurvivesAnIntent() throws Exception {
++        Intent i = new Intent();
++        offer(1234).into(i);
++        FileReceiver.Offer back = FileReceiver.Offer.from(i);
++        assertNotNull(back);
++        assertEquals(1234, back.size);
++        assertEquals("K".repeat(32), back.key);
++    }
++
++    @Test
++    public void thePiecesAreAssembledInOrder() throws Exception {
++        ByteArrayOutputStream out = new ByteArrayOutputStream();
++        long[] last = { 0 };
++        FileReceiver.pull(new OkHttpClient(), base, offer(data.length), out, (d, t) -> last[0] = d, new AtomicBoolean());
++        assertArrayEquals(data, out.toByteArray());
++        assertEquals(data.length, last[0]);
++        assertEquals(3, server.getRequestCount()); // 8 MB + 8 MB + the rest
++    }
++
++    private void expect(FileReceiver.Offer o, String contains, AtomicBoolean cancelled) {
++        try {
++            FileReceiver.pull(new OkHttpClient(), base, o, new ByteArrayOutputStream(), (d, t) -> { }, cancelled);
++            fail("expected a failure");
++        } catch (IOException e) {
++            assertTrue(e.getMessage(), e.getMessage().contains(contains));
++        }
++    }
++
++    @Test
++    public void aFileThatStoppedBeingOfferedIsReported() throws Exception {
++        FileReceiver.Offer wrong = FileReceiver.parse(message().put("key", "Z".repeat(32)));
++        expect(wrong, "no longer offering", new AtomicBoolean());
++    }
++
++    @Test
++    public void aFileBiggerThanItSaidIsRefused() throws Exception {
++        expect(offer(5_000_000), "bigger than it said", new AtomicBoolean());
++    }
++
++    @Test
++    public void aShorterFileThanPromisedIsRefused() throws Exception {
++        // the offer says 25 MB, the PC has 20 MB: after the last byte the PC answers with an error, not more data
++        expect(offer(25_000_000), "416", new AtomicBoolean());
++    }
++
++    @Test
++    public void cancellingStopsTheDownload() throws Exception {
++        AtomicBoolean stop = new AtomicBoolean(true);
++        expect(offer(data.length), "Cancelled", stop);
++    }
++}
 diff --git a/app/src/test/java/com/moonshine/ReconnectTest.java b/app/src/test/java/com/moonshine/ReconnectTest.java
 new file mode 100644
 index 00000000..5d35994c
@@ -39968,6 +42336,122 @@ index 00000000..5d35994c
 +        assertEquals(5, SpeedTest.recommendBitrate(2));
 +        assertEquals(50, SpeedTest.recommendBitrate(75));
 +        assertEquals(150, SpeedTest.recommendBitrate(900));
++    }
++}
+diff --git a/app/src/test/java/com/moonshine/UpdateDownloadTest.java b/app/src/test/java/com/moonshine/UpdateDownloadTest.java
+new file mode 100644
+index 00000000..c99fc159
+--- /dev/null
++++ b/app/src/test/java/com/moonshine/UpdateDownloadTest.java
+@@ -0,0 +1,110 @@
++package com.moonshine;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertTrue;
++import static org.junit.Assert.fail;
++
++import java.io.File;
++import java.io.IOException;
++import java.nio.file.Files;
++import java.security.MessageDigest;
++import java.util.Arrays;
++import java.util.Random;
++import java.util.concurrent.atomic.AtomicBoolean;
++
++import okhttp3.mockwebserver.Dispatcher;
++import okhttp3.mockwebserver.MockResponse;
++import okhttp3.mockwebserver.MockWebServer;
++import okhttp3.mockwebserver.RecordedRequest;
++import okio.Buffer;
++
++import org.junit.After;
++import org.junit.Before;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.robolectric.RobolectricTestRunner;
++
++/** The updater's download step against a local stand-in for GitHub: good file, tampered file, too small, wrong place. */
++@RunWith(RobolectricTestRunner.class)
++public class UpdateDownloadTest {
++    private MockWebServer server;
++    private String base;
++    private byte[] apk;
++
++    @Before
++    public void start() throws Exception {
++        apk = new byte[2_500_000];
++        new Random(7).nextBytes(apk);
++        server = new MockWebServer();
++        server.setDispatcher(new Dispatcher() {
++            @Override
++            public MockResponse dispatch(RecordedRequest request) {
++                String path = request.getPath();
++                if ("/good".equals(path)) return new MockResponse().setBody(new Buffer().write(apk));
++                if ("/tiny".equals(path)) return new MockResponse().setBody(new Buffer().write(new byte[1000]));
++                return new MockResponse().setResponseCode(404);
++            }
++        });
++        server.start();
++        base = server.url("/").toString();
++        Updates.downloadsFrom = base;
++    }
++
++    @After
++    public void stop() throws Exception {
++        server.shutdown();
++        Updates.downloadsFrom = Updates.DOWNLOADS;
++    }
++
++    private static String sha(byte[] b) throws Exception {
++        StringBuilder s = new StringBuilder();
++        for (byte x : MessageDigest.getInstance("SHA-256").digest(b)) s.append(String.format("%02x", x));
++        return s.toString();
++    }
++
++    private Updates.Found found(String path, String sha) {
++        return new Updates.Found("0.8.0", "page", base + path, 2_500_000, sha);
++    }
++
++    private void expectFailure(String path, String sha, String contains) throws Exception {
++        File out = File.createTempFile("moonshine", ".apk");
++        try {
++            Updates.fetch(found(path, sha), out, (d, t) -> { }, new AtomicBoolean());
++            fail("expected a failure");
++        } catch (IOException e) {
++            assertTrue(e.getMessage(), e.getMessage().contains(contains));
++        } finally {
++            out.delete();
++        }
++    }
++
++    @Test
++    public void aMatchingDownloadIsSaved() throws Exception {
++        File out = File.createTempFile("moonshine", ".apk");
++        Updates.fetch(found("good", sha(apk)), out, (d, t) -> { }, new AtomicBoolean());
++        assertEquals(apk.length, out.length());
++        assertTrue(Arrays.equals(apk, Files.readAllBytes(out.toPath())));
++        out.delete();
++    }
++
++    @Test
++    public void aDifferentChecksumIsRefused() throws Exception {
++        expectFailure("good", "0".repeat(64), "checksum");
++    }
++
++    @Test
++    public void aTooSmallFileIsRefused() throws Exception {
++        expectFailure("tiny", "", "incomplete");
++    }
++
++    @Test
++    public void aFailedDownloadIsReported() throws Exception {
++        expectFailure("missing", "", "404");
++    }
++
++    @Test
++    public void aLinkOutsideTheReleasesIsRefused() throws Exception {
++        Updates.downloadsFrom = Updates.DOWNLOADS;
++        expectFailure("good", "", "isn’t a Moonshine download");
 +    }
 +}
 diff --git a/app/src/test/java/com/moonshine/UpdatesTest.java b/app/src/test/java/com/moonshine/UpdatesTest.java

@@ -47,8 +47,7 @@ const tabLoaders = {
   friends: () => { showHostList(); loadFriends(true); },
   host: () => loadHost(),
   beta: () => loadBeta(),
-  settings: async () => { await loadSettings(); fillPcPicker().then(loadSettings); },
-  apollo: () => showApollo(),
+  settings: () => showSettingsPane(settingsPane),
 };
 
 function selectTab(name) {
@@ -62,35 +61,63 @@ document.querySelectorAll('.tab').forEach((tab) => {
   tab.addEventListener('click', () => selectTab(tab.dataset.tab));
 });
 
-// ---- Host settings ------------------------------------------------------------------
-// Pages for the host engine's settings, applications, commands and logs.
+// ---- Settings ---------------------------------------------------------------------------
+// One tab: Moonshine's own settings, streaming, and the host's settings (host, applications, commands,
+// logs, troubleshooting, advanced), picked from a list on the left.
 
 const { apollo } = window.moonshine;
-let apolloSub = 'settings';
+let settingsPane = 'moonshine';
+
+const SETTINGS_NAV = [
+  { group: 'Moonshine', items: [['moonshine', 'General'], ['streaming', 'Streaming']] },
+  { group: 'This PC as a host', items: [['host', 'Host'], ['apps', 'Applications'], ['commands', 'Commands']] },
+  { group: 'Support', items: [['logs', 'Logs'], ['tools', 'Troubleshooting']] },
+  { group: '', items: [['advanced', 'Advanced']] },
+];
+const HOST_PANES = ['host', 'advanced', 'apps', 'commands', 'logs', 'tools'];
 
 const apolloLoaders = {
-  settings: () => loadApolloSettings(),
+  moonshine: async () => { await loadSettings(); fillPcPicker().then(loadSettings); },
+  streaming: async () => { await loadSettings(); fillPcPicker().then(loadSettings); },
+  host: () => { apolloSection = 'host'; return loadApolloSettings(); },
+  advanced: () => { apolloSection = 'advanced'; return loadApolloSettings(); },
   apps: () => loadApolloApps(),
   commands: () => loadApolloCommands(),
   logs: () => loadApolloLogs(),
   tools: () => loadApolloTools(),
 };
 
-function showApollo() {
-  selectApolloSub(apolloSub);
+function renderSettingsNav() {
+  const nodes = [];
+  for (const g of SETTINGS_NAV) {
+    if (g.group) nodes.push(el('div', { className: 'nav-group', textContent: g.group }));
+    for (const [id, label] of g.items) {
+      const b = el('button', { type: 'button', textContent: label });
+      b.dataset.pane = id;
+      b.addEventListener('click', () => showSettingsPane(id));
+      nodes.push(b);
+    }
+  }
+  $('#settings-nav').replaceChildren(...nodes);
 }
+renderSettingsNav();
 
-function selectApolloSub(name) {
-  apolloSub = name;
-  document.querySelectorAll('#apollo-subnav button').forEach((b) => b.classList.toggle('active', b.dataset.sub === name));
-  document.querySelectorAll('.apollo-sub').forEach((n) => n.classList.toggle('hidden', n.id !== `apollo-sub-${name}`));
+function showSettingsPane(name) {
+  if (!apolloLoaders[name]) name = 'moonshine';
+  settingsPane = name;
+  document.querySelectorAll('#settings-nav button').forEach((b) => b.classList.toggle('active', b.dataset.pane === name));
+  const shown = name === 'advanced' ? 'host' : name; // Host and Advanced share one form
+  document.querySelectorAll('.pane').forEach((n) => n.classList.toggle('hidden', n.dataset.pane !== shown));
+  $('#apollo-restart').classList.toggle('hidden', !HOST_PANES.includes(name));
   $('#apollo-message').classList.add('hidden');
-  apolloLoaders[name]();
+  return apolloLoaders[name]();
 }
 
-document.querySelectorAll('#apollo-subnav button').forEach((b) => {
-  b.addEventListener('click', () => selectApolloSub(b.dataset.sub));
-});
+/** Open the Settings tab on one of its sections. */
+function openSettings(pane) {
+  selectTab('settings');
+  showSettingsPane(pane);
+}
 
 function showApolloMessage(text, actionLabel, action) {
   $('#apollo-message').classList.remove('hidden');
@@ -98,7 +125,7 @@ function showApolloMessage(text, actionLabel, action) {
   const button = $('#apollo-message-action');
   button.textContent = actionLabel;
   button.onclick = action;
-  document.querySelectorAll('.apollo-sub').forEach((n) => n.classList.add('hidden'));
+  document.querySelectorAll('.pane').forEach((n) => n.classList.add('hidden'));
 }
 
 /** Show why the host can't be reached. Returns true if the call worked. */
@@ -123,7 +150,7 @@ $('#apollo-restart').addEventListener('click', (e) => apolloAction(e.target, 'Re
   const res = await apollo.restart();
   if (res.ok) {
     toast('The host is restarting.');
-    setTimeout(() => { if ($('#tab-apollo').classList.contains('active')) showApollo(); }, 4000);
+    setTimeout(() => { if ($('#tab-settings').classList.contains('active') && HOST_PANES.includes(settingsPane)) showSettingsPane(settingsPane); }, 4000);
   }
   return res;
 }));
@@ -176,31 +203,49 @@ let apolloConfig = null; // what Apollo has saved
 let apolloEdits = {}; // key -> new value, not saved yet
 const allFields = APOLLO_SCHEMA.flatMap((s) => s.fields);
 
-// apollo-schema.js is generated from the host's own page, which lists each GPU's encoder as a section
-// of its own. Here those go under Advanced, which is sorted into groups.
+// apollo-schema.js is generated from the host's own page, which has its own sections. Moonshine shows
+// the everyday ones under Host and puts everything else under Advanced; nothing is removed, only moved
+// (a few switches that Moonshine handles itself are left out, and keep whatever value they have).
 const ENCODER_SECTIONS = ['nv', 'amd', 'qsv', 'sw'];
+const HIDDEN_KEYS = ['min_log_level', 'enable_pairing', 'enable_discovery'];
+const HOST_GROUPS = [
+  { title: 'Name', keys: ['sunshine_name'] },
+  { title: 'Controllers', keys: ['gamepad', 'motion_as_ds4', 'touchpad_as_ds4', 'ds4_back_as_touchpad_click', 'back_button_timeout', 'enable_input_only_mode'] },
+  { title: 'Virtual display', keys: ['fallback_mode', 'headless_mode', 'double_refreshrate', 'isolated_virtual_display_option'] },
+  { title: 'Display', section: 'display' },
+  { title: 'Network', section: 'network' },
+];
 const ADVANCED_GROUPS = [
+  { title: 'Input', keys: ['controller', 'keyboard', 'mouse', 'key_repeat_delay', 'key_repeat_frequency', 'always_send_scancodes', 'key_rightalt_to_key_win', 'high_resolution_scrolling', 'native_pen_touch', 'forward_rumble'] },
+  { title: 'Audio', keys: ['audio_sink', 'virtual_sink', 'install_steam_audio_drivers', 'keep_sink_default', 'auto_capture_sink', 'stream_audio'] },
   { title: 'Video formats', keys: ['hevc_mode', 'av1_mode'] },
   { title: 'Capture and encoding', keys: ['capture', 'encoder', 'limit_framerate', 'qp', 'min_threads', 'ignore_encoder_probe_failure'] },
   { title: 'Network', keys: ['fec_percentage'] },
   { title: 'Compatibility', keys: ['envvar_compatibility_mode', 'legacy_ordering'] },
 ];
+let gpuVendors = []; // ['nv', 'amd', 'qsv'] found on this PC
 const SETTINGS_PAGES = (() => {
-  const pages = APOLLO_SCHEMA.filter((p) => !ENCODER_SECTIONS.includes(p.id) && p.id !== 'advanced');
-  const advanced = APOLLO_SCHEMA.find((p) => p.id === 'advanced');
-  const byKey = new Map(((advanced && advanced.fields) || []).map((f) => [f.key, f]));
-  const groups = ADVANCED_GROUPS.map((g) => ({ title: g.title, fields: g.keys.map((k) => byKey.get(k)).filter(Boolean) }));
-  const placed = new Set(ADVANCED_GROUPS.flatMap((g) => g.keys));
-  const rest = [...byKey.values()].filter((f) => !placed.has(f.key)); // settings added by a newer host
-  if (rest.length) groups.push({ title: 'Other', fields: rest });
-  for (const id of ENCODER_SECTIONS) {
+  const byKey = new Map(allFields.map((f) => [f.key, f]));
+  const placed = new Set(HIDDEN_KEYS);
+  const take = (keys) => keys.map((k) => { placed.add(k); return byKey.get(k); }).filter(Boolean);
+  const host = HOST_GROUPS.map((g) => ({
+    title: g.title,
+    fields: g.section ? take((APOLLO_SCHEMA.find((p) => p.id === g.section) || { fields: [] }).fields.map((f) => f.key)) : take(g.keys),
+  }));
+  const advanced = ADVANCED_GROUPS.map((g) => ({ title: g.title, fields: take(g.keys) }));
+  const encoders = ENCODER_SECTIONS.map((id) => {
     const section = APOLLO_SCHEMA.find((p) => p.id === id);
-    if (section) groups.push({ title: section.title, fields: section.fields });
-  }
-  pages.push({ id: 'advanced', title: 'Advanced', groups: groups.filter((g) => g.fields.length) });
-  return pages;
+    return section ? { id, title: section.title, fields: take(section.fields.map((f) => f.key)) } : null;
+  }).filter(Boolean);
+  const rest = allFields.filter((f) => !placed.has(f.key)); // settings a newer host added
+  const page = (id, title, groups) => ({ id, title, groups: groups.filter((g) => g.fields.length) });
+  return {
+    host: page('host', 'Host', host),
+    advanced: page('advanced', 'Advanced', [...advanced, { title: 'Other', fields: rest }]),
+    encoders,
+  };
 })();
-let apolloSection = SETTINGS_PAGES[0].id;
+let apolloSection = 'host';
 
 const ON_VALUES = ['enabled', 'true', 'yes', 'on', '1'];
 
@@ -238,6 +283,27 @@ function setEdit(field, value) {
   $('#apollo-save-bar').classList.toggle('hidden', !Object.keys(apolloEdits).length);
 }
 
+/** Home/Guide button emulation: a slider for how long to hold Back/Select (Off, 1, 2 or 3 seconds). */
+const HOLD_STOPS = [{ ms: -1, label: 'Off' }, { ms: 1000, label: '1 second' }, { ms: 2000, label: '2 seconds' }, { ms: 3000, label: '3 seconds' }];
+function holdSlider(field) {
+  const saved = Number(fieldValue(field));
+  let index = 0; // the stop nearest the saved number (a value typed into the config file by hand lands on one)
+  if (saved > 0) {
+    index = 1;
+    for (let i = 2; i < HOLD_STOPS.length; i++) {
+      if (Math.abs(HOLD_STOPS[i].ms - saved) < Math.abs(HOLD_STOPS[index].ms - saved)) index = i;
+    }
+  }
+  const out = el('output', { textContent: HOLD_STOPS[index].label });
+  const range = el('input', { type: 'range', min: 0, max: HOLD_STOPS.length - 1, step: 1, value: index });
+  range.addEventListener('input', () => { out.textContent = HOLD_STOPS[Number(range.value)].label; });
+  range.addEventListener('change', () => {
+    setEdit(field, String(HOLD_STOPS[Number(range.value)].ms));
+    renderApolloSection();
+  });
+  return el('div', { className: 'range-row hold-slider' }, range, out);
+}
+
 function fieldControl(field) {
   let input;
   if (field.type === 'checkbox') {
@@ -258,6 +324,7 @@ function fieldControl(field) {
     input.addEventListener('change', () => { setEdit(field, input.value); renderApolloSection(); });
     return input;
   }
+  if (field.key === 'back_button_timeout') return holdSlider(field);
   input = el('input', {
     type: field.type === 'number' ? 'number' : 'text',
     value: fieldValue(field),
@@ -274,7 +341,7 @@ function fieldControl(field) {
 }
 
 function renderApolloSection() {
-  const section = SETTINGS_PAGES.find((s) => s.id === apolloSection);
+  const section = apolloSection === 'advanced' ? advancedPage() : SETTINGS_PAGES.host;
   const c = currentValues();
   const shown = (fields) => fields.filter((f) => !f.when || f.when(c));
   const fieldRow = (f) => el('div', { className: `field${f.key in apolloEdits ? ' changed' : ''}` },
@@ -282,30 +349,35 @@ function renderApolloSection() {
     el('div', { className: 'control' }, fieldControl(f)),
     el('div', { className: 'desc', textContent: f.desc }));
   const scroll = settingsFormEl.scrollTop;
-  const body = section.groups
-    ? section.groups.flatMap((g) => {
-      const fields = shown(g.fields);
-      return fields.length ? [el('h3', { className: 'settings-group', textContent: g.title }), ...fields.map(fieldRow)] : [];
-    })
-    : shown(section.fields).map(fieldRow);
+  const body = section.groups.flatMap((g) => {
+    const fields = shown(g.fields);
+    if (!fields.length) return [];
+    if (g.collapsed) {
+      // Encoders for graphics this PC doesn't have: out of the way until opened
+      const key = `group:${g.title}`;
+      const box = el('details', { className: 'settings-collapsed', open: openGroups.has(key) },
+        el('summary', { textContent: g.title }), ...fields.map(fieldRow));
+      box.addEventListener('toggle', () => { if (box.open) openGroups.add(key); else openGroups.delete(key); });
+      return [box];
+    }
+    return [el('h3', { className: 'settings-group', textContent: g.title }), ...fields.map(fieldRow)];
+  });
   settingsFormEl.replaceChildren(el('h2', { textContent: section.title }), ...body);
   settingsFormEl.scrollTop = scroll;
-  document.querySelectorAll('#apollo-sections button').forEach((b) => {
-    b.classList.toggle('active', b.dataset.section === apolloSection);
-  });
 }
 
-function renderApolloSectionList() {
-  $('#apollo-sections').replaceChildren(...SETTINGS_PAGES.map((s) => {
-    const b = el('button', { type: 'button', textContent: s.title });
-    b.dataset.section = s.id;
-    b.addEventListener('click', () => {
-      apolloSection = s.id;
-      settingsFormEl.scrollTop = 0;
-      renderApolloSection();
-    });
-    return b;
-  }));
+const openGroups = new Set();
+
+/** Advanced: this PC's graphics encoder first, the other makers' encoders folded away. */
+function advancedPage() {
+  const page = SETTINGS_PAGES.advanced;
+  const everyEncoder = SETTINGS_PAGES.encoders.map((e) => ({ title: e.title, fields: e.fields }));
+  if (!gpuVendors.length) return { ...page, groups: [...page.groups, ...everyEncoder] };
+  const mine = SETTINGS_PAGES.encoders.filter((e) => gpuVendors.includes(e.id) || e.id === 'sw');
+  const others = SETTINGS_PAGES.encoders.filter((e) => !mine.includes(e));
+  const groups = [...page.groups, ...mine.map((e) => ({ title: e.title, fields: e.fields }))];
+  for (const e of others) groups.push({ title: e.title + ' (not found on this PC)', fields: e.fields, collapsed: true });
+  return { ...page, groups };
 }
 
 async function loadApolloSettings() {
@@ -315,8 +387,8 @@ async function loadApolloSettings() {
   if (!apolloReachable(res)) return;
   apolloConfig = res.data;
   apolloEdits = {};
+  if (!gpuVendors.length) gpuVendors = await window.moonshine.host.gpuVendors().catch(() => []);
   $('#apollo-save-bar').classList.add('hidden');
-  renderApolloSectionList();
   renderApolloSection();
 }
 
@@ -339,7 +411,7 @@ $('#apollo-save').addEventListener('click', (e) => apolloAction(e.target, 'Savin
     apolloConfig = null;
     apolloEdits = {};
     $('#apollo-save-bar').classList.add('hidden');
-    setTimeout(() => { if (apolloSub === 'settings' && $('#tab-apollo').classList.contains('active')) loadApolloSettings(); }, 4000);
+    setTimeout(() => { if (['host', 'advanced'].includes(settingsPane) && $('#tab-settings').classList.contains('active')) loadApolloSettings(); }, 4000);
   }
   return res;
 }));
@@ -825,7 +897,9 @@ function acceptDrops(node, pcOf) {
     e.preventDefault();
     e.stopPropagation();
     const paths = window.moonshine.files.pathsOf(e.dataTransfer.files);
-    if (paths.length) window.moonshine.files.send(sendTarget(pc), paths).catch((err) => toast(err.message));
+    if (!paths.length) return;
+    if (pc.sendPaths) pc.sendPaths(paths);
+    else window.moonshine.files.send(sendTarget(pc), paths).catch((err) => toast(err.message));
   });
 }
 acceptDrops($('#host-view'), () => (canSendTo(currentHost) && !$('#host-view').classList.contains('hidden') ? currentHost : null));
@@ -923,10 +997,14 @@ function personName(user) {
  * A round picture: the first letter on a colour from `seed`. `photo` ({ user, version }) swaps in that
  * person's profile picture (from their Discord sign-in) once it has loaded; without one, the letter stays.
  */
-function avatarFor(seed, text, photo = null) {
+function avatarFor(seed, text, photo = null, status = '') {
   const hue = [...seed].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) % 360, 7);
   const a = el('div', { className: 'avatar', textContent: (text.trim()[0] || '?').toUpperCase() });
   a.style.background = `linear-gradient(135deg, hsl(${hue} 70% 55%), hsl(${(hue + 40) % 360} 75% 35%))`;
+  if (status) { // a ring: green online, grey offline, red do not disturb
+    a.classList.add('ring', `ring-${status}`);
+    a.title = status === 'dnd' ? 'Do not disturb' : status === 'online' ? 'Online' : 'Offline';
+  }
   if (photo) {
     const load = (triesLeft) => window.moonshine.friends.avatar(photo.user, photo.version).then((url) => {
       if (url) {
@@ -1176,12 +1254,18 @@ function buildAccount(box, service, view) {
     await window.moonshine.account.signOut();
     await loadFriends();
   }));
+  const copyInvite = el('button', { className: 'secondary', textContent: 'Copy invite link' });
+  copyInvite.title = 'Copies a link that lets one person stream from this PC. It works once, and for an hour if nobody opens it.';
+  copyInvite.addEventListener('click', () => busy(copyInvite, 'Copying…', async () => {
+    await window.moonshine.invites.create();
+    toast('Invite link copied. Send it to one person: it works once.');
+  }));
   box.replaceChildren(
     avatarFor(service.username, service.username, service.avatar ? { user: service.username, version: service.avatar } : null),
     el('div', { className: 'account-text' },
       el('div', { className: 'account-title' }, 'You’re ', el('span', { className: 'account-name', textContent: service.username })),
       el('div', { className: 'account-hint live', textContent: service.error ? `Can’t reach Moonshine’s friends service right now (${service.error}).` : 'Friends add you by this username.' })),
-    el('div', { className: 'account-row' }, input, add, signOut));
+    el('div', { className: 'account-row' }, input, add, copyInvite, signOut));
 }
 
 function renderRequests(requests, service) {
@@ -1250,34 +1334,22 @@ function inviteRow(inv) {
   return row;
 }
 
-/** The first card: this PC, with a button (shown when you point at it) that copies a one-time invite link. */
-function selfCard(self, invites, photo) {
-  const copy = el('button', { className: 'secondary reveal', textContent: 'Copy invite link' });
-  copy.title = 'Copies a link that lets one person stream from this PC. It works once, and for an hour if nobody opens it.';
-  copy.addEventListener('click', () => busy(copy, 'Copying…', async () => {
-    await window.moonshine.invites.create();
-    toast('Invite link copied. Send it to one person: it works once.');
-  }));
-  const row = el('div', { className: 'friend-pc self-pc' },
-    el('span', { className: `dot ${self.hosting ? 'online' : ''}` }),
-    el('div', { className: 'friend-pc-text' },
-      el('div', { className: 'friend-pc-name', textContent: self.name }),
-      el('div', { className: 'friend-pc-status', textContent: self.hosting ? 'Hosting · this PC' : 'Not hosting · turn it on in the Host tab' })),
-    copy);
-  const card = el('div', { className: 'friend self-card' },
-    el('div', { className: 'friend-head' },
-      avatarFor('this-pc', 'This PC', photo),
-      el('div', { className: 'friend-head-text' },
-        el('div', { className: 'friend-name', textContent: 'This PC' }),
-        el('div', { className: 'friend-summary', textContent: 'Point at it to invite someone with a one-time link' }))),
-    el('div', { className: 'friend-pcs' }, row, ...invites.map(inviteRow)));
-  card.dataset.key = 'self';
-  return card;
+let inviteLinksView = '';
+/** Invite links that are out or in use (open ones can be revoked, used ones can be ended). Nothing shows without any. */
+function renderInviteLinks(invites, signedIn) {
+  const box = $('#invite-links');
+  const list = signedIn ? invites : [];
+  const view = JSON.stringify(list);
+  if (view === inviteLinksView) return;
+  inviteLinksView = view;
+  box.classList.toggle('hidden', !list.length);
+  box.replaceChildren(...(list.length ? [el('div', { className: 'account-title', textContent: 'Invite links' }), ...list.map(inviteRow)] : []));
 }
 
 function renderFriends({ me, tailscale, pcs, alerts, shareGame, discordStatus, version, service, self, invites = [] }) {
   showGate(service, pcs.some((p) => p.guest));
   renderAccount(service);
+  renderInviteLinks(invites, Boolean(service && service.signedIn));
   $('#friend-alerts').checked = Boolean(alerts);
   $('#share-game').checked = shareGame !== false;
   $('#discord-status').checked = discordStatus !== false;
@@ -1285,15 +1357,13 @@ function renderFriends({ me, tailscale, pcs, alerts, shareGame, discordStatus, v
   for (const pc of pcs) pc.mine = pc.own || (Boolean(me) && pc.user === me); // friends' PCs and other PCs can be invited
   const box = $('#friends');
   // Nothing changed since the last refresh: leave the cards alone (no flicker, buttons keep their state)
-  const showSelf = Boolean(self && service && service.signedIn);
-  const ownPhoto = showSelf && service.avatar ? { user: service.username, version: service.avatar } : null; // your Discord picture
-  const view = JSON.stringify([me, tailscale, pcs, self, invites, service && service.signedIn, service && service.username, service && service.avatar,
-    ((service && service.friends) || []).map((f) => [f.username, f.online, f.nickname, f.unread, f.avatar]), version]);
+  const view = JSON.stringify([me, tailscale, pcs, service && service.signedIn, service && service.username, service && service.avatar,
+    ((service && service.friends) || []).map((f) => [f.username, f.online, f.dnd, f.nickname, f.unread, f.avatar, f.phones]), service && service.myPhones, version]);
   if (view === friendsView && box.children.length) return;
   friendsView = view;
   const shownBefore = new Set([...box.querySelectorAll('.friend[data-key]')].map((n) => n.dataset.key));
   if (!pcs.length && !(service && service.friends.length)) {
-    box.replaceChildren(...(showSelf ? [selfCard(self, invites, ownPhoto)] : []), el('div', { className: 'empty', textContent: service && service.signedIn && service.username
+    box.replaceChildren(el('div', { className: 'empty', textContent: service && service.signedIn && service.username
       ? 'No friends yet. Add someone by their username above.'
       : tailscale
       ? 'No friends yet. Add one by username above, or a friend who shares their PC with you on Tailscale shows up here.'
@@ -1310,7 +1380,7 @@ function renderFriends({ me, tailscale, pcs, alerts, shareGame, discordStatus, v
   }
   const rank = (key, list) => (key === 'invite' ? -1 : key === 'me' ? 2 : key === 'other' ? 3 : list.some((p) => p.online) ? 0 : 1);
   const ordered = [...groups].sort(([a, la], [b, lb]) => (rank(a, la) - rank(b, lb)) || a.localeCompare(b));
-  box.replaceChildren(...(showSelf ? [selfCard(self, invites, ownPhoto)] : []), ...ordered.map(([key, list]) => {
+  box.replaceChildren(...ordered.map(([key, list]) => {
     list.sort((a, b) => (b.online - a.online) || (a.name || '').localeCompare(b.name || ''));
     const account = (service && service.friends || []).find((f) => f.username === key);
     const isAccount = Boolean(account);
@@ -1329,7 +1399,7 @@ function renderFriends({ me, tailscale, pcs, alerts, shareGame, discordStatus, v
     const photo = isAccount && account.avatar ? { user: key, version: account.avatar }
       : key === 'me' && service && service.avatar ? { user: service.username, version: service.avatar } : null;
     const head = el('div', { className: 'friend-head' },
-      avatarFor(key, title, photo),
+      avatarFor(key, title, photo, isAccount ? (account.dnd && account.online ? 'dnd' : account.online ? 'online' : 'offline') : ''),
       el('div', { className: 'friend-head-text' },
         name,
         el('div', { className: 'friend-summary', textContent: list.length || !isAccount ? summary : (account.online ? 'Online' : 'Offline'), title: key.includes('@') ? key : '' })));
@@ -1354,6 +1424,24 @@ function renderFriends({ me, tailscale, pcs, alerts, shareGame, discordStatus, v
       });
       actions.append(remove);
     }
+    // A phone with Moonshine (Android) can be sent files too: drop them on the card, or use the button
+    const phones = key === 'me' ? (service && service.myPhones) || [] : isAccount ? account.phones || [] : [];
+    const phoneTarget = phones.length ? {
+      name: key === 'me' ? phones[0].name || 'your phone' : `${title}’s phone`,
+      sendPaths: (paths) => window.moonshine.files.sendToPhone(key, phones[0].device, key === 'me' ? phones[0].name : `${title}’s phone`, paths).catch((err) => toast(err.message)),
+    } : null;
+    if (phoneTarget) {
+      const pick = el('input', { type: 'file', multiple: true, className: 'hidden' });
+      pick.addEventListener('change', () => {
+        const paths = window.moonshine.files.pathsOf(pick.files);
+        pick.value = '';
+        if (paths.length) phoneTarget.sendPaths(paths);
+      });
+      const sendButton = el('button', { className: 'secondary', textContent: 'Send file' });
+      sendButton.title = `Send a file to ${phoneTarget.name}. They get to say yes or no first.`;
+      sendButton.addEventListener('click', () => pick.click());
+      actions.prepend(sendButton, pick);
+    }
     const card = el('div', { className: `friend${online ? '' : ' away'}` },
       head,
       ...(actions.children.length ? [actions] : []),
@@ -1361,6 +1449,7 @@ function renderFriends({ me, tailscale, pcs, alerts, shareGame, discordStatus, v
         ? el('div', { className: 'friend-pcs' }, ...list.map(friendPcRow))
         : el('div', { className: 'friend-summary', textContent: 'No PCs with Moonshine open yet.' }));
     card.dataset.key = key;
+    if (phoneTarget) acceptDrops(card, () => phoneTarget);
     return settle(card, shownBefore.has(key));
   }));
 }
@@ -1634,13 +1723,19 @@ $('#settings-pc-reset').addEventListener('click', async () => {
 
 // ---- Host -------------------------------------------------------------------
 
-let serviceRunning = false;
+let serviceRunning = false; // the host program is up (it stays up while hosting is off)
+let hostingOn = false; // up and open to streams
 let hostSnapshot = '';
+
+/** Three dots that pulse one after the other, for a button that is busy. */
+function dotsContent() {
+  return [0, 1, 2].map((i) => { const d = el('span', { className: 'dot-anim', textContent: '.' }); d.style.animationDelay = `${i * 0.2}s`; return d; });
+}
 
 /** Show the Host tab. With `statusOnly`, the rest of the tab is only redrawn when something changed. */
 async function loadHost(statusOnly = false) {
   const s = await host.status();
-  const snapshot = JSON.stringify([s.service, s.tailscale, s.tailscaleInstalled, s.loginNeeded, Boolean(s.audio), s.paused, s.newDevicePerm]);
+  const snapshot = JSON.stringify([s.service, s.tailscale, s.tailscaleInstalled, s.loginNeeded, Boolean(s.audio), s.paused, s.off, s.newDevicePerm]);
   if (statusOnly && snapshot === hostSnapshot) return;
   hostSnapshot = snapshot;
   if (s.service === 'running') loadBandwidth();
@@ -1648,19 +1743,31 @@ async function loadHost(statusOnly = false) {
   const stateText = {
     running: 'On',
     stopped: 'Off',
+    start_pending: 'Starting…',
+    stop_pending: 'Stopping…',
+    continue_pending: 'Starting…',
+    pause_pending: 'Stopping…',
     'not-installed': 'Host not installed (run the Moonshine installer again)',
-  }[s.service] || s.service;
+  }[s.service] || 'Checking…';
   const state = $('#service-state');
+  const changing = /_pending$/.test(s.service);
   const paused = s.service === 'running' && s.paused;
-  state.textContent = paused
+  const off = s.service === 'running' && s.off;
+  state.textContent = off
+    ? 'Off: nobody can stream from this PC'
+    : paused
     ? `Paused${s.paused === -1 ? '' : ` until ${new Date(s.paused).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}: nobody can stream from this PC`
     : stateText;
-  state.className = `value ${s.service === 'running' && !paused ? 'ok' : 'warn'}`;
+  state.className = `value ${s.service === 'running' && !paused && !off ? 'ok' : 'warn'}`;
   serviceRunning = s.service === 'running';
+  hostingOn = serviceRunning && !s.off;
   const toggle = $('#toggle-service');
-  toggle.textContent = serviceRunning ? 'Stop hosting' : 'Start hosting';
-  toggle.disabled = s.service === 'not-installed';
-  $('#pause-hosting').classList.toggle('hidden', !serviceRunning || Boolean(paused));
+  // While the host starts or stops, a dim button with moving dots
+  toggle.classList.toggle('working', changing);
+  if (changing) toggle.replaceChildren(...dotsContent());
+  else toggle.textContent = hostingOn ? 'Stop hosting' : 'Start hosting';
+  toggle.disabled = changing || s.service === 'not-installed';
+  $('#pause-hosting').classList.toggle('hidden', !hostingOn || Boolean(paused));
   $('#pause-hosting').value = '';
   $('#resume-hosting').classList.toggle('hidden', !paused);
   $('#new-device-perm').value = s.newDevicePerm || 'controller';
@@ -1691,8 +1798,9 @@ async function loadHost(statusOnly = false) {
 
   if (serviceRunning && !s.loginNeeded) loadClients();
   else {
-    const why = serviceRunning ? 'Sign in above to see paired devices.' : 'Start hosting to see paired devices.';
+    const why = serviceRunning ? 'Sign in above to see paired devices.' : changing ? 'Starting the host…' : 'Start hosting to see paired devices.';
     $('#clients').replaceChildren(el('div', { className: 'empty', textContent: why }));
+    clientsSnapshot = null; // whatever shows up next repaints the list
   }
 }
 
@@ -1806,7 +1914,15 @@ async function refreshClientsIfChanged() {
 }
 
 async function loadClients(known) {
-  const clients = known || await host.clients().catch(() => []);
+  const clients = known || await host.clients().catch(() => null);
+  if (!clients) {
+    // The host isn't answering yet (it takes a moment after starting): say so, and try again on the next tick
+    clientsSnapshot = null;
+    if (!$('#clients').children.length || $('#clients .empty')) {
+      $('#clients').replaceChildren(el('div', { className: 'empty', textContent: 'Loading devices…' }));
+    }
+    return;
+  }
   clientsSnapshot = clientsKey(clients);
   if (!clients.length) {
     $('#clients').replaceChildren(el('div', { className: 'empty', textContent: 'No paired devices yet.' }));
@@ -1953,10 +2069,20 @@ $('#save-audio').addEventListener('click', (e) => busy(e.target, 'Applying…', 
   setTimeout(loadHost, 4000);
 }));
 
-$('#toggle-service').addEventListener('click', (e) => busy(e.target, 'Working…', async () => {
-  await host.setService(!serviceRunning);
-  await loadHost();
-}));
+$('#toggle-service').addEventListener('click', async (e) => {
+  const button = e.currentTarget;
+  button.disabled = true;
+  button.classList.add('working');
+  button.replaceChildren(...dotsContent());
+  try {
+    await host.setService(!hostingOn);
+  } catch (err) {
+    toast(errorText(err));
+  } finally {
+    button.classList.remove('working');
+    await loadHost().catch(() => {});
+  }
+});
 
 $('#login-form').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -1966,19 +2092,15 @@ $('#login-form').addEventListener('submit', (e) => {
   });
 });
 
-$('#open-webui').addEventListener('click', () => selectTab('apollo'));
+$('#open-webui').addEventListener('click', () => openSettings('host'));
 $('#start-at-login').addEventListener('change', (e) => window.moonshine.setStartAtLogin(e.target.checked));
-$('#network-check').addEventListener('click', (e) => busy(e.target, 'Checking…', async () => {
-  const box = $('#network-check-result');
-  box.textContent = 'Testing your network…';
-  box.className = 'hint';
-  const res = await window.moonshine.network.check();
-  box.textContent = res.summary;
-  box.className = `hint check-${res.verdict}`;
-}));
 $('#copy-diagnostics').addEventListener('click', (e) => busy(e.target, 'Copying…', async () => {
   await window.moonshine.copyDiagnostics();
   toast('Diagnostics copied. Safe to paste into a bug report.');
+}));
+$('#save-support-log').addEventListener('click', (e) => busy(e.target, 'Saving…', async () => {
+  const res = await window.moonshine.saveSupportLog();
+  if (res.ok) toast('Log saved. Send that file when you ask for help.');
 }));
 // ---- Host: guests streaming right now, with live input and ping --------------------
 

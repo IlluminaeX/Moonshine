@@ -83,7 +83,7 @@ index bec1ac95..a42d7a78 100644
      bool enable_pairing;
      bool enable_discovery;
 diff --git a/src/confighttp.cpp b/src/confighttp.cpp
-index e270dd76..27a28584 100644
+index e270dd76..7db84b99 100644
 --- a/src/confighttp.cpp
 +++ b/src/confighttp.cpp
 @@ -34,6 +34,12 @@
@@ -176,7 +176,7 @@ index e270dd76..27a28584 100644
        send_response(response, output_tree);
      } catch (std::exception &e) {
        BOOST_LOG(warning) << "SavePin: "sv << e.what();
-@@ -1297,6 +1325,260 @@ namespace confighttp {
+@@ -1297,6 +1325,323 @@ namespace confighttp {
      }
    }
  
@@ -330,6 +330,69 @@ index e270dd76..27a28584 100644
 +    response->write(SimpleWeb::StatusCode::success_ok, piece, headers);
 +  }
 +
++
++  /**
++   * @brief Moonshine: offer a file to a friend's phone (it fetches it from GET /moonshine/take on the HTTP port).
++   *
++   * @api_examples{/api/moonshine/share| POST| {"id":"...","key":"...","path":"C:\\x.png"}}
++   */
++  void shareFile(resp_https_t response, req_https_t request) {
++    if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
++      return;
++    }
++
++    try {
++      std::stringstream ss;
++      ss << request->content.rdbuf();
++      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
++      nlohmann::json output_tree;
++      std::uint64_t size = 0;
++      output_tree["status"] = nvhttp::share_file(input_tree.value("id", ""), input_tree.value("key", ""), input_tree.value("path", ""), size);
++      output_tree["size"] = size;
++      send_response(response, output_tree);
++    } catch (std::exception &e) {
++      BOOST_LOG(warning) << "ShareFile: "sv << e.what();
++      bad_request(response, request, e.what());
++    }
++  }
++
++  /**
++   * @brief Moonshine: stop offering a file.
++   *
++   * @api_examples{/api/moonshine/unshare| POST| {"id":"..."}}
++   */
++  void unshareFile(resp_https_t response, req_https_t request) {
++    if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
++      return;
++    }
++
++    try {
++      std::stringstream ss;
++      ss << request->content.rdbuf();
++      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
++      nlohmann::json output_tree;
++      output_tree["status"] = nvhttp::unshare_file(input_tree.value("id", ""));
++      send_response(response, output_tree);
++    } catch (std::exception &e) {
++      BOOST_LOG(warning) << "UnshareFile: "sv << e.what();
++      bad_request(response, request, e.what());
++    }
++  }
++
++  /**
++   * @brief Moonshine: files being offered to friends' phones, and how far each has been fetched.
++   *
++   * @api_examples{/api/moonshine/shares| GET| null}
++   */
++  void getShares(resp_https_t response, req_https_t request) {
++    if (!authenticate(response, request)) {
++      return;
++    }
++    nlohmann::json output_tree;
++    output_tree["shares"] = nvhttp::shared_files();
++    send_response(response, output_tree);
++  }
++
 +  /**
 +   * @brief Moonshine: the app has the file; delete the host's copy.
 +   *
@@ -437,7 +500,7 @@ index e270dd76..27a28584 100644
    /**
     * @brief Reset the display device persistence.
     * @param response The HTTP response object.
-@@ -1444,6 +1726,8 @@ namespace confighttp {
+@@ -1444,6 +1789,8 @@ namespace confighttp {
        nlohmann::json output_tree;
        nlohmann::json input_tree = nlohmann::json::parse(ss.str());
        std::string uuid = input_tree.value("uuid", "");
@@ -446,7 +509,7 @@ index e270dd76..27a28584 100644
        output_tree["status"] = nvhttp::find_and_stop_session(uuid, true);
        send_response(response, output_tree);
      } catch (std::exception &e) {
-@@ -1508,6 +1792,14 @@ namespace confighttp {
+@@ -1508,6 +1855,14 @@ namespace confighttp {
      auto port_https = net::map_port(PORT_HTTPS);
      auto address_family = net::af_from_enum_string(config::sunshine.address_family);
      https_server_t server { config::nvhttp.cert, config::nvhttp.pkey };
@@ -461,7 +524,7 @@ index e270dd76..27a28584 100644
      server.default_resource["DELETE"] = [](resp_https_t response, req_https_t request) {
        bad_request(response, request);
      };
-@@ -1531,6 +1823,17 @@ namespace confighttp {
+@@ -1531,6 +1886,20 @@ namespace confighttp {
      server.resource["^/troubleshooting/?$"]["GET"] = getTroubleshootingPage;
      server.resource["^/api/login"]["POST"] = login;
      server.resource["^/api/pin$"]["POST"] = savePin;
@@ -473,6 +536,9 @@ index e270dd76..27a28584 100644
 +    server.resource["^/api/moonshine/decide-file$"]["POST"] = decideFile;
 +    server.resource["^/api/moonshine/file-data$"]["GET"] = getFileData;
 +    server.resource["^/api/moonshine/file-taken$"]["POST"] = fileTaken;
++    server.resource["^/api/moonshine/share$"]["POST"] = shareFile;
++    server.resource["^/api/moonshine/unshare$"]["POST"] = unshareFile;
++    server.resource["^/api/moonshine/shares$"]["GET"] = getShares;
 +    server.resource["^/api/moonshine/bandwidth$"]["POST"] = setBandwidth;
 +    server.resource["^/api/moonshine/player-order$"]["POST"] = setPlayerOrder;
 +    server.resource["^/api/moonshine/pad-order$"]["POST"] = setPadOrder;
@@ -994,7 +1060,7 @@ index 00000000..879792cc
 +  };
 +}  // namespace moonshine
 diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
-index e6df1c0b..47549b46 100644
+index e6df1c0b..c2971136 100644
 --- a/src/nvhttp.cpp
 +++ b/src/nvhttp.cpp
 @@ -6,9 +6,19 @@
@@ -1169,7 +1235,7 @@ index e6df1c0b..47549b46 100644
    void applist(resp_https_t response, req_https_t request) {
      print_req<SunshineHTTPS>(request);
  
-@@ -1147,6 +1223,728 @@ namespace nvhttp {
+@@ -1147,6 +1223,883 @@ namespace nvhttp {
  
    }
  
@@ -1485,6 +1551,120 @@ index e6df1c0b..47549b46 100644
 +    return found;
 +  }
 +
++  // Moonshine: this PC's user sends a file to a friend's phone. Moonshine registers the file here with a
++  // one-time key and tells the phone (through the friends service) where to get it; the phone asks its
++  // user, then fetches it in pieces from GET /moonshine/take. Nothing is copied: the host reads the file
++  // where it is, and a share ends when it was fetched in full, went quiet, or the sender cancelled.
++  namespace share_box {
++    using namespace std::chrono_literals;
++    constexpr auto IDLE_TTL = 10min;  ///< no piece fetched for this long (the phone is deciding, or gone)
++    constexpr auto DONE_TTL = 2min;  ///< fetched in full: kept briefly so Moonshine can see it finished
++    constexpr std::size_t MAX_CHUNK = 8u << 20;
++    constexpr std::size_t MAX_SHARES = 8;
++
++    struct share_t {
++      std::string id;
++      std::string key;
++      std::filesystem::path path;
++      std::uint64_t size = 0;
++      std::uint64_t sent = 0;  ///< the furthest byte handed out
++      bool done = false;
++      std::chrono::steady_clock::time_point touched;
++    };
++
++    std::mutex mtx;
++    std::list<share_t> shares;
++
++    void prune(std::chrono::steady_clock::time_point now) {
++      shares.remove_if([&](const share_t &s) {
++        return now - s.touched > (s.done ? DONE_TTL : IDLE_TTL);
++      });
++    }
++
++    bool same(const std::string &a, const std::string &b) {
++      if (a.size() != b.size()) {
++        return false;
++      }
++      unsigned char diff = 0;
++      for (std::size_t i = 0; i < a.size(); i++) {
++        diff |= (unsigned char) (a[i] ^ b[i]);
++      }
++      return diff == 0;
++    }
++  }  // namespace share_box
++
++  bool share_file(const std::string &id, const std::string &key, const std::string &path, std::uint64_t &size) {
++    std::error_code ec;
++    const std::filesystem::path p = std::filesystem::u8path(path);
++    if (id.empty() || key.size() < 16 || !std::filesystem::is_regular_file(p, ec)) {
++      return false;
++    }
++    size = std::filesystem::file_size(p, ec);
++    if (ec || size == 0) {
++      return false;
++    }
++    std::lock_guard lg {share_box::mtx};
++    share_box::prune(std::chrono::steady_clock::now());
++    if (share_box::shares.size() >= share_box::MAX_SHARES) {
++      return false;
++    }
++    share_box::shares.remove_if([&](const share_box::share_t &s) {
++      return s.id == id;
++    });
++    share_box::shares.push_back({id, key, p, size, 0, false, std::chrono::steady_clock::now()});
++    return true;
++  }
++
++  bool unshare_file(const std::string &id) {
++    std::lock_guard lg {share_box::mtx};
++    const auto before = share_box::shares.size();
++    share_box::shares.remove_if([&](const share_box::share_t &s) {
++      return s.id == id;
++    });
++    return share_box::shares.size() != before;
++  }
++
++  nlohmann::json shared_files() {
++    std::lock_guard lg {share_box::mtx};
++    share_box::prune(std::chrono::steady_clock::now());
++    nlohmann::json out = nlohmann::json::array();
++    for (const auto &s : share_box::shares) {
++      out.push_back({{"id", s.id}, {"state", s.done ? "done" : s.sent > 0 ? "sending" : "waiting"}, {"sent", s.sent}, {"size", s.size}});
++    }
++    return out;
++  }
++
++  /// Up to 8 MB of a shared file from `offset`. 0 = fine, 1 = no such share or wrong key, 2 = can't read.
++  int take_file_piece(const std::string &id, const std::string &key, std::uint64_t offset, std::string &out, std::uint64_t &size) {
++    std::lock_guard lg {share_box::mtx};
++    share_box::prune(std::chrono::steady_clock::now());
++    for (auto &s : share_box::shares) {
++      if (s.id != id || !share_box::same(s.key, key)) {
++        continue;
++      }
++      std::ifstream in(s.path, std::ios::binary);
++      if (!in || offset > s.size) {
++        return 2;
++      }
++      in.seekg((std::streamoff) offset);
++      const auto n = (std::size_t) std::min<std::uint64_t>(share_box::MAX_CHUNK, s.size - offset);
++      out.resize(n);
++      in.read(out.data(), (std::streamsize) n);
++      out.resize((std::size_t) in.gcount());
++      if (out.size() != n) {
++        return 2;  // the file shrank or went away while it was being sent
++      }
++      size = s.size;
++      s.touched = std::chrono::steady_clock::now();
++      s.sent = std::max<std::uint64_t>(s.sent, offset + out.size());
++      if (s.sent >= s.size) {
++        s.done = true;
++      }
++      return 0;
++    }
++    return 1;
++  }
++
 +  nlohmann::json pending_requests() {
 +    auto now = std::chrono::steady_clock::now();
 +    auto age = [&](auto since) {
@@ -1614,6 +1794,47 @@ index e6df1c0b..47549b46 100644
 +      return;
 +    }
 +    moonshine_reply<T>(response, SimpleWeb::StatusCode::success_ok, {{"app", "moonshine"}, {"name", config::nvhttp.sunshine_name}, {"listening", moonshine_listening()}, {"guests", rtsp_stream::get_all_session_activity().size()}, {"busy", proc::proc.running() > 0}});
++  }
++
++
++  /// GET /moonshine/take?id=...&key=...&offset=0: a friend's phone fetches a file this PC's user offered it.
++  /// The key is the one-time secret Moonshine told that phone (through the friends service).
++  template<class T>
++  void moonshine_take(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
++    if (!config::sunshine.moonshine_managed || !moonshine_listening()) {
++      not_found<T>(response, request);
++      return;
++    }
++    auto args = request->parse_query_string();
++    auto id = args.find("id");
++    auto key = args.find("key");
++    std::uint64_t offset = 0;
++    try {
++      auto off = args.find("offset");
++      offset = off == args.end() ? 0 : std::stoull(off->second);
++    } catch (...) {
++      moonshine_reply<T>(response, SimpleWeb::StatusCode::client_error_bad_request, {{"error", "bad offset"}});
++      return;
++    }
++    if (id == args.end() || key == args.end()) {
++      moonshine_reply<T>(response, SimpleWeb::StatusCode::client_error_bad_request, {{"error", "bad request"}});
++      return;
++    }
++    std::string piece;
++    std::uint64_t size = 0;
++    const int result = take_file_piece(id->second, key->second, offset, piece, size);
++    if (result == 1) {
++      not_found<T>(response, request);
++      return;
++    }
++    if (result != 0) {
++      moonshine_reply<T>(response, SimpleWeb::StatusCode::server_error_internal_server_error, {{"error", "unreadable"}});
++      return;
++    }
++    SimpleWeb::CaseInsensitiveMultimap headers;
++    headers.emplace("Content-Type", "application/octet-stream");
++    headers.emplace("X-Moonshine-Size", std::to_string(size));
++    response->write(SimpleWeb::StatusCode::success_ok, piece, headers);
 +  }
 +
 +  /// GET /moonshine/pair?pin=1234&name=Friend-PC: ask this PC's user to accept a pairing.
@@ -1898,7 +2119,26 @@ index e6df1c0b..47549b46 100644
    void launch(bool &host_audio, resp_https_t response, req_https_t request) {
      print_req<SunshineHTTPS>(request);
  
-@@ -1702,15 +2500,23 @@ namespace nvhttp {
+@@ -1380,13 +2333,13 @@ namespace nvhttp {
+       return;
+     }
+ 
+-    // Newer Moonlight clients send localAudioPlayMode on /resume too,
+-    // so we should use it if it's present in the args and there are
+-    // no active sessions we could be interfering with.
+-    const bool no_active_sessions {rtsp_stream::session_count() == 0};
+-    if (no_active_sessions && args.find("localAudioPlayMode"s) != std::end(args)) {
++    // Moonshine: always follow what this device asked for. Upstream kept the last launch's value while an
++    // older session was still shutting down, so a phone that muted the PC could still play on the PC
++    // after the PC's own player had streamed with audio on.
++    if (args.find("localAudioPlayMode"s) != std::end(args)) {
+       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
+     }
++    const bool no_active_sessions {rtsp_stream::session_count() == 0};
+     auto launch_session = make_launch_session(host_audio, false, args, named_cert_p);
+ 
+     if (!proc::proc.allow_client_commands || !named_cert_p->allow_client_commands) {
+@@ -1702,15 +2655,23 @@ namespace nvhttp {
      https_server.resource["^/pair$"]["GET"] = pair<SunshineHTTPS>;
      https_server.resource["^/applist$"]["GET"] = applist;
      https_server.resource["^/appasset$"]["GET"] = appasset;
@@ -1926,11 +2166,12 @@ index e6df1c0b..47549b46 100644
  
      https_server.config.reuse_address = true;
      https_server.config.address = net::af_to_any_address_string(address_family);
-@@ -1719,6 +2525,11 @@ namespace nvhttp {
+@@ -1719,6 +2680,12 @@ namespace nvhttp {
      http_server.default_resource["GET"] = not_found<SimpleWeb::HTTP>;
      http_server.resource["^/serverinfo$"]["GET"] = serverinfo<SimpleWeb::HTTP>;
      http_server.resource["^/pair$"]["GET"] = pair<SimpleWeb::HTTP>;
 +    http_server.resource["^/moonshine/hello$"]["GET"] = moonshine_hello<SimpleWeb::HTTP>;
++    http_server.resource["^/moonshine/take$"]["GET"] = moonshine_take<SimpleWeb::HTTP>;
 +    http_server.resource["^/moonshine/pair$"]["GET"] = moonshine_pair<SimpleWeb::HTTP>;
 +    http_server.resource["^/moonshine/pair-status$"]["GET"] = moonshine_pair_status<SimpleWeb::HTTP>;
 +    http_server.resource["^/moonshine/invite$"]["GET"] = moonshine_invite<SimpleWeb::HTTP>;
@@ -1938,7 +2179,7 @@ index e6df1c0b..47549b46 100644
  
      http_server.config.reuse_address = true;
      http_server.config.address = net::af_to_any_address_string(address_family);
-@@ -1814,7 +2625,8 @@ namespace nvhttp {
+@@ -1814,7 +2781,8 @@ namespace nvhttp {
      const crypto::PERM newPerm,
      const bool enable_legacy_ordering,
      const bool allow_client_commands,
@@ -1948,7 +2189,7 @@ index e6df1c0b..47549b46 100644
    ) {
      find_and_udpate_session_info(uuid, name, newPerm);
  
-@@ -1831,6 +2643,7 @@ namespace nvhttp {
+@@ -1831,6 +2799,7 @@ namespace nvhttp {
          named_cert_p->enable_legacy_ordering = enable_legacy_ordering;
          named_cert_p->allow_client_commands = allow_client_commands;
          named_cert_p->always_use_virtual_display = always_use_virtual_display;
@@ -1957,7 +2198,7 @@ index e6df1c0b..47549b46 100644
          return true;
        }
 diff --git a/src/nvhttp.h b/src/nvhttp.h
-index 6d2c6e06..15bed2ea 100644
+index 6d2c6e06..1cfcfcb6 100644
 --- a/src/nvhttp.h
 +++ b/src/nvhttp.h
 @@ -121,6 +121,10 @@ namespace nvhttp {
@@ -1990,7 +2231,7 @@ index 6d2c6e06..15bed2ea 100644
  
    std::string request_otp(const std::string& passphrase, const std::string& deviceName);
  
-@@ -280,6 +288,54 @@ namespace nvhttp {
+@@ -280,6 +288,67 @@ namespace nvhttp {
      const crypto::PERM newPerm,
      const bool enable_legacy_ordering,
      const bool allow_client_commands,
@@ -2045,6 +2286,19 @@ index 6d2c6e06..15bed2ea 100644
 +
 +  /** Moonshine: the app copied the file to the user's Downloads; delete the host's copy. */
 +  bool file_taken(const std::string &id);
++
++  /**
++   * @brief Moonshine: offer one of this PC's files to a friend's phone. The phone fetches it in pieces over
++   * the plain HTTP port with the one-time `key` (GET /moonshine/take), so no pairing is needed.
++   * @return False if the file can't be read or too many are being shared.
++   */
++  bool share_file(const std::string &id, const std::string &key, const std::string &path, std::uint64_t &size);
++
++  /** Moonshine: stop offering a file (the sender cancelled, or Moonshine is done with it). */
++  bool unshare_file(const std::string &id);
++
++  /** Moonshine: what is being shared and how far each has been fetched: [{id, state, sent, size}]. */
++  nlohmann::json shared_files();
  }  // namespace nvhttp
 diff --git a/src/platform/windows/audio.cpp b/src/platform/windows/audio.cpp
 index b6853e4a..db2e52c8 100644

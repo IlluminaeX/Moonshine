@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS devices (
   version TEXT NOT NULL DEFAULT '', -- its Moonshine version ('' = older than 0.3.0)
   game TEXT NOT NULL DEFAULT '', -- what it's playing or hosting, if its owner shares that
   kind TEXT NOT NULL DEFAULT '', -- '' a PC, 'phone' a phone or tablet (Moonshine for Android), which only watches
+  dnd INTEGER NOT NULL DEFAULT 0, -- do not disturb is on
   last_seen INTEGER NOT NULL DEFAULT 0,
   created INTEGER NOT NULL
 );
@@ -99,3 +100,11 @@ CREATE TABLE IF NOT EXISTS invites (
 );
 CREATE INDEX IF NOT EXISTS invites_host ON invites(host_user, status);
 CREATE INDEX IF NOT EXISTS invites_guest ON invites(guest_user);
+
+-- 0007: do not disturb per device, and each person's own names for PCs (shared across their devices)
+CREATE TABLE IF NOT EXISTS pc_names (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  host_uuid TEXT NOT NULL,
+  name TEXT NOT NULL,
+  PRIMARY KEY (user_id, host_uuid)
+);

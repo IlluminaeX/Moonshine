@@ -1,12 +1,13 @@
 {
   "name": "moonshine",
   "productName": "Moonshine",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Host and play game streams in one app (Apollo + Moonlight)",
   "main": "main.js",
   "license": "GPL-3.0-only",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "test": "node --test test/*.test.js"
   },
   "devDependencies": {
     "electron": "38.8.6",

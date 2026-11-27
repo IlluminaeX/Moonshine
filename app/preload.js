@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('moonshine', {
     login: invoke('host:login'),
     setAudio: invoke('host:setAudio'),
     processes: invoke('host:processes'),
+    gpuVendors: invoke('host:gpuVendors'),
     clients: invoke('host:clients'),
     updateClient: invoke('host:updateClient'),
     disconnectClient: invoke('host:disconnectClient'),
@@ -116,10 +117,12 @@ contextBridge.exposeInMainWorld('moonshine', {
   },
   setStartAtLogin: invoke('app:setStartAtLogin'),
   copyDiagnostics: invoke('app:copyDiagnostics'),
+  saveSupportLog: invoke('app:saveSupportLog'),
   wakePc: invoke('pc:wake'),
   files: {
     list: invoke('files:list'),
     send: invoke('files:send'),
+    sendToPhone: invoke('files:sendToPhone'),
     pick: invoke('files:pick'),
     cancel: invoke('files:cancel'),
     show: invoke('files:show'),
@@ -128,7 +131,6 @@ contextBridge.exposeInMainWorld('moonshine', {
     /** Paths of files dropped on the page (File objects don't carry them any more). */
     pathsOf: (fileList) => [...fileList].map((f) => webUtils.getPathForFile(f)).filter(Boolean),
   },
-  network: { check: invoke('network:check') },
   updates: {
     get: invoke('update:get'),
     check: invoke('update:check'),
