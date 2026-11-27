@@ -449,11 +449,13 @@ async function listFriends(env, me, request) {
   const accepted = rows.filter((r) => r.status === 'accepted').map((r) => r.other);
   const devices = new Map();
   const phones = new Map(); // user id -> their online phones
-  if (accepted.length) {
+  // Friends' devices, and (not for a guest) the signed-in person's own other PCs, reachable with no friend step
+  const owners = me.guest ? accepted : [...accepted, me.user_id];
+  if (owners.length) {
     const { results } = await env.DB.prepare(
       `SELECT id, user_id, name, host_uuid, port, addrs, public_ip, hosting, busy, guests, tunnel, version, game, kind, last_seen FROM devices
-       WHERE user_id IN (${accepted.map(() => '?').join(',')}) AND last_seen > ?`,
-    ).bind(...accepted, Date.now() - DEVICE_SHOWN_MS).all();
+       WHERE user_id IN (${owners.map(() => '?').join(',')}) AND last_seen > ?`,
+    ).bind(...owners, Date.now() - DEVICE_SHOWN_MS).all();
     for (const d of results) {
       if (d.kind === 'phone') {
         // Phones only watch: listed apart from PCs (so no Moonshine shows them as a PC to connect to), with
@@ -492,6 +494,7 @@ async function listFriends(env, me, request) {
 
   return json({
     me: { username: me.username, avatar: me.avatar || '' },
+    mine: me.guest ? [] : (devices.get(me.user_id) || []).filter((p) => p.name && p.device !== me.device_id),
     friends: rows.map((r) => {
       const status = r.status === 'accepted' ? 'accepted' : r.a === me.user_id ? 'outgoing' : 'incoming';
       const pcs = status === 'accepted' ? (devices.get(r.other) || []).filter((p) => p.name) : [];

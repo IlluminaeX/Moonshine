@@ -264,7 +264,9 @@ async function promptForOffer(offer) {
       rememberUser(added.uuid, friend || (device && device.user));
       const asGuest = Boolean(src && src.invite);
       if (asGuest) attachInviteDevice(src.invite, added.uuid);
-      await setUpNewDevice(added, choice.checked || asGuest ? { require_approval: false } : {});
+      // A phone or PC on your own account is yours: it streams without asking each time
+      const ownDevice = Boolean(friend) && friend === service.username();
+      await setUpNewDevice(added, choice.checked || asGuest || ownDevice ? { require_approval: false } : {});
       if (!asGuest) await replaceStaleDevice(added, friend || (device && device.user)).catch(() => {});
     }
     await apollo.decidePair(offer.id, true);
