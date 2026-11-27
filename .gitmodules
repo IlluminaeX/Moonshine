@@ -6,3 +6,7 @@
 	path = upstream/moonlight-qt
 	url = https://github.com/moonlight-stream/moonlight-qt
 	ignore = dirty
+[submodule "upstream/moonlight-android"]
+	path = upstream/moonlight-android
+	url = https://github.com/ClassicOldSong/moonlight-android
+	ignore = dirty

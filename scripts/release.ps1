@@ -1,4 +1,5 @@
-# Publishes dist/Moonshine-Setup.exe as a GitHub release that Moonshine installs from inside the app.
+# Publishes dist/Moonshine-Setup.exe as a GitHub release that Moonshine installs from inside the app
+# (with dist/Moonshine-Android.apk, the Android app, when it was built for this version).
 #
 #   pwsh scripts/release.ps1 -NewKey          once: make the update signing key (kept outside the repo)
 #   pwsh scripts/release.ps1 [-Notes "..."]   sign the installer and publish it as v<app version>
@@ -64,6 +65,15 @@ $notesFile = Join-Path ([IO.Path]::GetTempPath()) "moonshine-notes-$version.md"
 [IO.File]::WriteAllText($notesFile, $body, [Text.UTF8Encoding]::new($false))
 $files = @($installer)
 if ($SigAsset) { $files += "$installer.sig" }
+# The Android app (scripts/build-android.ps1) goes in the same release when it was built from this version;
+# the app looks for it by this name to offer the update
+$androidApk = Join-Path $root 'dist\Moonshine-Android.apk'
+if (Test-Path $androidApk) {
+    if ((Get-Item $androidApk).LastWriteTime -lt $pkg) { throw "dist/Moonshine-Android.apk is older than app/package.json; rebuild it (scripts/build-android.ps1) so it is $version, or delete it to release without it." }
+    $files += $androidApk
+} else {
+    Write-Host 'No dist/Moonshine-Android.apk: releasing without the Android app.' -ForegroundColor Yellow
+}
 gh release create $tag @files --title "Moonshine $version" --notes-file $notesFile
 $code = $LASTEXITCODE
 Remove-Item $notesFile -Force -ErrorAction SilentlyContinue

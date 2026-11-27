@@ -237,28 +237,30 @@ function cleanAddrs(addrs) {
 
 /** What friends see of a device; a report that changes it (or brings it back online) is news. */
 const deviceView = (d, now) => JSON.stringify([d.name, d.host_uuid, d.port, d.addrs, d.public_ip, Boolean(d.hosting),
-  Boolean(d.busy), d.guests, Boolean(d.tunnel), d.version, d.game, now - d.last_seen < ONLINE_MS]);
+  Boolean(d.busy), d.guests, Boolean(d.tunnel), d.version, d.game, d.kind, now - d.last_seen < ONLINE_MS]);
 
 async function presence(env, ctx, me, body, request) {
   const publicIp = request.headers.get('CF-Connecting-IP') || '';
   const now = Date.now();
-  const cols = 'name, host_uuid, port, addrs, public_ip, hosting, busy, guests, tunnel, version, game, last_seen';
+  const phone = body.kind === 'phone'; // Moonshine for Android: it only watches, so it never hosts
+  const cols = 'name, host_uuid, port, addrs, public_ip, hosting, busy, guests, tunnel, version, game, kind, last_seen';
   const before = await env.DB.prepare(`SELECT ${cols} FROM devices WHERE id = ?`).bind(me.device_id).first();
   const after = await env.DB.prepare(
-    `UPDATE devices SET name = ?, host_uuid = ?, port = ?, addrs = ?, public_ip = ?, hosting = ?, busy = ?, guests = ?, tunnel = ?, version = ?, game = ?, last_seen = ?
+    `UPDATE devices SET name = ?, host_uuid = ?, port = ?, addrs = ?, public_ip = ?, hosting = ?, busy = ?, guests = ?, tunnel = ?, version = ?, game = ?, kind = ?, last_seen = ?
      WHERE id = ? RETURNING ${cols}`,
   ).bind(
     String(body.name || '').slice(0, 64),
-    String(body.hostUuid || '').slice(0, 64),
+    phone ? '' : String(body.hostUuid || '').slice(0, 64),
     Math.min(Math.max(Number(body.port) || 47989, 1), 65535),
     JSON.stringify(cleanAddrs(body.addrs)),
     publicIp,
-    body.hosting ? 1 : 0,
-    body.busy ? 1 : 0,
-    Math.min(Math.max(Number(body.guests) || 0, 0), 64),
+    !phone && body.hosting ? 1 : 0,
+    !phone && body.busy ? 1 : 0,
+    phone ? 0 : Math.min(Math.max(Number(body.guests) || 0, 0), 64),
     body.tunnel ? 1 : 0,
     /^\d{1,4}\.\d{1,4}\.\d{1,4}(-[\w.]{1,20})?$/.test(String(body.version || '')) ? String(body.version) : '',
-    cleanText(body.game, 80),
+    phone ? '' : cleanText(body.game, 80),
+    phone ? 'phone' : '',
     now,
     me.device_id,
   ).first();
@@ -446,12 +448,23 @@ async function listFriends(env, me, request) {
 
   const accepted = rows.filter((r) => r.status === 'accepted').map((r) => r.other);
   const devices = new Map();
+  const phones = new Map(); // user id -> their online phones
   if (accepted.length) {
     const { results } = await env.DB.prepare(
-      `SELECT id, user_id, name, host_uuid, port, addrs, public_ip, hosting, busy, guests, tunnel, version, game, last_seen FROM devices
+      `SELECT id, user_id, name, host_uuid, port, addrs, public_ip, hosting, busy, guests, tunnel, version, game, kind, last_seen FROM devices
        WHERE user_id IN (${accepted.map(() => '?').join(',')}) AND last_seen > ?`,
     ).bind(...accepted, Date.now() - DEVICE_SHOWN_MS).all();
     for (const d of results) {
+      if (d.kind === 'phone') {
+        // Phones only watch: listed apart from PCs (so no Moonshine shows them as a PC to connect to), with
+        // the addresses their owner's friends may see them pair from (Tailscale, or the same network)
+        if (Date.now() - d.last_seen >= ONLINE_MS) continue;
+        const sameNetwork = d.public_ip && d.public_ip === myIp;
+        const list = phones.get(d.user_id) || [];
+        list.push({ device: d.id, name: d.name, addrs: JSON.parse(d.addrs).filter((a) => isTailnet(a) || sameNetwork), version: d.version });
+        phones.set(d.user_id, list);
+        continue;
+      }
       // Where a friend can reach this PC: its Tailscale addresses work from anywhere; its home-network
       // addresses only from the same network; its public address if its owner forwarded the port.
       const sameNetwork = d.public_ip && d.public_ip === myIp;
@@ -482,7 +495,11 @@ async function listFriends(env, me, request) {
     friends: rows.map((r) => {
       const status = r.status === 'accepted' ? 'accepted' : r.a === me.user_id ? 'outgoing' : 'incoming';
       const pcs = status === 'accepted' ? (devices.get(r.other) || []).filter((p) => p.name) : [];
-      return { username: r.username, nickname: r.nick || '', avatar: status === 'accepted' ? r.avatar || '' : '', status, online: pcs.some((p) => p.online), pcs };
+      const phoneList = status === 'accepted' ? phones.get(r.other) || [] : [];
+      return {
+        username: r.username, nickname: r.nick || '', avatar: status === 'accepted' ? r.avatar || '' : '', status,
+        online: pcs.some((p) => p.online) || phoneList.length > 0, pcs, phones: phoneList,
+      };
     }).filter((f) => f.username),
   });
 }

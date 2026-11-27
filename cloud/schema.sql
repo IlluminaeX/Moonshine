@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS devices (
   tunnel INTEGER NOT NULL DEFAULT 0, -- connected to the live link, so it can take direct connections
   version TEXT NOT NULL DEFAULT '', -- its Moonshine version ('' = older than 0.3.0)
   game TEXT NOT NULL DEFAULT '', -- what it's playing or hosting, if its owner shares that
+  kind TEXT NOT NULL DEFAULT '', -- '' a PC, 'phone' a phone or tablet (Moonshine for Android), which only watches
   last_seen INTEGER NOT NULL DEFAULT 0,
   created INTEGER NOT NULL
 );

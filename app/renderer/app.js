@@ -971,11 +971,15 @@ function avatarFor(seed, text, photo = null) {
   const a = el('div', { className: 'avatar', textContent: (text.trim()[0] || '?').toUpperCase() });
   a.style.background = `linear-gradient(135deg, hsl(${hue} 70% 55%), hsl(${(hue + 40) % 360} 75% 35%))`;
   if (photo) {
-    window.moonshine.friends.avatar(photo.user, photo.version).then((url) => {
-      if (!url) return;
-      a.textContent = '';
-      a.style.background = `center / cover no-repeat url(${url})`;
+    const load = (triesLeft) => window.moonshine.friends.avatar(photo.user, photo.version).then((url) => {
+      if (url) {
+        a.textContent = '';
+        a.style.background = `center / cover no-repeat url(${url})`;
+      } else if (triesLeft > 0) {
+        setTimeout(() => { if (a.isConnected) load(triesLeft - 1); }, 65000); // maybe the network wasn't up yet
+      }
     }).catch(() => { /* the letter stays */ });
+    load(3);
   }
   return a;
 }
@@ -1040,6 +1044,7 @@ const CONNECTION_KINDS = {
   lan: ['Same network', 'This PC and that one are on the same network: the fastest, most stable way.'],
   tailscale: ['Tailscale', 'Connected through Tailscale.'],
   direct: ['Direct', 'Connected straight over the internet. No Tailscale or port forwarding needed.'],
+  internet: ['Over the internet', 'Connected to that PC’s public address, which its router lets through (port forwarding or UPnP). No Tailscale needed.'],
   relay: ['Relay', 'No direct path between the two networks, so a relay carries the stream. It works, with a little more delay.'],
 };
 
@@ -1150,7 +1155,7 @@ function renderAccount(service) {
     accountView = requestsView = '';
     return;
   }
-  const view = !service.signedIn ? 'out' : !service.username ? 'pick' : `in:${service.username}`;
+  const view = !service.signedIn ? 'out' : !service.username ? 'pick' : `in:${service.username}:${service.avatar || ''}`;
   const hint = box.querySelector('.account-hint.live');
   if (view === accountView) {
     // Same view: only refresh the status line
@@ -1313,10 +1318,11 @@ function selfCard(self, invites, photo) {
   return card;
 }
 
-function renderFriends({ me, tailscale, pcs, alerts, shareGame, version, service, self, invites = [] }) {
+function renderFriends({ me, tailscale, pcs, alerts, shareGame, discordStatus, version, service, self, invites = [] }) {
   renderAccount(service);
   $('#friend-alerts').checked = Boolean(alerts);
   $('#share-game').checked = shareGame !== false;
+  $('#discord-status').checked = discordStatus !== false;
   lastFriendsService = service;
   for (const pc of pcs) pc.mine = Boolean(me) && pc.user === me; // friends' PCs and other PCs can be invited
   const box = $('#friends');
@@ -1424,6 +1430,7 @@ async function loadFriends(first = false, manual = false) {
 window.moonshine.invites.onChanged(() => { friendsView = ''; loadFriends(); });
 $('#friend-alerts').addEventListener('change', (e) => window.moonshine.friends.setAlerts(e.target.checked));
 $('#share-game').addEventListener('change', (e) => window.moonshine.friends.setShareGame(e.target.checked));
+$('#discord-status').addEventListener('change', (e) => window.moonshine.friends.setDiscordStatus(e.target.checked));
 $('#dnd').addEventListener('change', async (e) => {
   await window.moonshine.dnd.set(e.target.checked);
   toast(e.target.checked ? 'Do not disturb is on: no notifications, and invites get “not now”.' : 'Do not disturb is off.');
@@ -2094,13 +2101,8 @@ function guestNode(g) {
   };
   // Player number(s) of this guest's controllers, and moving them earlier or later
   const player = el('span', { className: 'player-badge hidden' });
-  const playerText = el('span', { className: 'player-text' });
-  const earlier = el('button', { className: 'secondary player-move', type: 'button', textContent: '‹', title: 'Earlier player number' });
-  const later = el('button', { className: 'secondary player-move', type: 'button', textContent: '›', title: 'Later player number' });
-  earlier.addEventListener('click', () => movePlayer(g.uuid, -1));
-  later.addEventListener('click', () => movePlayer(g.uuid, 1));
-  const playerRow = el('div', { className: 'guest-player hidden' }, playerText, el('span', { className: 'player-moves' }, earlier, later));
-  Object.assign(node, { player, playerText, playerRow, earlier, later });
+  const playerRow = el('div', { className: 'guest-pads hidden' });
+  Object.assign(node, { player, playerRow });
 
   const card = el('div', { className: 'guest-card' },
     el('div', { className: 'guest-head' }, el('div', { className: 'guest-title' }, name, ping), kick), playerRow, permRow);
@@ -2114,19 +2116,21 @@ function guestNode(g) {
   return node;
 }
 
-let playerOrder = []; // guest uuids with controllers, player 1 first
+let playerOrder = []; // every controller of every guest, player 1 first: [{uuid, index, type}]
 let lastGuests = [];
 
-/** Swap a guest's controllers with the guest before or after them. Controllers reconnect for a moment. */
-async function movePlayer(uuid, step) {
+const PAD_TYPES = { 1: 'Xbox controller', 2: 'PlayStation controller', 3: 'Nintendo controller' };
+
+/** Swap one controller with the one before or after it (they can belong to different guests). Controllers reconnect for a moment. */
+async function movePad(uuid, index, step) {
   const order = [...playerOrder];
-  const i = order.indexOf(uuid);
+  const i = order.findIndex((p) => p.uuid === uuid && p.index === index);
   const j = i + step;
   if (i < 0 || j < 0 || j >= order.length) return;
   [order[i], order[j]] = [order[j], order[i]];
   try {
-    await host.setPlayerOrder(order);
-    toast('Swapped players. Their controllers reconnect for a moment.');
+    await host.setPadOrder(order.map((p) => ({ uuid: p.uuid, index: p.index })));
+    toast('Swapped players. The controllers reconnect for a moment.');
     setTimeout(pollGuests, 900);
   } catch (err) {
     toast(errorText(err));
@@ -2159,10 +2163,8 @@ function renderGuests(list) {
   const seen = new Set();
   lastGuests = list;
   // Player numbers: all controllers in the order they were plugged in (lowest number first)
-  const allPads = list.flatMap((g) => g.pads || []).sort((a, b) => a - b);
-  const playerOf = (pad) => allPads.indexOf(pad) + 1;
-  playerOrder = list.filter((g) => (g.pads || []).length)
-    .sort((a, b) => Math.min(...a.pads) - Math.min(...b.pads)).map((g) => g.uuid);
+  playerOrder = list.flatMap((g) => (g.controllers || []).map((c) => ({ ...c, uuid: g.uuid })))
+    .sort((a, b) => a.id - b.id);
   $('#guest-presets').classList.toggle('hidden', !list.length);
   for (const g of list) {
     seen.add(g.uuid);
@@ -2176,15 +2178,25 @@ function renderGuests(list) {
     const mbps = g.bitrate > 0 ? `${(g.bitrate / 1000).toFixed(g.bitrate < 10000 ? 1 : 0)} Mbps` : '';
     node.ping.textContent = [g.ping ? `${g.ping} ms` : '', mbps].filter(Boolean).join(' · ');
     node.ping.className = `guest-ping ${pingClass(g.ping)}`;
-    const players = (g.pads || []).map(playerOf).sort((a, b) => a - b);
+    // One row per controller of this guest, with its player number and buttons to move it
+    const mine = playerOrder.map((p, at) => ({ ...p, at })).filter((p) => p.uuid === g.uuid);
+    const players = mine.map((p) => p.at + 1);
     node.player.textContent = players.map((p) => `P${p}`).join(' ');
     node.player.classList.toggle('hidden', !players.length);
     node.playerRow.classList.toggle('hidden', !players.length);
-    node.playerText.textContent = players.length > 1 ? `Players ${players.join(' and ')}` : `Player ${players[0]}`;
-    const at = playerOrder.indexOf(g.uuid);
-    node.earlier.disabled = at <= 0;
-    node.later.disabled = at < 0 || at >= playerOrder.length - 1;
-    node.playerRow.classList.toggle('solo', playerOrder.length < 2);
+    const signature = JSON.stringify([mine.map((p) => [p.index, p.type, p.at]), playerOrder.length]);
+    if (node.padSignature !== signature) {
+      node.padSignature = signature;
+      node.playerRow.replaceChildren(...mine.map((p) => {
+        const earlier = el('button', { className: 'secondary player-move', type: 'button', textContent: '‹', title: 'Earlier player number', disabled: p.at <= 0 });
+        const later = el('button', { className: 'secondary player-move', type: 'button', textContent: '›', title: 'Later player number', disabled: p.at >= playerOrder.length - 1 });
+        earlier.addEventListener('click', () => movePad(g.uuid, p.index, -1));
+        later.addEventListener('click', () => movePad(g.uuid, p.index, 1));
+        return el('div', { className: 'guest-player' + (playerOrder.length < 2 ? ' solo' : '') },
+          el('span', { className: 'player-text' }, `Player ${p.at + 1}`, el('span', { className: 'player-kind' }, ` · ${PAD_TYPES[p.type] || 'Controller'}`)),
+          el('span', { className: 'player-moves' }, earlier, later));
+      }));
+    }
     for (const kind of ['controller', 'keyboard', 'mouse']) {
       const idle = g[kind];
       node.icons[kind].classList.toggle('active', idle >= 0 && idle < ACTIVE_INPUT_MS);

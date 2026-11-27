@@ -83,7 +83,7 @@ index bec1ac95..a42d7a78 100644
      bool enable_pairing;
      bool enable_discovery;
 diff --git a/src/confighttp.cpp b/src/confighttp.cpp
-index e270dd76..e4645337 100644
+index e270dd76..27a28584 100644
 --- a/src/confighttp.cpp
 +++ b/src/confighttp.cpp
 @@ -34,6 +34,12 @@
@@ -176,7 +176,7 @@ index e270dd76..e4645337 100644
        send_response(response, output_tree);
      } catch (std::exception &e) {
        BOOST_LOG(warning) << "SavePin: "sv << e.what();
-@@ -1297,6 +1325,233 @@ namespace confighttp {
+@@ -1297,6 +1325,260 @@ namespace confighttp {
      }
    }
  
@@ -407,10 +407,37 @@ index e270dd76..e4645337 100644
 +    }
 +  }
 +
++  /**
++   * @brief Moonshine: give exactly these controllers the player numbers, in this order.
++   *
++   * @api_examples{/api/moonshine/pad-order| POST| {"pads":[{"uuid":"...","index":0}]}}
++   */
++  void setPadOrder(resp_https_t response, req_https_t request) {
++    if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
++      return;
++    }
++
++    try {
++      std::stringstream ss;
++      ss << request->content.rdbuf();
++      nlohmann::json input_tree = nlohmann::json::parse(ss.str());
++      std::vector<std::pair<std::string, int>> pads;
++      for (const auto &pad : input_tree.value("pads", nlohmann::json::array())) {
++        pads.emplace_back(pad.value("uuid", std::string {}), pad.value("index", -1));
++      }
++      nlohmann::json output_tree;
++      output_tree["status"] = rtsp_stream::reorder_pads(pads);
++      send_response(response, output_tree);
++    } catch (std::exception &e) {
++      BOOST_LOG(warning) << "SetPadOrder: "sv << e.what();
++      bad_request(response, request, e.what());
++    }
++  }
++
    /**
     * @brief Reset the display device persistence.
     * @param response The HTTP response object.
-@@ -1444,6 +1699,8 @@ namespace confighttp {
+@@ -1444,6 +1726,8 @@ namespace confighttp {
        nlohmann::json output_tree;
        nlohmann::json input_tree = nlohmann::json::parse(ss.str());
        std::string uuid = input_tree.value("uuid", "");
@@ -419,7 +446,7 @@ index e270dd76..e4645337 100644
        output_tree["status"] = nvhttp::find_and_stop_session(uuid, true);
        send_response(response, output_tree);
      } catch (std::exception &e) {
-@@ -1508,6 +1765,14 @@ namespace confighttp {
+@@ -1508,6 +1792,14 @@ namespace confighttp {
      auto port_https = net::map_port(PORT_HTTPS);
      auto address_family = net::af_from_enum_string(config::sunshine.address_family);
      https_server_t server { config::nvhttp.cert, config::nvhttp.pkey };
@@ -434,7 +461,7 @@ index e270dd76..e4645337 100644
      server.default_resource["DELETE"] = [](resp_https_t response, req_https_t request) {
        bad_request(response, request);
      };
-@@ -1531,6 +1796,16 @@ namespace confighttp {
+@@ -1531,6 +1823,17 @@ namespace confighttp {
      server.resource["^/troubleshooting/?$"]["GET"] = getTroubleshootingPage;
      server.resource["^/api/login"]["POST"] = login;
      server.resource["^/api/pin$"]["POST"] = savePin;
@@ -448,6 +475,7 @@ index e270dd76..e4645337 100644
 +    server.resource["^/api/moonshine/file-taken$"]["POST"] = fileTaken;
 +    server.resource["^/api/moonshine/bandwidth$"]["POST"] = setBandwidth;
 +    server.resource["^/api/moonshine/player-order$"]["POST"] = setPlayerOrder;
++    server.resource["^/api/moonshine/pad-order$"]["POST"] = setPadOrder;
      server.resource["^/api/otp$"]["POST"] = getOTP;
      server.resource["^/api/apps$"]["GET"] = getApps;
      server.resource["^/api/apps$"]["POST"] = saveApp;
@@ -509,7 +537,7 @@ index 1617b7c6..bcbdfa23 100644
  
  }  // namespace mail
 diff --git a/src/input.cpp b/src/input.cpp
-index 6c03d0d3..bc017298 100644
+index 6c03d0d3..c277af27 100644
 --- a/src/input.cpp
 +++ b/src/input.cpp
 @@ -144,6 +144,11 @@ namespace input {
@@ -643,7 +671,7 @@ index 6c03d0d3..bc017298 100644
      // No input permissions at all
      if (!(permission & crypto::PERM::_all_inputs)) {
        return;
-@@ -1643,6 +1731,65 @@ namespace input {
+@@ -1643,6 +1731,96 @@ namespace input {
      task_pool.push(passthrough_next_message, input);
    }
  
@@ -659,25 +687,17 @@ index 6c03d0d3..bc017298 100644
 +    return ids;
 +  }
 +
-+  void reorder_gamepads(std::vector<std::shared_ptr<input_t>> order) {
-+    using namespace std::literals;
-+    // On the input thread, so no controller packet is handled halfway through.
-+    task_pool.push([order = std::move(order)]() {
-+      struct pad_ref {
-+        std::shared_ptr<input_t> input;
-+        int index;
-+      };
++  namespace {
++    struct pad_ref {
++      std::shared_ptr<input_t> input;
++      int index;
++    };
 +
-+      auto pads = std::make_shared<std::vector<pad_ref>>();
-+      for (const auto &input : order) {
-+        for (int i = 0; i < (int) input->gamepads.size(); ++i) {
-+          if (input->gamepads[i].id >= 0) {
-+            pads->push_back({input, i});
-+          }
-+        }
-+      }
-+
-+      // Unplug them all...
++    // Unplug these controllers, then plug them back in this order once Windows has noticed. Windows
++    // gives each new controller the lowest free player number, so the first one plugged in becomes
++    // the lowest number. Runs on the input thread, so no controller packet is handled halfway through.
++    void replug(std::shared_ptr<std::vector<pad_ref>> pads) {
++      using namespace std::literals;
 +      for (auto &pad : *pads) {
 +        auto &gamepad = pad.input->gamepads[pad.index];
 +        free_gamepad(platf_input, gamepad.id);
@@ -685,8 +705,6 @@ index 6c03d0d3..bc017298 100644
 +        gamepad.parked = true;
 +      }
 +
-+      // ...and once Windows has noticed, plug them back in the new order. Windows gives each new
-+      // controller the lowest free player number, so the first one plugged in becomes player 1.
 +      task_pool.pushDelayed([pads]() {
 +        for (auto &pad : *pads) {
 +          auto &gamepad = pad.input->gamepads[pad.index];
@@ -703,6 +721,47 @@ index 6c03d0d3..bc017298 100644
 +          platf::gamepad_update(platf_input, id, gamepad.gamepad_state);
 +        }
 +      }, 600ms);
++    }
++  }  // namespace
++
++  void reorder_gamepads(std::vector<std::shared_ptr<input_t>> order) {
++    task_pool.push([order = std::move(order)]() {
++      auto pads = std::make_shared<std::vector<pad_ref>>();
++      for (const auto &input : order) {
++        for (int i = 0; i < (int) input->gamepads.size(); ++i) {
++          if (input->gamepads[i].id >= 0) {
++            pads->push_back({input, i});
++          }
++        }
++      }
++      replug(pads);
++    });
++  }
++
++  std::vector<std::array<int, 3>> gamepad_info(const std::shared_ptr<input_t> &input) {
++    std::vector<std::array<int, 3>> info;
++    if (input) {
++      for (int i = 0; i < (int) input->gamepads.size(); ++i) {
++        const auto &gamepad = input->gamepads[i];
++        if (gamepad.id >= 0) {
++          info.push_back({gamepad.id, i, (int) gamepad.arrival.type});
++        }
++      }
++    }
++    return info;
++  }
++
++  void reorder_gamepad_list(std::vector<std::pair<std::shared_ptr<input_t>, int>> order) {
++    task_pool.push([order = std::move(order)]() {
++      auto pads = std::make_shared<std::vector<pad_ref>>();
++      for (const auto &entry : order) {
++        if (entry.second >= 0 && entry.second < (int) entry.first->gamepads.size() && entry.first->gamepads[entry.second].id >= 0) {
++          pads->push_back({entry.first, entry.second});
++        }
++      }
++      if (!pads->empty()) {
++        replug(pads);
++      }
 +    });
 +  }
 +
@@ -710,10 +769,19 @@ index 6c03d0d3..bc017298 100644
      task_pool.cancel(key_press_repeat_id);
      task_pool.cancel(input->mouse_left_button_timeout);
 diff --git a/src/input.h b/src/input.h
-index 37fe7d60..7209f849 100644
+index 37fe7d60..82674465 100644
 --- a/src/input.h
 +++ b/src/input.h
-@@ -12,11 +12,20 @@
+@@ -3,6 +3,8 @@
+  * @brief Declarations for gamepad, keyboard, and mouse input handling.
+  */
+ #pragma once
++#include <array>
++#include <utility>
+ 
+ // standard includes
+ #include <functional>
+@@ -12,11 +14,26 @@
  #include "thread_safe.h"
  #include "crypto.h"
  
@@ -731,6 +799,12 @@ index 37fe7d60..7209f849 100644
 +  /// Moonshine: unplug these clients' controllers and plug them back in this order, so the first
 +  /// client's controllers become the lowest player numbers.
 +  void reorder_gamepads(std::vector<std::shared_ptr<input_t>> order);
++
++  /// Moonshine: this client's controllers as {global number, its own controller number, type}.
++  std::vector<std::array<int, 3>> gamepad_info(const std::shared_ptr<input_t> &input);
++
++  /// Moonshine: unplug exactly these controllers (client, its controller number) and plug them back in this order.
++  void reorder_gamepad_list(std::vector<std::pair<std::shared_ptr<input_t>, int>> order);
    void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data, const crypto::PERM& permission);
  
    [[nodiscard]] std::unique_ptr<platf::deinit_t> init();
@@ -920,7 +994,7 @@ index 00000000..879792cc
 +  };
 +}  // namespace moonshine
 diff --git a/src/nvhttp.cpp b/src/nvhttp.cpp
-index e6df1c0b..fecd44c7 100644
+index e6df1c0b..302f610c 100644
 --- a/src/nvhttp.cpp
 +++ b/src/nvhttp.cpp
 @@ -6,9 +6,19 @@
@@ -1065,7 +1139,7 @@ index e6df1c0b..fecd44c7 100644
  
        // Add "do" commands if available
        if (!named_cert->do_cmds.empty()) {
-@@ -1065,6 +1118,24 @@ namespace nvhttp {
+@@ -1065,6 +1118,29 @@ namespace nvhttp {
      return named_cert_nodes;
    }
  
@@ -1081,6 +1155,11 @@ index e6df1c0b..fecd44c7 100644
 +      node["mouse"] = guest.idle_ms[2];
 +      node["touch"] = guest.idle_ms[3];
 +      node["pads"] = guest.pads;
++      auto controllers = nlohmann::json::array();
++      for (const auto &pad : guest.pad_info) {
++        controllers.push_back({{"id", pad[0]}, {"index", pad[1]}, {"type", pad[2]}});
++      }
++      node["controllers"] = controllers;
 +      node["bitrate"] = guest.bitrate_kbps;
 +      list.push_back(node);
 +    }
@@ -1090,7 +1169,7 @@ index e6df1c0b..fecd44c7 100644
    void applist(resp_https_t response, req_https_t request) {
      print_req<SunshineHTTPS>(request);
  
-@@ -1147,6 +1218,729 @@ namespace nvhttp {
+@@ -1147,6 +1223,729 @@ namespace nvhttp {
  
    }
  
@@ -1820,7 +1899,7 @@ index e6df1c0b..fecd44c7 100644
    void launch(bool &host_audio, resp_https_t response, req_https_t request) {
      print_req<SunshineHTTPS>(request);
  
-@@ -1702,15 +2496,23 @@ namespace nvhttp {
+@@ -1702,15 +2501,23 @@ namespace nvhttp {
      https_server.resource["^/pair$"]["GET"] = pair<SunshineHTTPS>;
      https_server.resource["^/applist$"]["GET"] = applist;
      https_server.resource["^/appasset$"]["GET"] = appasset;
@@ -1848,7 +1927,7 @@ index e6df1c0b..fecd44c7 100644
  
      https_server.config.reuse_address = true;
      https_server.config.address = net::af_to_any_address_string(address_family);
-@@ -1719,6 +2521,11 @@ namespace nvhttp {
+@@ -1719,6 +2526,11 @@ namespace nvhttp {
      http_server.default_resource["GET"] = not_found<SimpleWeb::HTTP>;
      http_server.resource["^/serverinfo$"]["GET"] = serverinfo<SimpleWeb::HTTP>;
      http_server.resource["^/pair$"]["GET"] = pair<SimpleWeb::HTTP>;
@@ -1860,7 +1939,7 @@ index e6df1c0b..fecd44c7 100644
  
      http_server.config.reuse_address = true;
      http_server.config.address = net::af_to_any_address_string(address_family);
-@@ -1814,7 +2621,8 @@ namespace nvhttp {
+@@ -1814,7 +2626,8 @@ namespace nvhttp {
      const crypto::PERM newPerm,
      const bool enable_legacy_ordering,
      const bool allow_client_commands,
@@ -1870,7 +1949,7 @@ index e6df1c0b..fecd44c7 100644
    ) {
      find_and_udpate_session_info(uuid, name, newPerm);
  
-@@ -1831,6 +2639,7 @@ namespace nvhttp {
+@@ -1831,6 +2644,7 @@ namespace nvhttp {
          named_cert_p->enable_legacy_ordering = enable_legacy_ordering;
          named_cert_p->allow_client_commands = allow_client_commands;
          named_cert_p->always_use_virtual_display = always_use_virtual_display;
@@ -2577,10 +2656,10 @@ index 9d182c7f..6694cd4d 100644
  WINUSERAPI HSYNTHETICPOINTERDEVICE WINAPI CreateSyntheticPointerDevice(POINTER_INPUT_TYPE pointerType, ULONG maxCount, POINTER_FEEDBACK_MODE mode);
  WINUSERAPI BOOL WINAPI InjectSyntheticPointerInput(HSYNTHETICPOINTERDEVICE device, CONST POINTER_TYPE_INFO *pointerInfo, UINT32 count);
 diff --git a/src/rtsp.cpp b/src/rtsp.cpp
-index c81687de..f7e2292e 100644
+index c81687de..2a970aa0 100644
 --- a/src/rtsp.cpp
 +++ b/src/rtsp.cpp
-@@ -627,6 +627,35 @@ namespace rtsp_stream {
+@@ -627,6 +627,52 @@ namespace rtsp_stream {
        return uuids;
      }
  
@@ -2613,10 +2692,27 @@ index c81687de..f7e2292e 100644
 +      return true;
 +    }
 +
++    bool reorder_pads(const std::vector<std::pair<std::string, int>> &pads) {
++      std::vector<std::pair<std::shared_ptr<stream::session_t>, int>> order;
++      auto lg = _session_slots.lock();
++      for (const auto &pad : pads) {
++        for (auto &slot : *_session_slots) {
++          if (slot && stream::session::activity(*slot).uuid == pad.first) {
++            order.emplace_back(slot, pad.second);
++          }
++        }
++      }
++      if (order.empty()) {
++        return false;
++      }
++      stream::session::reorder_pads(order);
++      return true;
++    }
++
    private:
      std::unordered_map<std::string_view, cmd_func_t> _map_cmd_cb;
  
-@@ -664,6 +693,14 @@ namespace rtsp_stream {
+@@ -664,6 +710,18 @@ namespace rtsp_stream {
      return server.get_all_session_uuids();
    }
  
@@ -2628,10 +2724,14 @@ index c81687de..f7e2292e 100644
 +    return server.reorder_players(uuids);
 +  }
 +
++  bool reorder_pads(const std::vector<std::pair<std::string, int>> &pads) {
++    return server.reorder_pads(pads);
++  }
++
    void terminate_sessions() {
      server.clear(true);
    }
-@@ -1055,6 +1092,7 @@ namespace rtsp_stream {
+@@ -1055,6 +1113,7 @@ namespace rtsp_stream {
        }
  
        BOOST_LOG(info) << "Host Streaming bitrate is [" << configuredBitrateKbps << "kbps]";
@@ -2639,7 +2739,7 @@ index c81687de..f7e2292e 100644
  
        // Hack: Restore bitrate for warp mode
        size_t warp_factor = std::round((float)config.monitor.framerate * 1000 / session.fps);
-@@ -1130,6 +1168,11 @@ namespace rtsp_stream {
+@@ -1130,6 +1189,11 @@ namespace rtsp_stream {
        BOOST_LOG(debug) << "Final adjusted video encoding bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
        config.monitor.bitrate = configuredBitrateKbps;
      }
@@ -2652,10 +2752,17 @@ index c81687de..f7e2292e 100644
      if (config.monitor.videoFormat == 1 && video::active_hevc_mode == 1) {
        BOOST_LOG(warning) << "HEVC is disabled, yet the client requested HEVC"sv;
 diff --git a/src/rtsp.h b/src/rtsp.h
-index c426bd93..095a194c 100644
+index c426bd93..b7d745b9 100644
 --- a/src/rtsp.h
 +++ b/src/rtsp.h
-@@ -8,6 +8,8 @@
+@@ -3,11 +3,15 @@
+  * @brief Declarations for RTSP streaming.
+  */
+ #pragma once
++#include <array>
++#include <utility>
+ 
+ // standard includes
  #include <atomic>
  #include <memory>
  #include <list>
@@ -2664,7 +2771,7 @@ index c426bd93..095a194c 100644
  
  // local includes
  #include "crypto.h"
-@@ -22,6 +24,19 @@ namespace stream {
+@@ -22,6 +26,20 @@ namespace stream {
    struct session_t;
  }
  
@@ -2676,6 +2783,7 @@ index c426bd93..095a194c 100644
 +    int ping_ms;  ///< control stream round trip, 0 if not known yet
 +    std::int64_t idle_ms[4];  ///< since the last controller, keyboard, mouse, touch/pen input; -1 if none yet
 +    std::vector<int> pads;  ///< global numbers of its controllers (lower = earlier player)
++    std::vector<std::array<int, 3>> pad_info;  ///< each controller: {global number, its own number, type}
 +    int bitrate_kbps = 0;  ///< video bitrate its encoder runs at now
 +  };
 +
@@ -2684,7 +2792,7 @@ index c426bd93..095a194c 100644
  namespace rtsp_stream {
    constexpr auto RTSP_SETUP_PORT = 21;
  
-@@ -49,6 +64,7 @@ namespace rtsp_stream {
+@@ -49,6 +67,7 @@ namespace rtsp_stream {
      bool enable_hdr;
      bool enable_sops;
      bool virtual_display;
@@ -2692,7 +2800,7 @@ index c426bd93..095a194c 100644
      uint32_t scale_factor;
  
      std::optional<crypto::cipher::gcm_t> rtsp_cipher;
-@@ -83,6 +99,13 @@ namespace rtsp_stream {
+@@ -83,6 +102,16 @@ namespace rtsp_stream {
    std::list<std::string>
    get_all_session_uuids();
  
@@ -2703,11 +2811,14 @@ index c426bd93..095a194c 100644
 +  /// Moonshine: give the listed devices' controllers the first player numbers, in this order.
 +  bool reorder_players(const std::vector<std::string> &uuids);
 +
++  /// Moonshine: give exactly these controllers (device uuid, its controller number) the player numbers, in this order.
++  bool reorder_pads(const std::vector<std::pair<std::string, int>> &pads);
++
    /**
     * @brief Terminates all running streaming sessions.
     */
 diff --git a/src/stream.cpp b/src/stream.cpp
-index bceeb93d..4a454a57 100644
+index bceeb93d..25a64402 100644
 --- a/src/stream.cpp
 +++ b/src/stream.cpp
 @@ -4,9 +4,12 @@
@@ -2914,7 +3025,7 @@ index bceeb93d..4a454a57 100644
          input::passthrough(session->input, std::move(plaintext), session->permission);
        } else {
          server->call(type, session, next_payload, true);
-@@ -1956,6 +2068,27 @@ namespace stream {
+@@ -1956,6 +2068,38 @@ namespace stream {
        return session.device_uuid;
      }
  
@@ -2928,6 +3039,16 @@ index bceeb93d..4a454a57 100644
 +      input::reorder_gamepads(std::move(inputs));
 +    }
 +
++    void reorder_pads(const std::vector<std::pair<std::shared_ptr<session_t>, int>> &order) {
++      std::vector<std::pair<std::shared_ptr<input::input_t>, int>> pads;
++      for (const auto &entry : order) {
++        if (entry.first->input) {
++          pads.emplace_back(entry.first->input, entry.second);
++        }
++      }
++      input::reorder_gamepad_list(std::move(pads));
++    }
++
 +    activity_t activity(const session_t &session) {
 +      activity_t result {session.device_uuid, session.device_name, (int) session.rtt_ms.load(), {}, input::gamepad_ids(session.input)};
 +      auto now = now_ms();
@@ -2935,6 +3056,7 @@ index bceeb93d..4a454a57 100644
 +        auto at = session.last_input_ms[i].load();
 +        result.idle_ms[i] = at ? now - at : -1;
 +      }
++      result.pad_info = input::gamepad_info(session.input);
 +      result.bitrate_kbps = session.bitrate_kbps.load();
 +      return result;
 +    }
@@ -2942,7 +3064,7 @@ index bceeb93d..4a454a57 100644
      bool uuid_match(const session_t &session, const std::string_view& uuid) {
        return session.device_uuid == uuid;
      }
-@@ -1978,6 +2111,74 @@ namespace stream {
+@@ -1978,6 +2122,74 @@ namespace stream {
        return false;
      }
  
@@ -3017,7 +3139,7 @@ index bceeb93d..4a454a57 100644
      void stop(session_t &session) {
        while_starting_do_nothing(session.state);
        auto expected = state_e::RUNNING;
-@@ -1985,6 +2186,7 @@ namespace stream {
+@@ -1985,6 +2197,7 @@ namespace stream {
        if (already_stopping) {
          return;
        }
@@ -3025,7 +3147,7 @@ index bceeb93d..4a454a57 100644
  
        session.shutdown_event->raise(true);
      }
-@@ -1996,6 +2198,7 @@ namespace stream {
+@@ -1996,6 +2209,7 @@ namespace stream {
        if (already_stopping) {
          return;
        }
@@ -3033,7 +3155,7 @@ index bceeb93d..4a454a57 100644
  
        // reason: graceful termination
        std::uint32_t reason = 0x80030023;
-@@ -2112,6 +2315,8 @@ namespace stream {
+@@ -2112,6 +2326,8 @@ namespace stream {
  
        session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
  
@@ -3042,7 +3164,7 @@ index bceeb93d..4a454a57 100644
        session.audioThread = std::thread {audioThread, &session};
        session.videoThread = std::thread {videoThread, &session};
  
-@@ -2171,6 +2376,11 @@ namespace stream {
+@@ -2171,6 +2387,11 @@ namespace stream {
        };
  
        session->video.idr_events = mail->event<bool>(mail::idr);
@@ -3055,7 +3177,7 @@ index bceeb93d..4a454a57 100644
        session->video.lowseq = 0;
        session->video.ping_payload = launch_session.av_ping_payload;
 diff --git a/src/stream.h b/src/stream.h
-index 1aa08f42..ac0490ae 100644
+index 1aa08f42..8c423cdc 100644
 --- a/src/stream.h
 +++ b/src/stream.h
 @@ -36,6 +36,13 @@ namespace stream {
@@ -3072,17 +3194,18 @@ index 1aa08f42..ac0490ae 100644
    };
  
    namespace session {
-@@ -49,6 +56,9 @@ namespace stream {
+@@ -49,6 +56,10 @@ namespace stream {
      std::shared_ptr<session_t> alloc(config_t &config, rtsp_stream::launch_session_t &launch_session);
      std::string uuid(const session_t& session);
      bool uuid_match(const session_t& session, const std::string_view& uuid);
 +
 +    activity_t activity(const session_t &session);
 +    void reorder_players(const std::vector<std::shared_ptr<session_t>> &order);
++    void reorder_pads(const std::vector<std::pair<std::shared_ptr<session_t>, int>> &order);
      bool update_device_info(session_t& session, const std::string& name, const crypto::PERM& newPerm);
      int start(session_t &session, const std::string &addr_string);
      void stop(session_t &session);
-@@ -56,5 +66,8 @@ namespace stream {
+@@ -56,5 +67,8 @@ namespace stream {
      void join(session_t &session);
      state_e state(session_t &session);
      inline bool send(session_t& session, const std::string_view &payload);

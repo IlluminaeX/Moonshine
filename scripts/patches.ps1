@@ -1,5 +1,5 @@
-# Moonshine's changes to Apollo and Moonlight live in patches/ as plain patch files, on top of the
-# official versions the submodules point at (no forks needed).
+# Moonshine's changes to Apollo, Moonlight and Artemis (the Android app) live in patches/ as plain patch
+# files, on top of the official versions the submodules point at (no forks needed).
 #
 #   pwsh scripts/patches.ps1 save    Write patches/ from the changes in upstream/ (run after editing them)
 #   pwsh scripts/patches.ps1 apply   Apply patches/ to fresh official sources (the build scripts do this)
@@ -13,7 +13,8 @@ $patchDir = Join-Path $root 'patches'
 $targets = @(
     @{ Name = 'apollo'; Dir = 'upstream\apollo' },
     @{ Name = 'moonlight-qt'; Dir = 'upstream\moonlight-qt' },
-    @{ Name = 'moonlight-common-c'; Dir = 'upstream\moonlight-qt\moonlight-common-c\moonlight-common-c' }
+    @{ Name = 'moonlight-common-c'; Dir = 'upstream\moonlight-qt\moonlight-common-c\moonlight-common-c' },
+    @{ Name = 'moonlight-android'; Dir = 'upstream\moonlight-android' }
 )
 
 function Invoke-Git([string]$dir, [string[]]$gitArgs) {
@@ -24,9 +25,10 @@ function Invoke-Git([string]$dir, [string[]]$gitArgs) {
 
 # Official sources missing (fresh clone): fetch them, including Moonlight's own submodules
 if (-not (Test-Path (Join-Path $root 'upstream\apollo\CMakeLists.txt')) -or
-    -not (Test-Path (Join-Path $root 'upstream\moonlight-qt\moonlight-common-c\moonlight-common-c\src'))) {
+    -not (Test-Path (Join-Path $root 'upstream\moonlight-qt\moonlight-common-c\moonlight-common-c\src')) -or
+    -not (Test-Path (Join-Path $root 'upstream\moonlight-android\app\src\main\jni\moonlight-core\moonlight-common-c\src'))) {
     if ($Action -eq 'save') { throw 'upstream/ is missing, so there are no changes to save.' }
-    Write-Host 'Fetching the official Apollo and Moonlight sources...'
+    Write-Host 'Fetching the official Apollo, Moonlight and Artemis sources...'
     Invoke-Git $root @('submodule', 'update', '--init', '--recursive') | Out-Null
 }
 

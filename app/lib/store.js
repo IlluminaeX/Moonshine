@@ -19,6 +19,8 @@ const defaults = {
   friendAlerts: true,
   // Tell friends what game you're playing or hosting
   shareGame: true,
+  // Show what you're streaming on your Discord profile, with a Join button for friends
+  discordStatus: true,
   // Quick messages with friends, kept on this PC only: username -> [{ mine, text, at }] (newest last)
   messages: {},
   // Unread quick messages: username -> count

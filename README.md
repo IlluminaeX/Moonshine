@@ -80,8 +80,21 @@ The player build uses MSYS2's Qt, SDL2, FFmpeg, libplacebo, OpenSSL and Opus ins
 
 `build-apollo.ps1` builds through a `subst` drive (`M:` by default; pass `-Drive` to change it), because Apollo's resource compiler can't handle the spaces or `~` in some paths.
 
+### Building for Android
+Moonshine for Android is Artemis (a Moonlight for Android fork, `upstream/moonlight-android`, pinned at v20.2.6) with `patches/moonlight-android.patch`: Moonshine's name, colours and icons, plus friends, direct connections, invite links and one-tap pairing in `app/src/main/java/com/moonshine/`. The tunnel there speaks the same protocol as `app/lib/tunnel-engine.js`, which `TunnelInteropTest` checks against the real engine (it needs node).
+
+Requirements: JDK 17 and the Android SDK (command-line tools) with `platforms;android-36`, `build-tools;36.0.0`, `platform-tools` and `ndk;27.0.12077973`, in `%LOCALAPPDATA%\Android\Sdk` or `ANDROID_HOME`.
+
+```powershell
+pwsh scripts/build-android.ps1 -Test     # dist/Moonshine-Android.apk, signed; runs the unit tests
+pwsh scripts/build-android.ps1 -Debug    # dist/Moonshine-Android-debug.apk ("Moonshine (Debug)", installs alongside)
+pwsh scripts/build-android.ps1 -Install  # also installs it on a phone plugged in with USB debugging
+```
+
+The first release build makes Moonshine's Android signing key in `%USERPROFILE%\.moonshine-release\` (`android-release.jks` and `android-signing.properties`). Back both up and never commit them: Android installs an update only when it's signed with the same key. The version comes from `app/package.json`, and `release.ps1` attaches the APK to the release when it was built for that version. Like `build-apollo.ps1`, it builds through a `subst` drive because the NDK can't handle spaces in paths.
+
 ## Patches
-Moonshine doesn't fork Apollo or Moonlight. The submodules point at their official releases, and Moonshine's changes are plain patch files in `patches/` (`apollo.patch`, `moonlight-qt.patch`, and `moonlight-common-c.patch` for Moonlight's streaming library). `build-apollo.ps1` and `build-moonlight.ps1` apply them first; applying twice is harmless.
+Moonshine doesn't fork Apollo or Moonlight. The submodules point at their official releases, and Moonshine's changes are plain patch files in `patches/` (`apollo.patch`, `moonlight-qt.patch`, `moonlight-common-c.patch` for Moonlight's streaming library, and `moonlight-android.patch` for the Android app). `build-apollo.ps1` and `build-moonlight.ps1` apply them first; applying twice is harmless.
 
 To change Apollo or Moonlight: edit the files under `upstream/`, then run `pwsh scripts/patches.ps1 save` and commit the updated patches. To move to a newer upstream release: check out the new tag in the submodule, apply the patches, fix any parts that no longer fit, then save.
 

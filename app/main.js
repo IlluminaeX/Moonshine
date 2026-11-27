@@ -16,6 +16,8 @@ const moonlight = require('./lib/moonlight');
 const library = require('./lib/library');
 const beta = require('./lib/beta');
 const wol = require('./lib/wol');
+const gameDetect = require('./lib/game-detect');
+const discord = require('./lib/discord-presence');
 const files = require('./lib/files');
 const wifi = require('./lib/wifi');
 const streamSettings = require('./lib/stream-settings');
@@ -263,6 +265,7 @@ async function promptForOffer(offer) {
       const asGuest = Boolean(src && src.invite);
       if (asGuest) attachInviteDevice(src.invite, added.uuid);
       await setUpNewDevice(added, choice.checked || asGuest ? { require_approval: false } : {});
+      if (!asGuest) await replaceStaleDevice(added, friend || (device && device.user)).catch(() => {});
     }
     await apollo.decidePair(offer.id, true);
     notifyRenderer('app:toast', `Paired with ${name}.`);
@@ -292,6 +295,7 @@ async function promptForPin(request) {
   if (added) {
     rememberUser(added.uuid, device && device.user);
     await setUpNewDevice(added).catch(() => {});
+    await replaceStaleDevice(added, device && device.user).catch(() => {});
     notifyRenderer('app:toast', `Paired with ${added.name}. It will ask before each stream.`);
     notifyRenderer('host:changed');
   } else {
@@ -530,6 +534,28 @@ async function setUpNewDevice(client, extra = {}) {
   Object.assign(client, changes);
 }
 
+/**
+ * A device that pairs again (a new stream identity, as after reinstalling or switching players) is the same
+ * computer as its older entry: same name, same owner. It takes over that entry's settings and the old one goes.
+ */
+async function replaceStaleDevice(added, user) {
+  if (!user) return;
+  const users = { ...store.get('pairedDevices') };
+  const stale = (await apollo.listClients()).filter((c) => c.uuid !== added.uuid && c.name === added.name
+    && !c.connected && (users[c.uuid] || {}).user === user);
+  if (!stale.length) return;
+  const old = stale[0];
+  const settings = Object.fromEntries(['perm', 'display_mode', 'do', 'undo', 'require_approval', 'always_use_virtual_display',
+    'allow_client_commands', 'enable_legacy_ordering'].filter((k) => old[k] !== undefined).map((k) => [k, old[k]]));
+  await apollo.updateClient(added, settings);
+  Object.assign(added, settings);
+  for (const c of stale) {
+    await apollo.unpair(c.uuid).catch(() => {});
+    delete users[c.uuid];
+  }
+  store.set('pairedDevices', users);
+}
+
 /** Catch devices paired some other way (one-time code, the web page): new uuids get the defaults. */
 async function setUpUnknownDevices(clients) {
   const known = store.get('knownDevices');
@@ -674,6 +700,79 @@ async function noticeJoin(guest) {
 let hostingSeen = null; // whether the host service was running at the last look
 let hostGame = ''; // the app running on this PC's host for a stream ('' when none)
 let streamApp = ''; // the app this PC is streaming from another PC ('' when not streaming)
+let streamHost = ''; // and the name of the PC it comes from
+
+// ---- Discord status: what this PC is hosting or streaming, with a Join button -------------------
+// The status shows under the Discord application the Moonshine sign-in uses (its id is public).
+const DISCORD_APP_ID = '1573416935054385273';
+let hostApp = ''; // the app running on this PC's host while someone streams ('' when none)
+let hostGuests = 0; // how many are watching it
+let hostUuidSeen = ''; // this PC's host id
+let discordSince = 0; // when the current activity began
+
+/** What Discord should show right now (null = nothing). A game's name is only shown when sharing it is on. */
+function discordActivity() {
+  if (!store.get('discordStatus')) return null;
+  const share = store.get('shareGame');
+  if (hostApp) {
+    const name = share ? (hostGame || hostApp) : '';
+    const user = service.signedIn() ? service.username() : '';
+    const activity = {
+      details: name ? `Playing ${name}` : 'Streaming a game',
+      state: hostGuests > 0 ? `Streaming to ${hostGuests} friend${hostGuests === 1 ? '' : 's'}` : 'Hosting on Moonshine',
+      timestamps: { start: discordSince },
+    };
+    if (user && hostUuidSeen) {
+      // The Join button: the secret says whose PC and which app, so a friend's Moonshine can connect
+      activity.party = { id: hostUuidSeen, size: [1 + hostGuests, 1 + hostGuests + 4] };
+      activity.secrets = { join: `ms1:${hostUuidSeen}:${user}:${hostApp}`.slice(0, 128) };
+    }
+    return activity;
+  }
+  if (streamApp) {
+    const name = share ? streamApp : '';
+    return {
+      details: name ? `Playing ${name}` : 'Streaming a game',
+      state: streamHost ? `On ${streamHost}` : 'On a friend’s PC',
+      timestamps: { start: discordSince },
+    };
+  }
+  return null;
+}
+
+function updateDiscord() {
+  const on = Boolean(hostApp || streamApp);
+  if (on && !discordSince) discordSince = Math.floor(Date.now() / 1000);
+  if (!on) discordSince = 0;
+  discord.setActivity(discordActivity());
+}
+
+/** A friend pressed Join on your Discord profile. The secret is "ms1:hostUuid:username:app". */
+discord.events.on('join', async (secret) => {
+  const [tag, hostUuid, username, ...rest] = String(secret).split(':');
+  const appName = rest.join(':');
+  if (tag !== 'ms1' || !/^[\w-]{8,64}$/.test(hostUuid) || !/^[\w.-]{1,40}$/.test(username || '')) return;
+  if (username.toLowerCase() === String(service.username()).toLowerCase()) return;
+  if (isDnd()) { notifyRenderer('app:toast', 'Do not disturb is on, so Join from Discord was ignored.'); return; }
+  const who = friendLabel(username);
+  const choice = await prompts.ask({
+    key: `discord-join:${username}`,
+    title: `Join ${who}’s stream?`,
+    details: [appName ? `${appName} on ${who}’s PC` : `${who}’s PC`, 'From their Discord profile'],
+    accept: 'Join',
+    decline: 'Cancel',
+  });
+  if (choice.cancelled || !choice.ok) return;
+  joinFriendGame(username, hostUuid, `${who}’s PC`, appName || 'Desktop').catch((err) => notifyRenderer('app:toast', err.message));
+});
+
+let seenGame = { at: 0, name: '' };
+/** The game in front on this PC (Steam's running game, or a fullscreen game), checked at most every 10 seconds. */
+async function gameInFront() {
+  if (Date.now() - seenGame.at < 10000) return seenGame.name;
+  seenGame = { at: Date.now(), name: await gameDetect.detect().catch(() => '') };
+  return seenGame.name;
+}
 
 /** What friends see this PC playing (if its user shares that). */
 function currentGame() {
@@ -695,12 +794,16 @@ async function watchGuests() {
       if (isPaused()) await enforcePause(clients);
       const apps = await apollo.getApps().catch(() => null);
       const current = apps && (apps.apps || []).find((a) => a.uuid && a.uuid === apps.current_app);
-      const game = current ? current.name : '';
+      // While someone streams, the real game beats the app's name ("Desktop"); only looked at when it's shared
+      const game = current ? ((store.get('shareGame') && await gameInFront()) || current.name) : '';
       if (game !== hostGame) {
         hostGame = game;
         presenceOnce(); // friends see what's playing in seconds
       }
       const guests = await apollo.guests();
+      hostApp = current ? current.name : '';
+      hostGuests = guests.length;
+      updateDiscord();
       const now = new Set(guests.map((g) => g.uuid));
       if (watching) {
         for (const g of guests) {
@@ -719,6 +822,7 @@ async function watchGuests() {
     } else {
       inviteTick(new Set()).catch(() => {});
       watching = null;
+      if (hostApp) { hostApp = ''; hostGuests = 0; updateDiscord(); }
       if (hostGame) { hostGame = ''; presenceOnce(); }
     }
   } catch {
@@ -963,7 +1067,15 @@ ipcMain.handle('host:updateClient', async (_e, uuid, changes) => {
   }
 });
 
-ipcMain.handle('host:guests', () => apollo.guests().catch(() => []));
+// Who is streaming: a device paired by a friend shows under their account name (or the nickname you gave
+// them) and not under the name of their PC.
+ipcMain.handle('host:guests', async () => {
+  const users = store.get('pairedDevices');
+  return (await apollo.guests().catch(() => [])).map((g) => {
+    const user = ((users[g.uuid] || {}).user || '').replace(/@.*$/, '');
+    return user ? { ...g, name: friendLabel(user), device: g.name } : g;
+  });
+});
 
 /** The upload limit shared by everyone watching, in Mbps (0 = none). Saved, and applied at once. */
 ipcMain.handle('host:getBandwidth', async () => {
@@ -977,6 +1089,7 @@ ipcMain.handle('host:setBandwidth', async (_e, mbps) => {
   return kbps / 1000;
 });
 ipcMain.handle('host:setPlayerOrder', (_e, uuids) => apollo.setPlayerOrder(uuids));
+ipcMain.handle('host:setPadOrder', (_e, pads) => apollo.setPadOrder(pads));
 ipcMain.handle('host:disconnectClient', (_e, uuid) => apollo.disconnectClient(uuid));
 
 ipcMain.handle('host:unpair', async (_e, uuid) => {
@@ -1001,7 +1114,16 @@ async function apolloCall(fn) {
 }
 
 ipcMain.handle('apollo:getConfig', () => apolloCall(() => apollo.getConfig()));
-ipcMain.handle('apollo:saveConfig', (_e, changes) => apolloCall(() => apollo.updateConfig(changes)));
+ipcMain.handle('apollo:saveConfig', async (_e, changes) => {
+  const res = await apolloCall(() => apollo.updateConfig(changes));
+  if (changes && 'sunshine_name' in changes) {
+    // A new name: show it here now, and tell friends once the host has restarted with it
+    hostName = String(changes.sunshine_name || '').trim() || os.hostname();
+    presenceOnce().then(() => notifyRenderer('friends:changed'));
+    setTimeout(() => presenceOnce().then(() => notifyRenderer('friends:changed')), 8000);
+  }
+  return res;
+});
 ipcMain.handle('apollo:getApps', () => apolloCall(() => apollo.getApps()));
 ipcMain.handle('apollo:saveApp', (_e, entry) => apolloCall(() => apollo.saveApp(entry)));
 ipcMain.handle('apollo:deleteApp', (_e, uuid) => apolloCall(() => apollo.deleteApp(uuid)));
@@ -1412,7 +1534,9 @@ async function startStream(host, appName, { resumed = false } = {}) {
   watchDropFile({ uuid: requested.uuid || host.uuid, name: host.name, address: requested.address });
   streamAddress = host.address;
   streamApp = appName;
+  streamHost = host.name;
   presenceOnce();
+  updateDiscord();
   streamProcess.stderr.on('data', (chunk) => {
     errorOutput = (errorOutput + chunk).slice(-4000); // only the end is needed, for the error message
   });
@@ -1423,7 +1547,9 @@ async function startStream(host, appName, { resumed = false } = {}) {
     watchDropFile(null);
     streamAddress = '';
     streamApp = '';
+    streamHost = '';
     presenceOnce();
+    updateDiscord();
     for (const ms of [4000, 10000]) setTimeout(() => { friendsCache = { ...friendsCache, at: 0 }; }, ms);
     const dropped = /MOONSHINE_DROPPED/.test(errorOutput);
     const lastLine = errorOutput.trim().split(/\r?\n/).filter((l) => !/MOONSHINE_DROPPED/.test(l)).pop();
@@ -1552,9 +1678,9 @@ async function friendsStatus(full, manual = false) {
   const accountUuids = new Set(account.pcs.map((p) => p.uuid));
   const merged = [...pcs.filter((p) => !accountUuids.has(p.uuid)), ...account.pcs];
   return {
-    me, tailscale: Boolean(ts), pcs: merged, unseen, alerts: store.get('friendAlerts'), shareGame: store.get('shareGame'),
+    me, tailscale: Boolean(ts), pcs: merged, unseen, alerts: store.get('friendAlerts'), shareGame: store.get('shareGame'), discordStatus: store.get('discordStatus'),
     version: app.getVersion(), service: account.service,
-    self: { name: os.hostname(), hosting: hostingSeen === true && !isPaused() }, invites: inviteList(),
+    self: { name: hostName || os.hostname(), hosting: hostingSeen === true && !isPaused() }, invites: inviteList(),
   };
 }
 
@@ -1580,7 +1706,8 @@ async function serviceFriends(fresh = false) {
     const addrs = new Map();
     for (const f of data.friends) {
       if (f.status !== 'accepted') continue;
-      for (const pc of f.pcs) {
+      // Their phones too (Moonshine for Android), which only watch but pair the same way
+      for (const pc of [...f.pcs, ...(f.phones || [])]) {
         for (const a of pc.addrs) if (isTailnetAddress(a) || isPrivateAddress(a)) addrs.set(a, f.username);
       }
     }
@@ -1594,11 +1721,21 @@ async function serviceFriends(fresh = false) {
 
 /** The address without its port: "1.2.3.4", "fe80::1". */
 
-/** How this PC reaches that one: 'lan' (same network), 'tailscale', 'direct' (straight over the internet) or 'relay'. */
+const isIpLiteral = (h) => /^\d+\.\d+\.\d+\.\d+$/.test(h) || h.includes(':');
+// Addresses that only work from the same network (home ranges, loopback, link-local, IPv6 private)
+const isLocalHost = (h) => isPrivateAddress(h) || /^(127\.|169\.254\.|::1$|fe[89ab][0-9a-f]:|f[cd][0-9a-f]{2}:)/i.test(h);
+
+/**
+ * How this PC reaches that one: 'lan' (same network), 'tailscale', 'direct' (a tunnel Moonshine opened
+ * through both routers), 'relay', or 'internet' (that PC's public address: its router lets connections in,
+ * by port forwarding or UPnP). A name (not an address) counts as the same network, as before.
+ */
 function connectionKind(address, hostUuid) {
   if (!address) return '';
   if (tunnels.isTunnelAddress(address)) return tunnels.isRelayed(hostUuid) ? 'relay' : 'direct';
-  return isTailnetAddress(library.splitAddress(address).host) ? 'tailscale' : 'lan';
+  const host = library.splitAddress(address).host;
+  if (isTailnetAddress(host)) return 'tailscale';
+  return isIpLiteral(host) && !isLocalHost(host) ? 'internet' : 'lan';
 }
 
 /** A delay in ms rounded to the nearest 10 (10 means under 20), so a list doesn't redraw for every wobble. */
@@ -1821,6 +1958,9 @@ async function autoPairOne(pc) {
   return res.reason === 'declined' ? 'declined' : 'failed';
 }
 
+/** This PC's name as friends see it: the host's server name, or the Windows name when none is set. */
+let hostName = '';
+
 /** Tell the service how friends can reach this PC's host. */
 async function presenceOnce() {
   try {
@@ -1830,8 +1970,10 @@ async function presenceOnce() {
       const self = running ? await library.serverInfo('127.0.0.1', Number(cfg.port) || library.DEFAULT_PORT) : null;
       const ts = await tailscale.status();
       const guests = running ? await apollo.guests().catch(() => []) : [];
+      if (running && cfg) hostName = cfg.sunshine_name || os.hostname();
+      if (self && self.uuid && self.uuid !== hostUuidSeen) { hostUuidSeen = self.uuid; updateDiscord(); }
       await service.reportPresence({
-        name: cfg.sunshine_name || os.hostname(),
+        name: hostName || os.hostname(),
         hostUuid: self ? self.uuid : '',
         port: Number(cfg.port) || library.DEFAULT_PORT,
         addrs: ts && ts.self.ip ? [ts.self.ip] : [],
@@ -1915,6 +2057,12 @@ ipcMain.handle('friends:setAlerts', (_e, on) => store.set('friendAlerts', Boolea
 ipcMain.handle('friends:setShareGame', (_e, on) => {
   store.set('shareGame', Boolean(on));
   presenceOnce();
+  updateDiscord();
+});
+ipcMain.handle('friends:setDiscordStatus', (_e, on) => {
+  store.set('discordStatus', Boolean(on));
+  discord.enable(Boolean(on), DISCORD_APP_ID);
+  updateDiscord();
 });
 ipcMain.handle('friends:setNickname', async (_e, username, nickname) => {
   const res = await service.setNickname(username, String(nickname || '').trim());
@@ -1974,15 +2122,17 @@ ipcMain.handle('friends:messages', (_e, username) => {
 });
 // Profile pictures, as data URLs the window can show without loading anything from the internet.
 // The key includes the picture's version, so a changed picture is fetched again.
-const avatarCache = new Map(); // "username|version" -> data URL ('' = no picture)
+const avatarCache = new Map(); // "username|version" -> { url: data URL ('' = couldn't load), at }
+const AVATAR_RETRY_MS = 60 * 1000; // a picture that failed to load (no network yet, service busy) is tried again after this
 ipcMain.handle('friends:avatar', async (_e, username, version) => {
   const key = `${username}|${version}`;
-  if (!avatarCache.has(key)) {
+  const had = avatarCache.get(key);
+  if (!had || (!had.url && Date.now() - had.at > AVATAR_RETRY_MS)) {
     const pic = await service.avatar(String(username)).catch(() => null);
-    avatarCache.set(key, pic ? `data:${pic.type};base64,${pic.buf.toString('base64')}` : '');
+    avatarCache.set(key, { url: pic ? `data:${pic.type};base64,${pic.buf.toString('base64')}` : '', at: Date.now() });
     if (avatarCache.size > 200) avatarCache.delete(avatarCache.keys().next().value);
   }
-  return avatarCache.get(key) || null;
+  return avatarCache.get(key).url || null;
 });
 ipcMain.handle('friends:chatOpen', (_e, username) => { openChat = String(username || ''); });
 
@@ -2647,7 +2797,7 @@ const INVITE_URL = /^moonshine:\/\/join\/([A-Za-z0-9_-]{20,64})\/?$/i;
 
 // Links that need no window: a stream link, and moonshine://background, which only makes sure Moonshine is
 // running (helpers such as the Steam button open it before using the local API).
-const opensQuietly = (argv) => (argv || []).some((a) => /^moonshine:\/\/(stream|background)(?:[/?]|$)/i.test(String(a).trim()));
+const opensQuietly = (argv) => (argv || []).some((a) => /^moonshine:\/\/(stream|background)(?:[/?]|$)/i.test(String(a).trim()) || /^discord-\d+:/i.test(String(a).trim()));
 
 /** A link click starts Moonshine (or reaches the one running) with the address as an argument. */
 function handleInviteArgs(argv) {
@@ -2666,7 +2816,12 @@ function handleInviteArgs(argv) {
 }
 
 function startInvites() {
-  if (app.isPackaged) app.setAsDefaultProtocolClient('moonshine');
+  if (app.isPackaged) {
+    app.setAsDefaultProtocolClient('moonshine');
+    // Discord starts this when someone presses Join on a profile and Moonshine isn't running yet
+    app.setAsDefaultProtocolClient(`discord-${DISCORD_APP_ID}`);
+  }
+  discord.enable(store.get('discordStatus'), DISCORD_APP_ID);
   ensureGuestLink();
   setTimeout(() => handleInviteArgs(process.argv), 1500); // after the window has loaded, so its messages show
 }

@@ -278,6 +278,11 @@ async function fileTaken(id) {
   return api('POST', '/api/moonshine/file-taken', { id });
 }
 
+/** Give exactly these controllers ([{uuid, index}]) the player numbers, in this order. */
+async function setPadOrder(pads) {
+  return api('POST', '/api/moonshine/pad-order', { pads });
+}
+
 /** Give these devices' controllers the first player numbers, in this order. */
 async function setPlayerOrder(uuids) {
   return api('POST', '/api/moonshine/player-order', { uuids });
@@ -358,6 +363,7 @@ module.exports = {
   fileData,
   fileTaken,
   setPlayerOrder,
+  setPadOrder,
   unpairAll,
   resetDisplay,
   setWebLogin,

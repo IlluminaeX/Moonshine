@@ -602,9 +602,10 @@ class Tunnel extends EventEmitter {
       const ack = Buffer.from(frame);
       ack[0] = F.PROBE_ACK;
       this.sendRaw(sock, this.seal(ack), rinfo.address, rinfo.port);
-      if (sock.relay && !this.connected) {
-        // Through the relay the other side's real address is only learned from what it sends: probe it
-        // back there too (its own address, which may differ from the one it published), so we get an ack
+      if (!this.connected) {
+        // The other side's real address is only learned from what it sends (through the relay, or from a
+        // router that picks a new port per destination): probe it back there too, so this side gets an
+        // ack on a path that works, not only the other side
         const back = Buffer.alloc(9);
         back[0] = F.PROBE;
         crypto.randomFillSync(back, 1);
